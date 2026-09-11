@@ -22,11 +22,17 @@ Info flows up and down the tree. Seniors also talk laterally in `#seniors`.
 
 ## Five additions to the T3 Code server
 
-1. **Channel aggregate** — `channel`, `membership`, `post`, `mention` as event-sourced
-   entities in `OrchestrationEngine`. Threads gain an agent identity so they can be members.
-2. **Post → turn trigger** — an event-log subscriber: a post that mentions an agent (or lands
-   in a channel it watches) enqueues a turn on that agent's thread with the post as input.
-   No polling, no cron, no end-of-turn checks.
+1. **Channel aggregate** — `channel`, `membership`, `post` as event-sourced entities in
+   `OrchestrationEngine`. Mentions are a field on the post (`mentions: ReadonlyArray<MemberRef>`),
+   not an entity: one event to read, and a post and its mentions cannot commit at different
+   sequences. Posts carry `authorRef`. Threads are members as `{ memberKind: "thread", memberId }`.
+2. **Post → turn trigger** — a reactor: a post that mentions an agent enqueues a turn on that
+   agent's thread with the post as input. No polling, no cron, no end-of-turn checks.
+   **The reactor never enqueues a turn on the thread that authored the post** — without this an
+   agent posting into its own channel wakes itself forever, on real subscription tokens.
+   Milestone 1 is mention-triggering only. Waking every member on every post ("channel watch")
+   is deferred: with three members in `#seniors` it is a mutual wake loop on the first message
+   and needs damping of its own.
 3. **Agent-side comms tool** — an MCP tool (`post`, `reply`, `read_channel`) injected into
    each session via the existing `McpProviderSession` path.
 4. **Hierarchy + manifest** — role config (PM / senior / worker), channel membership,
