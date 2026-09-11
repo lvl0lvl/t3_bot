@@ -52,6 +52,8 @@ message types: `comms/README.md` there.
 
 ## Stack notes
 
-- pnpm workspace, Effect-TS server, Vite/React clients. `pnpm install` then `pnpm dev`.
+- pnpm workspace, Effect-TS server, Vite/React clients. `pnpm install` then `pnpm dev`
+  (`vp run dev` in `AGENTS.md` assumes `vp` on PATH; it is not on every session's — `pnpm dev` is
+  the portable form). Ports derive from the worktree path; read them from the `[dev-runner]` line.
 - Claude provider = `@anthropic-ai/claude-agent-sdk` in-process; Codex = `codex app-server`
   child process. Both run on subscriptions (`claude auth login`, `codex login`).

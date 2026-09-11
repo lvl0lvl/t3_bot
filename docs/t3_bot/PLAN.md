@@ -39,9 +39,31 @@ Info flows up and down the tree. Seniors also talk laterally in `#seniors`.
 One PM thread, two senior threads, `#seniors` and `#project` channels, a post that mentions
 a senior wakes that senior, visible in the web client. No worker teams yet.
 
-## Open questions
+## Decisions from onboarding recon (2026-09-11, boss1 + boss3 reports on the board)
 
-- Turn trigger semantics when the target agent is mid-turn: queue vs. interrupt vs. inject
-  as a follow-up message (T3 Code already supports follow-ups on a live turn — likely reuse).
-- Channel persistence: reuse the SQLite event store or a separate table.
-- How the human's `#project` channel maps onto the existing thread UI.
+- **Channel is a third aggregate in the event store**, beside `project` and `thread`
+  (`packages/contracts/src/orchestration.ts` `OrchestrationAggregateKind`). No side table: a side
+  table forfeits receipt idempotency, ordered replay and the single-transaction commit.
+  `commandToAggregateRef` in `OrchestrationEngine.ts` has a `thread` default that would silently
+  mis-stamp a `channel.*` command — it becomes exhaustive first (t3_bot-l8i).
+- **Membership** = `(channelId, memberKind: "thread" | "human", memberId)`. `ThreadId` is stable;
+  threads need no new identity type.
+- **Post bodies** live in a projection table (`ProjectionChannels`), not the in-memory read model,
+  which is rebuilt on every event.
+- **Post → turn is a reactor**, not engine code (`ThreadPullRequestReactor.ts` is the exemplar; use
+  `subscribeDomainEvents` so tests drain). It issues a plain `thread.turn.start` on the target thread.
+  A live turn already absorbs it as a follow-up on both providers (Claude: steer onto the prompt
+  queue, same turnId; Codex: native queued `turn/start`). Queue-vs-interrupt is settled: inject.
+- **Consequences of injecting:** a post that wakes a busy Claude thread emits no `turn.started`, so
+  the channel UI correlates by post/mention id, never turnId (t3_bot-j6o). A turn queued during
+  compaction is dropped on compaction failure with a human-facing retry message — agent-originated
+  posts need retry or dead-letter before the trigger ships (t3_bot-n3y).
+- **Agent-side tools** are an MCP toolkit at `apps/server/src/mcp/toolkits/comms/` modelled on
+  `pullRequests/`; caller identity is the `threadId` on `McpInvocationContext`. A `comms`
+  `McpCapability` is granted unconditionally. Capabilities bake at session start (Claude does not
+  reload the catalog; Codex does), so the tool surface is static and membership is checked inside
+  the handler.
+- **No new RPC.** `channel.*` joins the `OrchestrationCommand` union; web/desktop/mobile follow.
+- **Team comms during the build** are the `comms` branch board, not Claude Code's mesh — the mesh
+  is scoped to `CLAUDE_CONFIG_DIR`, and the three sessions run on three accounts. Same constraint
+  applies to the product: the channel layer must not depend on provider account or config dir.
