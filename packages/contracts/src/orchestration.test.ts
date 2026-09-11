@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
-import { CommandId, ProjectId, ThreadId } from "./baseSchemas.ts";
+import { ChannelId, CommandId, ProjectId, ThreadId } from "./baseSchemas.ts";
 
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -69,7 +69,6 @@ const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPaylo
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeAggregateKind = Schema.decodeUnknownEffect(OrchestrationAggregateKind);
-const decodeAggregateId = Schema.decodeUnknownEffect(OrchestrationAggregateId);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
 const decodeDispatchCommandError = Schema.decodeUnknownEffect(OrchestrationDispatchCommandError);
 const decodeSnapShotAccessibility = Schema.decodeUnknownEffect(SnapShotAccessibility);
@@ -1518,10 +1517,21 @@ it.effect("aggregate kind and id admit channel alongside project and thread", ()
     assert.strictEqual(yield* decodeAggregateKind("channel"), "channel");
     assert.strictEqual(yield* decodeAggregateKind("thread"), "thread");
     assert.strictEqual(yield* decodeAggregateKind("project"), "project");
-    assert.strictEqual(yield* decodeAggregateId("channel-1"), "channel-1");
 
     const unknownKind = yield* Effect.exit(decodeAggregateKind("membership"));
     assert.strictEqual(unknownKind._tag, "Failure");
+
+    // The id union is a compile-time contract only: every entity id is the same
+    // branded TrimmedNonEmptyString at runtime, so decoding one proves nothing
+    // about which members the union holds. Assigning each brand is what fails
+    // the build if a member is dropped.
+    const channelAggregateId: OrchestrationAggregateId = "channel-1" as ChannelId;
+    const threadAggregateId: OrchestrationAggregateId = "thread-1" as ThreadId;
+    const projectAggregateId: OrchestrationAggregateId = "project-1" as ProjectId;
+    assert.deepStrictEqual(
+      [channelAggregateId, threadAggregateId, projectAggregateId],
+      ["channel-1", "thread-1", "project-1"],
+    );
   }),
 );
 
