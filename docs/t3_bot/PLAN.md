@@ -44,8 +44,11 @@ a senior wakes that senior, visible in the web client. No worker teams yet.
 - **Channel is a third aggregate in the event store**, beside `project` and `thread`
   (`packages/contracts/src/orchestration.ts` `OrchestrationAggregateKind`). No side table: a side
   table forfeits receipt idempotency, ordered replay and the single-transaction commit.
-  `commandToAggregateRef` in `OrchestrationEngine.ts` has a `thread` default that would silently
-  mis-stamp a `channel.*` command — it becomes exhaustive first (t3_bot-l8i).
+  `commandToAggregateRef` in `OrchestrationEngine.ts` has a `thread` default. A `channel.*` command
+  without a `threadId` fails to compile there (good); one that happens to carry a `threadId` is
+  silently stamped as a `thread` aggregate (bad). So: the switch becomes exhaustive first (t3_bot-l8i),
+  with a test that a channel command carrying a `threadId` still routes to `channel`, and **channel
+  payloads never name a field `threadId`** — a thread member is `{ memberKind: "thread", memberId }`.
 - **Membership** = `(channelId, memberKind: "thread" | "human", memberId)`. `ThreadId` is stable;
   threads need no new identity type.
 - **Post bodies** live in a projection table (`ProjectionChannels`), not the in-memory read model,
