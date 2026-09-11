@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME\"/Documents/Projects/worktrees/t3bot-comms/comms/hooks/session-start.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME\"/Documents/Projects/worktrees/t3bot-comms/comms/hooks/stop.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

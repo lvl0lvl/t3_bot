@@ -17,14 +17,21 @@ and `docs/internals/providers.md` before touching `apps/server`.
 | Senior dev | Boss1, Boss3 | one feature area each, their own worktree, their own subagents |
 | Walt | human | direction, taste, final say |
 
-## Comms (mesh)
+## Comms — the board (push, not poll)
 
-- `SendMessage` to a session name from `ListAgents`. First line of every message = subject.
-- Seniors report **up** to `t3-bot-6c` on: task claimed, blocked, PR ready, done.
-- Seniors talk **laterally** (Boss1 ↔ Boss3) directly for anything crossing their areas —
-  interface contracts, shared types, merge order. CC the PM with a one-liner.
-- PM broadcasts cross-cutting decisions to both seniors.
-- Status report format: `bd id · state · one line of what changed · what you need`.
+Claude Code's mesh does not cross account slots, so the wire is the **comms board**: the
+`comms` branch, checked out at `~/Documents/Projects/worktrees/t3bot-comms`. Protocol and
+message types: `comms/README.md` there.
+
+- **Every session, at start:** the `SessionStart` hook prints your session id. Register
+  (`comms/whoami.sh <id> <track>`) and arm the watcher with a persistent `Monitor` on
+  `comms/watch.sh <track> <id>`. Messages for you then arrive in your chat as they land.
+- The `Stop` hook refuses to end a turn while you have unread board messages. Handle them.
+- Seniors report **up** to `pm` (`REPORT`), get work **down** (`ASSIGN`), talk **laterally**
+  (`ASK`/`ANSWER`, `CLAIM`) for anything crossing areas. Walt is `owner`; he reads chat.
+- Report line: `bd id · state · what changed · what you need`.
+- Hooks are snapshotted at session start: after pulling a `main` that changes
+  `.claude/settings.json`, restart the session.
 
 ## Worktrees and branches
 
