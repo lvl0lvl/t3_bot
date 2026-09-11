@@ -61,10 +61,28 @@ interface CommandEnvelope {
   startedAtMs: number;
 }
 
+/**
+ * Route a command to the aggregate that owns its events and command receipt.
+ *
+ * Every command is listed, and the `satisfies never` below fails the build when
+ * a command has no branch. That covers exhaustiveness only — it does not prove a
+ * command sits in the *right* branch, since a payload carrying both a projectId
+ * and a threadId type-checks in either one.
+ *
+ * A catch-all thread branch was the alternative. The compiler rejects that for a
+ * command with no `threadId` field, but a command that happens to carry one is
+ * routed silently, attaching its events, receipt, and `hasEventAfter` scope to
+ * whichever thread the payload names.
+ *
+ * Returns null rather than throwing when nothing matches. The call site turns
+ * that into a rejection of the one command: this runs in the engine's single
+ * command-queue worker fiber, and a throw there dies the fiber and hangs every
+ * later command on an unsettled Deferred.
+ */
 function commandToAggregateRef(command: OrchestrationCommand): {
   readonly aggregateKind: "project" | "thread";
   readonly aggregateId: ProjectId | ThreadId;
-} {
+} | null {
   switch (command.type) {
     case "project.create":
     case "project.meta.update":
@@ -73,11 +91,50 @@ function commandToAggregateRef(command: OrchestrationCommand): {
         aggregateKind: "project",
         aggregateId: command.projectId,
       };
-    default:
+    case "thread.create":
+    case "thread.delete":
+    case "thread.archive":
+    case "thread.unarchive":
+    case "thread.settle":
+    case "thread.unsettle":
+    case "thread.snooze":
+    case "thread.unsnooze":
+    case "thread.pin":
+    case "thread.unpin":
+    case "thread.pin.reorder":
+    case "thread.active.reorder":
+    case "thread.meta.update":
+    case "thread.pull-request.link":
+    case "thread.pull-request.unlink":
+    case "thread.runtime-mode.set":
+    case "thread.interaction-mode.set":
+    case "thread.turn.start":
+    case "thread.turn.interrupt":
+    case "thread.approval.respond":
+    case "thread.user-input.respond":
+    case "thread.user-input.dismiss":
+    case "thread.checkpoint.revert":
+    case "thread.session.stop":
+    case "thread.auto-settle":
+    case "thread.pull-request.sync":
+    case "thread.pull-request-link.sync":
+    case "thread.session.set":
+    case "thread.message.assistant.delta":
+    case "thread.message.assistant.complete":
+    case "thread.history.import":
+    case "thread.proposed-plan.upsert":
+    case "thread.turn.diff.complete":
+    case "thread.activity.append":
+    case "thread.revert.complete":
+    case "thread.title.regeneration.complete":
       return {
         aggregateKind: "thread",
         aggregateId: command.threadId,
       };
+    default: {
+      command satisfies never;
+      return null;
+    }
   }
 }
 
@@ -112,6 +169,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     const dispatchStartSequence = commandReadModel.snapshotSequence;
     let processingStartedAtMs = 0;
     const aggregateRef = commandToAggregateRef(envelope.command);
+    if (aggregateRef === null) {
+      // Unreachable while the types hold; the decider resolves its own
+      // exhaustiveness gap the same way rather than throwing.
+      const unrouted = envelope.command as { type: string };
+      return Deferred.fail(
+        envelope.result,
+        new OrchestrationCommandInvariantError({
+          commandType: unrouted.type,
+          detail: `Unknown command type: ${unrouted.type}`,
+        }),
+      ).pipe(Effect.asVoid);
+    }
     const baseMetricAttributes = {
       commandType: envelope.command.type,
       aggregateKind: aggregateRef.aggregateKind,
