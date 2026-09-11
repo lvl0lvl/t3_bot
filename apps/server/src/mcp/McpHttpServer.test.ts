@@ -17,6 +17,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import { ChannelGatewayUnavailable } from "./toolkits/comms/channelGateway.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 
@@ -50,6 +51,10 @@ const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
   Layer.provideMerge(PreviewAutomationBroker.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" })),
   Layer.provideMerge(NodeServices.layer),
+);
+const CommsTestLayer = McpHttpServer.CommsToolkitRegistrationLive.pipe(
+  Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provide(NodeServices.layer),
 );
 const PullRequestsTestLayer = McpHttpServer.PullRequestsToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
@@ -765,4 +770,34 @@ it.effect("registers annotated tools and preserves authenticated request context
       }
     }),
   ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect(
+  "registers the comms toolkit under its domain-qualified names and gates it on the comms capability",
+  () =>
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const names = server.tools.map(({ tool }) => tool.name);
+      // Domain-qualified like every other tool on this flat server: an agent
+      // sees these merged with its own native tools.
+      expect(names).toEqual(
+        expect.arrayContaining(["comms_post", "comms_reply", "comms_read_channel"]),
+      );
+      const postTool = server.tools.find(({ tool }) => tool.name === "comms_post");
+      expect(postTool?.tool.annotations?.idempotentHint).toBe(false);
+      expect(postTool?.tool.annotations?.readOnlyHint).toBe(false);
+      expect(postTool?.tool.description).toContain("There is no author argument");
+
+      const denied = yield* server
+        .callTool({ name: "comms_read_channel", arguments: { channel: "seniors" } })
+        .pipe(
+          // A preview-only credential: no comms grant.
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(denied.isError).toBe(true);
+      expect(denied.content).toEqual([
+        { type: "text", text: "MCP credential does not grant the comms capability." },
+      ]);
+    }).pipe(Effect.provide(CommsTestLayer.pipe(Layer.provide(ChannelGatewayUnavailable)))),
 );
