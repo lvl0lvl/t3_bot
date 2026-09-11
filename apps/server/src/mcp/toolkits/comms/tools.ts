@@ -1,8 +1,4 @@
-import {
-  McpCapabilityUnavailableError,
-  PositiveInt,
-  TrimmedNonEmptyString,
-} from "@t3tools/contracts";
+import { McpCapabilityUnavailableError } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
@@ -15,26 +11,36 @@ const dependencies = [McpInvocationContext.McpInvocationContext, ChannelGateway.
 /**
  * The agent never names itself. Author identity is the calling thread, taken
  * from the MCP credential, so an agent cannot post as another member or as a
- * human. Repeated in every tool description because the alternative — an agent
- * looking for an author argument and inventing one in the body — is the failure
- * this design exists to prevent.
+ * human. Carried by the two write tools because that is where an agent would
+ * otherwise look for an author argument and invent one in the body; the read
+ * tool has no authorship to mistake.
  */
 const AUTHOR_IS_YOU =
   "You post as yourself; the channel records the author from your session. There is no author argument.";
 
-export const ChannelNameInput = TrimmedNonEmptyString.annotate({
+export const MAX_MENTIONS = 32;
+export const MAX_POST_BODY_CHARS = 16_000;
+export const MAX_READ_LIMIT = 200;
+export const DEFAULT_READ_LIMIT = 50;
+
+/**
+ * Descriptions live on the struct fields rather than on the string types.
+ * `TrimmedNonEmptyString` is a transformation, so an annotation applied to it
+ * is dropped from the encoded JSON schema the agent receives, along with its
+ * non-empty check. Annotating the field keeps both visible.
+ */
+const ChannelField = Schema.String.check(Schema.isNonEmpty()).annotate({
   description:
     "Channel name, with or without the leading '#', for example '#seniors' or 'seniors'. Must be a channel you are a member of.",
 });
 
-export const MentionsInput = Schema.Array(
-  TrimmedNonEmptyString.annotate({
-    description: "A member handle, with or without the leading '@', for example '@boss1'.",
-  }),
-).annotate({
-  description:
-    "Members to mention. Mentioning a member wakes it: it receives this post as a message on its own thread. Mention only the members who need to act on this post.",
-});
+const BodyField = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(MAX_POST_BODY_CHARS));
+
+const MentionsField = Schema.Array(Schema.String)
+  .check(Schema.isMaxLength(MAX_MENTIONS))
+  .annotate({
+    description: `Member handles to mention, with or without the leading '@', for example '@boss1'. Mentioning a member wakes it: it receives this post as a message on its own thread. Mention only the members who need to act. At most ${MAX_MENTIONS}.`,
+  });
 
 export class CommsChannelNotFoundError extends Schema.TaggedError<CommsChannelNotFoundError>()(
   "CommsChannelNotFoundError",
@@ -50,7 +56,7 @@ export class CommsMemberNotFoundError extends Schema.TaggedError<CommsMemberNotF
   { handles: Schema.Array(Schema.String) },
 ) {
   override get message(): string {
-    return `Not members of this channel: ${this.handles.join(", ")}. Use read_channel to see who is.`;
+    return `Not members of this channel: ${this.handles.join(", ")}. Use comms_read_channel to see who is.`;
   }
 }
 
@@ -59,25 +65,36 @@ export class CommsPostNotFoundError extends Schema.TaggedError<CommsPostNotFound
   { postId: Schema.String },
 ) {
   override get message(): string {
-    return `Post ${this.postId} is not in this channel.`;
+    return `No post ${this.postId} in this channel.`;
+  }
+}
+
+export class CommsMembershipLostError extends Schema.TaggedError<CommsMembershipLostError>()(
+  "CommsMembershipLostError",
+  {},
+) {
+  override get message(): string {
+    return "You were removed from this channel while the post was being written. Nothing was posted.";
   }
 }
 
 export class CommsPostFailedError extends Schema.TaggedError<CommsPostFailedError>()(
   "CommsPostFailedError",
-  { cause: Schema.Defect() },
+  { detail: Schema.String, retryable: Schema.Boolean },
 ) {
   override get message(): string {
-    return "Could not post to the channel.";
+    return this.retryable
+      ? `Could not post to the channel: ${this.detail}. Try again.`
+      : `Could not post to the channel: ${this.detail}.`;
   }
 }
 
 export class CommsReadFailedError extends Schema.TaggedError<CommsReadFailedError>()(
   "CommsReadFailedError",
-  { cause: Schema.Defect() },
+  { detail: Schema.String },
 ) {
   override get message(): string {
-    return "Could not read the channel.";
+    return `Could not read the channel: ${this.detail}.`;
   }
 }
 
@@ -86,6 +103,7 @@ export const CommsToolError = Schema.Union([
   CommsChannelNotFoundError,
   CommsMemberNotFoundError,
   CommsPostNotFoundError,
+  CommsMembershipLostError,
   CommsPostFailedError,
   CommsReadFailedError,
 ]);
@@ -119,21 +137,26 @@ export const ReadChannelResult = Schema.Struct({
   members: Schema.Array(Schema.String).annotate({
     description: "Handles of everyone in the channel, so you know who you can mention.",
   }),
-  posts: Schema.Array(ChannelPost).annotate({ description: "Oldest first." }),
+  posts: Schema.Array(ChannelPost).annotate({
+    description: "Oldest first. The first page is the oldest posts in the channel.",
+  }),
   nextCursor: Schema.NullOr(
     Schema.String.annotate({
-      description: "Pass as cursor to read the next page. Null when this is the newest page.",
+      description:
+        "Pass as cursor to read the posts after this page. Null when there are no newer posts.",
     }),
   ),
 });
 export type ReadChannelResult = typeof ReadChannelResult.Type;
 
-const PostTool = Tool.make("post", {
-  description: `Post a message to a channel you belong to. ${AUTHOR_IS_YOU} Mention a member to wake it — an unmentioned member sees the post only when it next reads the channel. To answer an existing post, use reply instead so the conversation stays threaded.`,
+const PostTool = Tool.make("comms_post", {
+  description: `Post a message to a channel you belong to. ${AUTHOR_IS_YOU} Mention a member to wake it — an unmentioned member sees the post only when it next reads the channel. To answer an existing post, use comms_reply instead so the conversation stays threaded.`,
   parameters: Schema.Struct({
-    channel: ChannelNameInput,
-    body: TrimmedNonEmptyString.annotate({ description: "The message." }),
-    mentions: Schema.optional(MentionsInput),
+    channel: ChannelField,
+    body: BodyField.annotate({
+      description: `The message. Must not be empty; at most ${MAX_POST_BODY_CHARS} characters.`,
+    }),
+    mentions: Schema.optional(MentionsField),
   }),
   success: PostResult,
   failure: CommsToolError,
@@ -146,15 +169,18 @@ const PostTool = Tool.make("post", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
-const ReplyTool = Tool.make("reply", {
+const ReplyTool = Tool.make("comms_reply", {
   description: `Reply to a post in a channel you belong to, keeping the conversation threaded under it. ${AUTHOR_IS_YOU} Replying does not wake the post's author: mention them if they need to act on it.`,
   parameters: Schema.Struct({
-    channel: ChannelNameInput,
-    parentPostId: TrimmedNonEmptyString.annotate({
-      description: "postId of the post being replied to, from post or read_channel.",
+    channel: ChannelField,
+    parentPostId: Schema.String.check(Schema.isNonEmpty()).annotate({
+      description:
+        "postId of the post being replied to, as returned by comms_post or comms_read_channel.",
     }),
-    body: TrimmedNonEmptyString.annotate({ description: "The reply." }),
-    mentions: Schema.optional(MentionsInput),
+    body: BodyField.annotate({
+      description: `The reply. Must not be empty; at most ${MAX_POST_BODY_CHARS} characters.`,
+    }),
+    mentions: Schema.optional(MentionsField),
   }),
   success: PostResult,
   failure: CommsToolError,
@@ -166,16 +192,24 @@ const ReplyTool = Tool.make("reply", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
-const ReadChannelTool = Tool.make("read_channel", {
+const ReadChannelTool = Tool.make("comms_read_channel", {
   description:
-    "Read recent posts in a channel you belong to, oldest first, with the list of members you can mention. Use this to catch up before posting, and to find the postId you want to reply to.",
+    "Read posts in a channel you belong to, oldest first, with the list of members you can mention. Use this to catch up before posting, and to find the postId you want to reply to. Read the next page by passing the nextCursor this returns.",
   parameters: Schema.Struct({
-    channel: ChannelNameInput,
+    channel: ChannelField,
     limit: Schema.optional(
-      PositiveInt.annotate({ description: "Posts to return. Defaults to 50, capped at 200." }),
+      Schema.Int.check(
+        Schema.isGreaterThanOrEqualTo(1),
+        Schema.isLessThanOrEqualTo(MAX_READ_LIMIT),
+      ).annotate({
+        description: `Posts to return, 1 to ${MAX_READ_LIMIT}. Defaults to ${DEFAULT_READ_LIMIT}.`,
+      }),
     ),
     cursor: Schema.optional(
-      TrimmedNonEmptyString.annotate({ description: "nextCursor from a previous read." }),
+      Schema.String.check(Schema.isNonEmpty()).annotate({
+        description:
+          "nextCursor from a previous read, to get the posts after that page. Omit for the oldest posts.",
+      }),
     ),
   }),
   success: ReadChannelResult,
