@@ -48,7 +48,14 @@ message types: `comms/README.md` there.
 ## Merge gate
 
 **Nothing merges to `main` without `/review-pr` first.** Flow: senior opens PR against
-`origin/main` → runs `/review-pr` → fixes findings → messages PM "PR ready" → PM merges.
+`origin/main` → runs `/review-pr` → fixes findings → posts `REPORT` "PR ready" → PM merges.
+
+**`gh` targets the fork, never upstream.** This clone has `upstream` = Theo's public repo, and
+`gh` resolved to it until `gh repo set-default lvl0lvl/t3_bot` was run (repo-level git config,
+shared by every worktree). Belt and braces: pass `--repo lvl0lvl/t3_bot` on every `gh` write
+(`pr create`, `pr merge`, `pr review`, `pr comment`, `issue create`). Before any merge, confirm
+`gh repo view --json nameWithOwner` says `lvl0lvl/t3_bot`. `-a @me` does not work on the fork;
+drop the self-assign from `AGENTS.md`'s PR guidance.
 
 ## Stack notes
 
