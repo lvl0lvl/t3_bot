@@ -7,6 +7,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ChannelGateway from "./channelGateway.ts";
 import {
   CommsChannelNotFoundError,
+  CommsEmptyBodyError,
   CommsMemberNotFoundError,
   CommsMembershipLostError,
   CommsPostFailedError,
@@ -153,6 +154,12 @@ const make = Effect.gen(function* () {
     readonly mentions: ReadonlyArray<string> | undefined;
     readonly parentPostId: string | null;
   }) {
+    // The schema's non-empty check runs on the raw string, so a body of only
+    // whitespace reaches here and would be written as "".
+    const body = input.body.trim();
+    if (body.length === 0) {
+      return yield* new CommsEmptyBodyError();
+    }
     const resolved = resolveMentions(input.mentions ?? [], input.channel.members);
     if ("unknown" in resolved) {
       return yield* new CommsMemberNotFoundError({ handles: resolved.unknown });
@@ -161,7 +168,7 @@ const make = Effect.gen(function* () {
       .createPost({
         channelId: input.channel.channelId,
         authorRef: { memberKind: "thread", memberId: input.threadId },
-        body: input.body.trim(),
+        body,
         mentions: resolved.handles,
         parentPostId: input.parentPostId,
       })
@@ -223,7 +230,9 @@ const make = Effect.gen(function* () {
           .pipe(Effect.catchTags(storeUnavailableAsRead), Effect.catchCause(readDefect));
         return {
           channel: channel.name,
-          members: channel.members.map((member) => member.handle),
+          // The canonical form, matching what a mention resolves against; the
+          // seam documents handles as sigil-free but does not yet enforce it.
+          members: channel.members.map((member) => normalizeHandle(member.handle)),
           posts: page.posts.map((post) => ({
             postId: post.postId,
             author: post.authorHandle,

@@ -69,6 +69,15 @@ export class CommsPostNotFoundError extends Schema.TaggedError<CommsPostNotFound
   }
 }
 
+export class CommsEmptyBodyError extends Schema.TaggedError<CommsEmptyBodyError>()(
+  "CommsEmptyBodyError",
+  {},
+) {
+  override get message(): string {
+    return "The message is empty once whitespace is removed. Nothing was posted.";
+  }
+}
+
 export class CommsMembershipLostError extends Schema.TaggedError<CommsMembershipLostError>()(
   "CommsMembershipLostError",
   {},
@@ -103,6 +112,7 @@ export const CommsToolError = Schema.Union([
   CommsChannelNotFoundError,
   CommsMemberNotFoundError,
   CommsPostNotFoundError,
+  CommsEmptyBodyError,
   CommsMembershipLostError,
   CommsPostFailedError,
   CommsReadFailedError,

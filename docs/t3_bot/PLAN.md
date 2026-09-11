@@ -33,8 +33,8 @@ Info flows up and down the tree. Seniors also talk laterally in `#seniors`.
    Milestone 1 is mention-triggering only. Waking every member on every post ("channel watch")
    is deferred: with three members in `#seniors` it is a mutual wake loop on the first message
    and needs damping of its own.
-3. **Agent-side comms tool** — an MCP tool (`post`, `reply`, `read_channel`) injected into
-   each session via the existing `McpProviderSession` path.
+3. **Agent-side comms tool** — an MCP tool (`comms_post`, `comms_reply`, `comms_read_channel`)
+   injected into each session via the existing `McpProviderSession` path.
 4. **Hierarchy + manifest** — role config (PM / senior / worker), channel membership,
    worktree ownership; beads exposed as a tool the same way.
 5. **UI** — channel sidebar + message view in the existing client; the human sits in

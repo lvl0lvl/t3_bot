@@ -80,6 +80,7 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
   const created = yield* Ref.make<ReadonlyArray<ChannelGateway.CreatePostInput>>([]);
   const reads = yield* Ref.make<ReadonlyArray<ChannelGateway.ReadPostsInput>>([]);
   const postLookups = yield* Ref.make<ReadonlyArray<readonly [string, string]>>([]);
+  const channelLookups = yield* Ref.make<ReadonlyArray<readonly [string, string]>>([]);
 
   const die = (op: GatewayFailures["dieOn"]) =>
     fail.dieOn === op ? Effect.die(new Error(`fake gateway defect in ${op}`)) : Effect.void;
@@ -90,6 +91,9 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
       getChannelForMember: (name, threadId) =>
         die("getChannel").pipe(
           Effect.andThen(fail.getChannel ? Effect.fail(fail.getChannel) : Effect.void),
+          Effect.andThen(
+            Ref.update(channelLookups, (seen) => [...seen, [name, threadId] as const]),
+          ),
           Effect.as(
             Option.fromNullishOr(
               channels.find(
@@ -173,7 +177,7 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
       Effect.provide(gateway),
     );
 
-  return { call, created, reads, postLookups };
+  return { call, created, reads, postLookups, channelLookups };
 });
 
 describe("comms toolkit handlers", () => {
@@ -282,6 +286,38 @@ describe("comms toolkit handlers", () => {
     }),
   );
 
+  it.effect("rejects a body that is empty once whitespace is removed", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      for (const body of ["   ", "\n", " \t \n "]) {
+        const error = yield* harness
+          .call("comms_post", { channel: "seniors", body })
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({ _tag: "CommsEmptyBodyError" });
+      }
+      // An empty post must never reach the channel.
+      expect(yield* Ref.get(harness.created)).toEqual([]);
+    }),
+  );
+
+  it.effect("stores the trimmed body", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.call("comms_post", { channel: "seniors", body: "  hello  " });
+      expect((yield* Ref.get(harness.created))[0]?.body).toEqual("hello");
+    }),
+  );
+
+  it.effect("reports member handles in the same form a mention resolves against", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const result = yield* harness.call("comms_read_channel", { channel: "seniors" });
+      // A handle echoed with a sigil would not match the normalized form the
+      // agent must send back as a mention.
+      expect(result.members.every((handle) => !handle.startsWith("@"))).toBe(true);
+    }),
+  );
+
   it.effect("rejects the whole post when a mention does not resolve", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
@@ -327,8 +363,11 @@ describe("comms toolkit handlers", () => {
         parentPostId: "post-1",
         body: "ack",
       });
-      // Validating the parent against a different resolution than the post is
-      // written to would let the two disagree.
+      // The membership lookup itself, not a proxy for it: counting getPost
+      // calls leaves a second resolution completely undetected, and validating
+      // the parent against a different resolution than the post is written to
+      // would let the two disagree.
+      expect(yield* Ref.get(harness.channelLookups)).toEqual([["seniors", THREAD_ID]]);
       expect(yield* Ref.get(harness.postLookups)).toEqual([[CHANNEL_ID, "post-1"]]);
     }),
   );
