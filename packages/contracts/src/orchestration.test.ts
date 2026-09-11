@@ -10,6 +10,8 @@ import {
   type ChatImageAttachment,
   ClientOrchestrationCommand,
   ModelSelection,
+  OrchestrationAggregateId,
+  OrchestrationAggregateKind,
   OrchestrationCommand,
   OrchestrationDispatchCommandError,
   OrchestrationEvent,
@@ -66,6 +68,8 @@ function getOptionValue(
 const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPayload);
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
+const decodeAggregateKind = Schema.decodeUnknownEffect(OrchestrationAggregateKind);
+const decodeAggregateId = Schema.decodeUnknownEffect(OrchestrationAggregateId);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
 const decodeDispatchCommandError = Schema.decodeUnknownEffect(OrchestrationDispatchCommandError);
 const decodeSnapShotAccessibility = Schema.decodeUnknownEffect(SnapShotAccessibility);
@@ -1506,6 +1510,45 @@ it.effect("rejects thread history imports without messages", () =>
     );
 
     assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+it.effect("aggregate kind and id admit channel alongside project and thread", () =>
+  Effect.gen(function* () {
+    assert.strictEqual(yield* decodeAggregateKind("channel"), "channel");
+    assert.strictEqual(yield* decodeAggregateKind("thread"), "thread");
+    assert.strictEqual(yield* decodeAggregateKind("project"), "project");
+    assert.strictEqual(yield* decodeAggregateId("channel-1"), "channel-1");
+
+    const unknownKind = yield* Effect.exit(decodeAggregateKind("membership"));
+    assert.strictEqual(unknownKind._tag, "Failure");
+  }),
+);
+
+it.effect("events stored before the channel aggregate still decode", () =>
+  Effect.gen(function* () {
+    // Widening aggregateId is a persisted-event schema change: history written
+    // by an environment that predates the channel aggregate must still replay.
+    const archived = yield* decodeOrchestrationEvent({
+      sequence: 1,
+      eventId: "event-archive-legacy",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      type: "thread.archived",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      commandId: "cmd-archive-legacy",
+      causationEventId: null,
+      correlationId: "cmd-archive-legacy",
+      metadata: {},
+      payload: {
+        threadId: "thread-1",
+        archivedAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+
+    assert.strictEqual(archived.aggregateKind, "thread");
+    assert.strictEqual(archived.aggregateId, "thread-1");
   }),
 );
 

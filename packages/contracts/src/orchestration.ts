@@ -7,6 +7,7 @@ import { ProviderOptionSelections } from "./model.ts";
 import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import {
   ApprovalRequestId,
+  ChannelId,
   CheckpointRef,
   ClientSurface,
   CommandId,
@@ -1536,8 +1537,16 @@ export const OrchestrationEventType = Schema.Literals([
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
-export const OrchestrationAggregateKind = Schema.Literals(["project", "thread"]);
+export const OrchestrationAggregateKind = Schema.Literals(["project", "thread", "channel"]);
 export type OrchestrationAggregateKind = typeof OrchestrationAggregateKind.Type;
+
+/**
+ * The identifier of whichever aggregate owns an event or a command receipt.
+ * Event rows and receipt rows are keyed by it, so it must admit every kind in
+ * `OrchestrationAggregateKind`.
+ */
+export const OrchestrationAggregateId = Schema.Union([ProjectId, ThreadId, ChannelId]);
+export type OrchestrationAggregateId = typeof OrchestrationAggregateId.Type;
 export const OrchestrationActorKind = Schema.Literals(["client", "server", "provider"]);
 
 export const ProjectCreatedPayload = Schema.Struct({
@@ -1828,7 +1837,7 @@ const EventBaseFields = {
   sequence: NonNegativeInt,
   eventId: EventId,
   aggregateKind: OrchestrationAggregateKind,
-  aggregateId: Schema.Union([ProjectId, ThreadId]),
+  aggregateId: OrchestrationAggregateId,
   occurredAt: IsoDateTime,
   commandId: Schema.NullOr(CommandId),
   causationEventId: Schema.NullOr(EventId),

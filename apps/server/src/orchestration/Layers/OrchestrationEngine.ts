@@ -61,6 +61,15 @@ interface CommandEnvelope {
   startedAtMs: number;
 }
 
+/**
+ * Route a command to the aggregate that owns its events and command receipt.
+ *
+ * Every command is listed. A command for a new aggregate must add its own
+ * branch, and the `satisfies never` below fails the build until it does. A
+ * catch-all thread branch would be worse than a missing one: it attaches the
+ * new aggregate's events, receipt, and `hasEventAfter` scope to whichever
+ * thread its payload happens to name, with no type error to show for it.
+ */
 function commandToAggregateRef(command: OrchestrationCommand): {
   readonly aggregateKind: "project" | "thread";
   readonly aggregateId: ProjectId | ThreadId;
@@ -73,11 +82,51 @@ function commandToAggregateRef(command: OrchestrationCommand): {
         aggregateKind: "project",
         aggregateId: command.projectId,
       };
-    default:
+    case "thread.create":
+    case "thread.delete":
+    case "thread.archive":
+    case "thread.unarchive":
+    case "thread.settle":
+    case "thread.unsettle":
+    case "thread.snooze":
+    case "thread.unsnooze":
+    case "thread.pin":
+    case "thread.unpin":
+    case "thread.pin.reorder":
+    case "thread.active.reorder":
+    case "thread.meta.update":
+    case "thread.pull-request.link":
+    case "thread.pull-request.unlink":
+    case "thread.runtime-mode.set":
+    case "thread.interaction-mode.set":
+    case "thread.turn.start":
+    case "thread.turn.interrupt":
+    case "thread.approval.respond":
+    case "thread.user-input.respond":
+    case "thread.user-input.dismiss":
+    case "thread.checkpoint.revert":
+    case "thread.session.stop":
+    case "thread.auto-settle":
+    case "thread.pull-request.sync":
+    case "thread.pull-request-link.sync":
+    case "thread.session.set":
+    case "thread.message.assistant.delta":
+    case "thread.message.assistant.complete":
+    case "thread.history.import":
+    case "thread.proposed-plan.upsert":
+    case "thread.turn.diff.complete":
+    case "thread.activity.append":
+    case "thread.revert.complete":
+    case "thread.title.regeneration.complete":
       return {
         aggregateKind: "thread",
         aggregateId: command.threadId,
       };
+    default: {
+      command satisfies never;
+      const unrouted = command as never as { type: string };
+      throw new Error(`Command has no aggregate route: ${unrouted.type}`);
+    }
   }
 }
 
