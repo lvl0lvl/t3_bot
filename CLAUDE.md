@@ -57,10 +57,19 @@ shared by every worktree). Belt and braces: pass `--repo lvl0lvl/t3_bot` on ever
 `gh repo view --json nameWithOwner` says `lvl0lvl/t3_bot`. `-a @me` does not work on the fork;
 drop the self-assign from `AGENTS.md`'s PR guidance.
 
+## Model policy for this project (Walt, 2026-09-11)
+
+Walt, in the PM session: "fable credits are expired. run Opus 5", then "I authorized Opus 5" when
+asked to confirm it covers review lanes. Overrides the global model policy for t3_bot: **Opus 5 for
+every session and every subagent, `/review-pr` lanes included.** Dispatch with `model: opus`.
+Sonnet stays excluded from review and design. Do not switch back to Fable unprompted.
+
 ## Stack notes
 
 - pnpm workspace, Effect-TS server, Vite/React clients. `pnpm install` then `pnpm dev`
   (`vp run dev` in `AGENTS.md` assumes `vp` on PATH; it is not on every session's — `pnpm dev` is
   the portable form). Ports derive from the worktree path; read them from the `[dev-runner]` line.
+- The server package is named `t3`, not `@t3tools/server`; `pnpm --filter @t3tools/server` matches
+  nothing and prints a false green. Filter on `t3`.
 - Claude provider = `@anthropic-ai/claude-agent-sdk` in-process; Codex = `codex app-server`
   child process. Both run on subscriptions (`claude auth login`, `codex login`).
