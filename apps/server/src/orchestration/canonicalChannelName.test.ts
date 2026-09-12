@@ -20,10 +20,12 @@ import {
  * a run of them), and the failure is silent: a lookup that misses reports the
  * same error a non-member gets, so an agent cannot tell a typo from exclusion.
  *
- * These rows are the agreed rule. The toolkit's normaliser is MEANT to assert
- * the same ones, and does not yet — until that lands, a green here proves this
- * side follows the rule, not that the two sides agree. Keep the copies
- * identical; the last rows are the ones worth keeping if anyone trims it.
+ * These rows are the agreed rule. There is no longer a second normaliser to
+ * assert them against: the toolkit imports this same function, and
+ * canonicalOneImplementation.test.ts pins that by REFERENCE rather than by
+ * behaviour, because two copies that agree today are two copies that can be
+ * improved apart tomorrow. Duplicating these rows on the toolkit's side would
+ * assert the function against itself.
  */
 export const CANONICAL_IDENTITY_TABLE: ReadonlyArray<readonly [input: string, canonical: string]> =
   [
