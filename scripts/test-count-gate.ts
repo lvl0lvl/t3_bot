@@ -43,11 +43,18 @@
  * catches it, by the rename. `git diff` over the test files is the check for a
  * same-name rewrite, and it is the author's, not this script's.
  *
- * WHAT IT MEASURES: the whole repo, unless narrowed. `TEST_COUNT_GATE_TARGET` is
- * a filter passed to the runner; it exists so a human proving something locally
- * can wait seconds instead of minutes, and CI pays the full cost. A narrowed run
- * says so in the first line of its own table, so a table pasted into a PR body
- * cannot read as a full run.
+ * WHAT IT MEASURES: every workspace that declares a `test` script, running that
+ * script — the workspace's own, not one this file invents. Two exclusions, both
+ * named on every run rather than implied: a workspace with no `test` script, and
+ * one listed in `UNMEASURABLE_IN_COLD_TREE`. A narrowed run says so in the first
+ * line of its own table, so a table pasted into a PR body cannot read as a full
+ * run.
+ *
+ * `TEST_COUNT_GATE_TARGET` SELECTS WORKSPACES — it is matched against a
+ * workspace's package name and its directory. It was "a filter passed to the
+ * runner" under the root-project model this file replaced, and this sentence
+ * still said so a hundred lines above the constant that contradicted it, which
+ * is the first thing a reader meets.
  *
  * THE RULE HAS THREE OBLIGATIONS AND THIS COVERS ONE AND A HALF. Counts and
  * names, mechanised. The reason for a decrease, forced into words by `--allow`
@@ -70,9 +77,14 @@
  * ignore it:
  *   0  measured, nothing lost by count or by name
  *   1  measured, something was lost and nothing explained it
- *   2  COULD NOT MEASURE — no runner, a runner that matched nothing, a base ref
- *      that will not check out (a shallow CI clone does this), a test file that
- *      fails to load in either revision, an `--allow` that matches nothing.
+ *   2  COULD NOT MEASURE — and the list is meant to stay exhaustive, so add to
+ *      it when you add a refusal: no workspace list, a selection matching no
+ *      workspace, a workspace that produced no report, a workspace that declares
+ *      a `test` script and then measures nothing, a test file that fails to load
+ *      in either revision, a base ref that will not check out (a shallow CI
+ *      clone does this), an `--allow` that matches nothing, a stale entry in
+ *      `UNMEASURABLE_IN_COLD_TREE`, and — the one an author actually meets —
+ *      THE PR'S DIFF TOUCHING A WORKSPACE THE GATE SKIPS.
  *      Never confuse this with 1: "your head does not compile" must not reach an
  *      author as "you deleted tests".
  */
@@ -154,15 +166,6 @@ export type Suite = Map<string, FileTests>;
  */
 const TEST_TARGET = process.env["TEST_COUNT_GATE_TARGET"] ?? "";
 
-/**
- * The runner's own account of what ran.
- *
- * THE PAYLOAD STARTS AT THE FIRST BRACE because some wrapper versions print a
- * banner first. The input that breaks that: a banner that itself contains a
- * brace — a printed config object, a `{a,b}` glob echoed back, a JSON progress
- * line. Then `JSON.parse` throws on the banner instead, which is why the throw
- * below carries the head of the stream rather than a bare SyntaxError.
- */
 /**
  * Workspaces that cannot be measured in a COLD BASE TREE, with the reason.
  *
@@ -862,9 +865,15 @@ function main(): number {
   const width = Math.max(...rows.map((row) => row.path.length), 4);
   // SCOPE ON THE ARTIFACT ITSELF, so a table pasted into a PR body records what
   // it measured instead of implying the repo — including what it did NOT.
+  // ONE EXPRESSION, USED ON BOTH LINES. The narrowing marker was on the first
+  // line only, and the CLOSING line is the verdict a reader quotes — so the one
+  // sentence most likely to be pasted could not be told apart from a full run.
+  // `TEST_COUNT_GATE_TARGET` is an environment variable, so it leaves no trace
+  // in the command either.
+  const narrowing = TEST_TARGET === "" ? "" : ` [narrowed by '${TEST_TARGET}']`;
   write(
     `measured ${scope.measured.length} workspace(s) against ${base}: ${scope.measured.join(", ")}` +
-      (TEST_TARGET === "" ? "" : ` [narrowed by '${TEST_TARGET}']`),
+      narrowing,
   );
   if (scope.skipped.length > 0) {
     write(`skipped, no \`test\` script: ${scope.skipped.join(", ")}`);
@@ -925,7 +934,7 @@ function main(): number {
     // lost went on to say no name was lost — and this is the line the PM reads
     // before merging.
     write(
-      `\nMeasured ${scope.measured.length} workspace(s) against ${base}: ` +
+      `\nMeasured ${scope.measured.length} workspace(s) against ${base}${narrowing}: ` +
         (lostUnderAllow === 0
           ? "no test lost by count or by name."
           : `${lostUnderAllow} lost name(s), each explained by --allow above.`),
@@ -937,7 +946,7 @@ function main(): number {
     );
     return 0;
   }
-  writeErr("\nTest coverage went DOWN and nothing explained it:");
+  writeErr(`\nTest coverage went DOWN and nothing explained it${narrowing}:`);
   for (const row of failures) {
     writeErr(`  ${row.path}: ${row.before} -> ${row.after}`);
     for (const name of row.lost) writeErr(`      lost: ${name}`);
