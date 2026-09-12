@@ -536,6 +536,34 @@ export type CommandIssuer = typeof CommandIssuer.Type;
 export const HUMAN_OPERATOR_MEMBER_ID = "human-walt";
 
 /**
+ * The operator, as a channel member: the identity every read AND write on a
+ * client connection is performed as.
+ *
+ * ONE VALUE, NOT A FACTORY, and the difference matters. A
+ * `makeChannelMemberRef(kind, id)` accepts the same two fields from anywhere, so
+ * a handler passing a request payload's `memberId` through it is
+ * indistinguishable in a diff from one passing the operator's. There is exactly
+ * one operator on a server, so a CONSTANT makes the right thing the only easy
+ * thing: taking the id from a request is then not expressible without visibly
+ * going around this, and going around it is a thing a reviewer sees.
+ *
+ * It is here beside `HUMAN_OPERATOR_MEMBER_ID` rather than in the socket because
+ * three entry points need it — the websocket's shell subscription, the HTTP
+ * shell snapshot the client actually bootstraps from, and the seeder that writes
+ * this member into the seeded channels' rosters. The socket half alone was the
+ * bug: a client bootstrapping over HTTP and resuming by sequence saw no channels
+ * at all, and nothing about the socket's own correctness could reveal it.
+ *
+ * Replace it when accounts exist. At that point the operator arrives on an
+ * authenticated session and this becomes a function of that session — never of a
+ * payload field, which is the bug rather than the shape of it.
+ */
+export const HUMAN_OPERATOR_CHANNEL_MEMBER = {
+  memberKind: "human",
+  memberId: HUMAN_OPERATOR_MEMBER_ID,
+} as const;
+
+/**
  * A channel as the decider sees it. Membership is here because every write
  * invariant needs it; posts are not, because this model is rebuilt on every
  * event and a channel's history is unbounded. Post bodies live in the

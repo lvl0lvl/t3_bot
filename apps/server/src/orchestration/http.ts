@@ -2,12 +2,14 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
+  HUMAN_OPERATOR_CHANNEL_MEMBER,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
+import { withMemberChannels } from "./channelShell.ts";
 import { cleanupFailedUploadedAttachments, normalizeDispatchCommand } from "./Normalizer.ts";
 import {
   annotateEnvironmentRequest,
@@ -51,13 +53,19 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.shellSnapshot")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-          return yield* projectionSnapshotQuery
-            .getShellSnapshot()
-            .pipe(
-              Effect.catch((cause) =>
-                failEnvironmentInternal("orchestration_snapshot_failed", cause),
-              ),
-            );
+          // WITH THE OPERATOR'S CHANNELS. This is the route a browser actually
+          // bootstraps its shell from, and it then resumes the socket by
+          // sequence — so a snapshot without channels here is a sidebar that
+          // stays empty no matter what the live stream does. Same function as
+          // the socket's snapshot path, so the two cannot answer differently.
+          return yield* projectionSnapshotQuery.getShellSnapshot().pipe(
+            Effect.flatMap((snapshot) =>
+              withMemberChannels({ snapshot, member: HUMAN_OPERATOR_CHANNEL_MEMBER }),
+            ),
+            Effect.catch((cause) =>
+              failEnvironmentInternal("orchestration_snapshot_failed", cause),
+            ),
+          );
         }),
       )
       .handle(

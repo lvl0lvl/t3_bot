@@ -29,7 +29,7 @@ import {
   CommandId,
   type DiscoveredLocalServerList,
   EventId,
-  HUMAN_OPERATOR_MEMBER_ID,
+  HUMAN_OPERATOR_CHANNEL_MEMBER,
   type EditorId,
   type FileManagerRevealKind,
   type OrchestrationClientOrigin,
@@ -97,6 +97,7 @@ import {
 } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
+import { rowHasMember, toChannelShell, withMemberChannels } from "./orchestration/channelShell.ts";
 
 /**
  * Hoisted: compiling a decoder per event would rebuild it on every shell item.
@@ -519,10 +520,7 @@ const makeWsRpcLayer = (
        * authenticated session and not from a payload field. A member id arriving
        * from a client is the bug, not the shape of it.
        */
-      const connectionMember = {
-        memberKind: "human",
-        memberId: HUMAN_OPERATOR_MEMBER_ID,
-      } as const;
+      const connectionMember = HUMAN_OPERATOR_CHANNEL_MEMBER;
       const threadDeletionReactor = yield* ThreadDeletionReactor;
       const analytics = yield* AnalyticsService.AnalyticsService;
       // Every command dispatched on this connection carries the connecting
@@ -1009,30 +1007,18 @@ const makeWsRpcLayer = (
                   }),
                 onSome: (row) =>
                   Option.some<OrchestrationShellStreamEvent>(
-                    row.members.some(
-                      (member) =>
-                        member.memberKind === connectionMember.memberKind &&
-                        member.memberId === connectionMember.memberId,
-                    )
+                    // `toChannelShell` is the SAME conversion the snapshot uses.
+                    // Two copies of it is how one of them comes to drop
+                    // `latestPostAt` — which would overwrite the snapshot's real
+                    // value on every live update, reorder the sidebar to the
+                    // bottom, and render "nothing here yet" over a channel that
+                    // had just received a post, with the post event deleted on
+                    // the grounds that this field carries the fact.
+                    rowHasMember(row, connectionMember)
                       ? {
                           kind: "channel-upserted" as const,
                           sequence,
-                          channel: {
-                            id: row.channelId,
-                            name: row.name,
-                            archivedAt: row.archivedAt,
-                            // THE REAL VALUE, and the reason the refetch uses
-                            // the activity-aware read. A refetch that sent null
-                            // here would overwrite the snapshot's real value on
-                            // every live update, reorder the sidebar to the
-                            // bottom, and render "nothing here yet" over a
-                            // channel that had just received a post — with the
-                            // post event deleted on the grounds that this field
-                            // carries the fact.
-                            latestPostAt: row.latestPostAt,
-                            createdAt: row.createdAt,
-                            updatedAt: row.updatedAt,
-                          },
+                          channel: toChannelShell(row),
                         }
                       : { kind: "channel-removed" as const, sequence, channelId },
                   ),
@@ -1658,18 +1644,31 @@ const makeWsRpcLayer = (
                 Stream.flatMap((items) => Stream.fromIterable(items)),
               );
 
-              const loadSnapshot = projectionSnapshotQuery.getShellSnapshot().pipe(
-                Effect.tapError((cause) =>
-                  Effect.logError("orchestration shell snapshot load failed", { cause }),
-                ),
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationGetSnapshotError({
-                      message: "Failed to load orchestration shell snapshot",
-                      cause,
-                    }),
-                ),
-              );
+              const loadSnapshot = projectionSnapshotQuery
+                .getShellSnapshot()
+                .pipe(
+                  // The channels this connection's member is in, attached AFTER
+                  // the snapshot so they are never older than its sequence. Both
+                  // this and the HTTP shell route go through one function: the
+                  // browser bootstraps over HTTP and then resumes by sequence, so
+                  // a socket-only wiring leaves the sidebar permanently empty
+                  // while every socket test passes.
+                  Effect.flatMap((snapshot) =>
+                    withMemberChannels({ snapshot, member: connectionMember }),
+                  ),
+                )
+                .pipe(
+                  Effect.tapError((cause) =>
+                    Effect.logError("orchestration shell snapshot load failed", { cause }),
+                  ),
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: "Failed to load orchestration shell snapshot",
+                        cause,
+                      }),
+                  ),
+                );
 
               // Offer the completion marker into the same queue as live events.
               // Anything buffered while snapshot/replay work was in flight is
