@@ -24,6 +24,18 @@ import {
 type PostCreated = Extract<OrchestrationEvent, { type: "channel.post-created" }>;
 
 /**
+ * How far the cursor may fall behind a failed wake before that wake is given up
+ * on.
+ *
+ * A count of EVENTS rather than of retries or of seconds, because the cost of
+ * holding is exactly the replay range, and the thing being traded away is one
+ * mention. Big enough that a database down for a burst of traffic recovers with
+ * nothing lost; small enough that a permanently undeliverable post cannot pin
+ * the log.
+ */
+export const HELD_BACKLOG_LIMIT = 500;
+
+/**
  * One wake per (channel, post, thread), derived rather than generated.
  *
  * The channel is part of the key because a post id is only unique WITHIN a
@@ -78,6 +90,11 @@ const wakeKey = (channelId: string, postId: string, threadId: ThreadId) =>
  * trust statement, where it reads as this system's own framing rather than as
  * content. Found by a blind verifier, not by reading this function.
  *
+ * Exported for one test, and for a reason the test states: the property is
+ * "no interpolated value may add a line to the framing", which is a property of
+ * THIS function over ALL its fields rather than of any one caller. Driving it
+ * end to end can only reach the two fields a caller supplies.
+ *
  * Collapsing rather than refusing: refusing loses the mention, which is the one
  * outcome this whole reactor exists to prevent. The cost is that a post id that
  * needed collapsing cannot be copied back into `comms_reply` verbatim - which is
@@ -86,7 +103,7 @@ const wakeKey = (channelId: string, postId: string, threadId: ThreadId) =>
  */
 const oneLine = (value: string) => value.replace(/\s+/gu, " ").trim();
 
-const wakeMessageText = (input: {
+export const wakeMessageText = (input: {
   readonly channelName: string;
   readonly authorHandle: string;
   readonly postId: string;
@@ -294,8 +311,31 @@ const make = Effect.gen(function* () {
       // Advancing only for the event that failed is not enough: the next event
       // carries a higher sequence, so its advance writes the failed post out of
       // the replay range just the same.
+      //
+      // BOUNDED BY WHAT PILES UP BEHIND IT, because a hold with no bound is a
+      // poison pill: a wake that fails every time - a row that cannot be
+      // decoded, not a database that is briefly down - stops the cursor across
+      // every restart, and the symptom is invisible, since later posts are
+      // still woken while the replay range grows without limit. Measured: two
+      // boots against a permanently failing channel read left the cursor at the
+      // same sequence with the range growing 6 -> 11.
+      //
+      // The bound is the BACKLOG, not a clock or a retry count. If nothing else
+      // arrives, holding costs nothing and there is nothing to give up on. Once
+      // this many events have queued behind the failure the post is declared
+      // undeliverable, logged at error - the only place in this file that logs
+      // at error, because it is the only place a mention is knowingly dropped -
+      // and the cursor moves on.
       if (heldAt !== null) {
-        return;
+        if (event.sequence - heldAt < HELD_BACKLOG_LIMIT) {
+          return;
+        }
+        yield* Effect.logError("mention wake abandoned; cursor released", {
+          heldAt,
+          sequence: event.sequence,
+          limit: HELD_BACKLOG_LIMIT,
+        });
+        heldAt = null;
       }
       yield* advance(event).pipe(
         Effect.catchCause((cause) =>

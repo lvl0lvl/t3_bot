@@ -6,9 +6,15 @@
  *
  * Reactors that must not miss events keep their cursor here too, under a
  * `reactor:` prefix. The rows are the same thing — a named position in the
- * event log — and keeping them together means a pruning floor derived from
- * `minLastAppliedSequence` covers both: an event a reactor has not consumed is
- * exactly one that must not be pruned.
+ * event log — so one table answers "what is the oldest position anything still
+ * needs", rather than two tables of identical shape that a future reader has to
+ * know to consult both of.
+ *
+ * `minLastAppliedSequence` is what that question would be asked through, and it
+ * has NO production consumer today: there is no event-log pruner in the server.
+ * Written as a reason rather than as a mechanism, because the earlier version of
+ * this paragraph said a pruning floor "covers both" in the present tense and
+ * described something that does not exist.
  *
  * @module ProjectionStateRepository
  */

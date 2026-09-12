@@ -34,6 +34,19 @@ export interface MentionWakeReactorShape {
    * Resolves once every post at or before `sequence` has been handed to the
    * worker and the worker is idle. The fence a test waits on instead of a
    * sleep.
+   *
+   * TWO EDGES, both of which have bitten:
+   *
+   * It is NOT a fence at or below the resume point. `start` seeds the fence
+   * there, so a target the previous run already passed resolves immediately,
+   * without this run reading an event. Nothing can be OWED below that point, so
+   * it cannot hide a missed wake - but an assertion shaped "after a restart, X
+   * happened" at such a target passes without waiting for anything. Wait on a
+   * sequence this run must actually reach.
+   *
+   * And it hangs forever if `start` has not run, rather than failing: `start`
+   * is what seeds the fence, and a fence that was never seeded is a wait for a
+   * value nothing will publish.
    */
   readonly drainThrough: (sequence: number) => Effect.Effect<void>;
 }
