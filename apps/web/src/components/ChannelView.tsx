@@ -5,6 +5,12 @@ import { ArchiveIcon, HashIcon, SendIcon } from "lucide-react";
 import { useState } from "react";
 
 import { useChannel, useEnvironmentSupportsChannels } from "../state/entities";
+import {
+  canSendChannelPost,
+  resolveChannelComposerState,
+  resolveChannelViewState,
+  type ChannelViewState,
+} from "./ChannelView.logic";
 import { useEnvironmentSettings } from "../hooks/useSettings";
 import { channelEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -31,10 +37,13 @@ export function ChannelView({
   readonly channelId: ChannelId;
 }) {
   const channel = useChannel({ environmentId, channelId });
-  const serverHasChannels = useEnvironmentSupportsChannels(environmentId);
+  const state = resolveChannelViewState({
+    channelExists: channel !== null,
+    serverSupportsChannels: useEnvironmentSupportsChannels(environmentId),
+  });
 
   if (channel === null) {
-    return <ChannelUnavailable serverHasChannels={serverHasChannels} />;
+    return <ChannelUnavailable state={state} />;
   }
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
@@ -101,26 +110,22 @@ function PostsUnavailable() {
   );
 }
 
-function ChannelUnavailable({ serverHasChannels }: { readonly serverHasChannels: boolean }) {
+function ChannelUnavailable({ state }: { readonly state: ChannelViewState }) {
+  // Two different facts, which is why `environmentSupportsChannels` exists
+  // separately from the list. A server that predates channels cannot be fixed by
+  // being added to one; a channel you are not in can.
+  const unsupported = state === "unsupported";
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       <Empty className="flex-1">
         <EmptyHeader className="max-w-md">
           <EmptyTitle className="text-base text-foreground">
-            {serverHasChannels ? "This channel isn’t available" : "This server has no channels"}
+            {unsupported ? "This server has no channels" : "This channel isn’t available"}
           </EmptyTitle>
-          {/*
-            Two different facts, and the distinction is why
-            `environmentSupportsChannels` exists separately from the list. A
-            server that predates channels cannot be fixed by being added to one;
-            a channel you are not in can. Telling an operator to ask for an
-            invite to a server that has no channels wastes their time and hides
-            the real problem, which is the server version.
-          */}
           <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
-            {serverHasChannels
-              ? "It may have been removed, or you may not be a member. The server only sends the channels you belong to."
-              : "Channels come from the server. Update the server on that machine to use them."}
+            {unsupported
+              ? "Channels come from the server. Update the server on that machine to use them."
+              : "It may have been removed, or you may not be a member. The server only sends the channels you belong to."}
           </EmptyDescription>
         </EmptyHeader>
       </Empty>
@@ -132,10 +137,9 @@ function ChannelComposer({ channel }: { readonly channel: EnvironmentChannelShel
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
   const post = useAtomCommand(channelEnvironment.post);
-  const archived = channel.archivedAt !== null;
   // The decider refuses a post to an archived channel, so offering a composer
   // there would be offering an action that cannot succeed.
-  if (archived) {
+  if (resolveChannelComposerState(channel) === "archived") {
     return (
       <p
         role="status"
@@ -147,7 +151,7 @@ function ChannelComposer({ channel }: { readonly channel: EnvironmentChannelShel
   }
 
   const trimmed = body.trim();
-  const canSend = trimmed.length > 0 && !sending;
+  const canSend = canSendChannelPost({ body, sending });
   const send = () => {
     if (!canSend) return;
     setSending(true);
