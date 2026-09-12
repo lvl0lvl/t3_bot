@@ -161,14 +161,24 @@ export function canonicalChannelHandle(handle: string): string {
 /**
  * One rule, two sigils, so a name and a handle cannot drift apart.
  *
- * Trim, strip leading sigils, trim again, and repeat until nothing changes,
- * then lowercase. The repeat is what makes "# #seniors" reach "seniors": a
- * single pass leaves "#seniors", which then canonicalises to something else
- * again, so a stored name would not match itself. Each pass strictly shortens
- * the string or ends the loop, so it terminates.
+ * NFC first, then trim, strip leading sigils, trim again, repeat until nothing
+ * changes, then lowercase.
+ *
+ * The repeat is what makes "# #seniors" reach "seniors": a single pass leaves
+ * "#seniors", which then canonicalises to something else again, so a stored name
+ * would not match itself. Each pass strictly shortens the string or ends the
+ * loop, so it terminates.
+ *
+ * The NFC pass is not defensive, it is what makes this a canonical form at all:
+ * composed "é" and decomposed "e" + U+0301 are the same text and must be the
+ * same handle. Without it they are two members with one appearance, and a reader
+ * of the member list cannot tell which one a mention reached. It does NOT fold
+ * confusables — Cyrillic "о" stays distinct from Latin "o", verified — so two
+ * members can still render alike; that is bounded by membership being
+ * human-or-system only, and NFKC would fold too much to be safe here.
  */
 function canonicalise(value: string, sigil: RegExp): string {
-  let current = value.trim();
+  let current = value.normalize("NFC").trim();
   for (;;) {
     const next = current.replace(sigil, "").trim();
     if (next === current) {

@@ -527,6 +527,42 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
     }),
   );
 
+  it.effect("collides two handles that differ only by composition", () =>
+    Effect.gen(function* () {
+      // Decomposed and composed spellings of the same text are one handle, so a
+      // second member cannot hold the other spelling. Without NFC these are two
+      // members that render identically, and nothing tells a reader of the member
+      // list which one a mention reached.
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-nfc"),
+          channelId: ChannelId.make("channel-nfc"),
+          name: "juniors",
+          members: [
+            {
+              handle: ChannelMemberHandle.make("caf\u00e9"),
+              memberKind: "thread",
+              memberId: "thread-a",
+            },
+            {
+              handle: ChannelMemberHandle.make("caf\u0065\u0301"),
+              memberKind: "thread",
+              memberId: "thread-b",
+            },
+          ],
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+        issuer: ADMIN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is used twice");
+      }
+    }),
+  );
+
   it.effect("collides two handles that differ only by case", () =>
     Effect.gen(function* () {
       // "Boss1" and "boss1" are two rows but one mention key, which is exactly

@@ -49,6 +49,10 @@ const TABLE: ReadonlyArray<readonly [input: string, canonical: string]> = [
   // for inputs the table never asked about.
   ["# #seniors", "seniors"],
   ["#  #  x", "x"],
+  // Decomposed "e" + U+0301 must reach the composed form: same text, and
+  // without NFC it is a second channel nobody can tell from the first.
+  ["caf\u0065\u0301", "caf\u00e9"],
+  ["#CAF\u0045\u0301", "caf\u00e9"],
 ];
 
 /** Rows as "input -> result", so a failure names the input that moved. */
