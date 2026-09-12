@@ -791,9 +791,20 @@ describe("the comms toolkit on the live gateway", () => {
         // The seam used to hold that structurally - membership was a PARAMETER
         // of the lookup - and this layer does not: the lookup runs first and
         // membership is a guard after it, returning `Option.none` from two
-        // distinct branches two lines apart. Three tests pinned this, each
-        // against its own hardcoded literal, so giving either branch a
-        // distinguishing field left all three green (`t3_bot-glu`).
+        // distinct branches two lines apart. THE MISSING-CHANNEL BRANCH IS THE
+        // ONE THAT HAD NOTHING: the three tests that pinned this property all
+        // made a NON-MEMBER call, so no test anywhere made a missing-channel
+        // call and nothing could see that branch change at all. Measured by
+        // deleting the comparison below and re-running each mutant - the
+        // non-member side still reds, because a mutation there changes the tag
+        // the older assertions already check; the missing side goes fully green,
+        // 67 passed. So this line is the only thing in the repository that
+        // catches it (`t3_bot-glu`).
+        //
+        // The non-member side is less exposed than that reads: a mutation there
+        // which PRESERVED the tag would need the gateway to return something
+        // richer than `Option<Channel>`, which is a larger change than the one
+        // this guards.
         //
         // The names cannot match: each error echoes what the CALLER asked for.
         // Substituting each request's own name is what isolates the property -
