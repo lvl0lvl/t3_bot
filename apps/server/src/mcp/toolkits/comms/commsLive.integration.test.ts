@@ -14,6 +14,7 @@
  */
 import {
   ChannelId,
+  HUMAN_OPERATOR_MEMBER_ID,
   ChannelMemberHandle,
   CommandId,
   EnvironmentId,
@@ -44,7 +45,12 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { MentionWakeReactor } from "../../../orchestration/Services/MentionWakeReactor.ts";
 import { MentionWakeReactorLive } from "../../../orchestration/Layers/MentionWakeReactor.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ChannelGateway, refFromMcpCredential, refFromOperatorSession } from "./channelGateway.ts";
+import {
+  ChannelGateway,
+  type ChannelMemberRef,
+  refFromMcpCredential,
+  refFromOperatorSession,
+} from "./channelGateway.ts";
 import { ChannelGatewayLive } from "./channelGatewayLive.ts";
 import { CommsToolkitHandlersLive } from "./handlers.ts";
 import { CommsToolkit } from "./tools.ts";
@@ -106,6 +112,19 @@ const dispatchFailsWith = (error: OrchestrationDispatchError) =>
       };
     }),
   );
+
+/**
+ * The ONE way a test may forge a member ref, named so it cannot pass for the
+ * real thing.
+ *
+ * `ChannelMemberRef` is branded with a non-exported symbol precisely so a
+ * handler cannot build one from a request payload. Tests that exercise refs no
+ * legitimate source can produce - a colliding roster, a member kind the caller
+ * is not - need a way in, and this is it: in a test file, with a name a
+ * reviewer cannot read as production code. `makeRef` would not say that.
+ */
+const unsafeRefForTest = (memberKind: "thread" | "human", memberId: string) =>
+  ({ memberKind, memberId }) as unknown as ChannelMemberRef;
 
 const invocation = (threadId: ThreadId): McpInvocationContext.McpInvocationScope => ({
   environmentId: EnvironmentId.make("environment-1"),
@@ -814,14 +833,17 @@ describe("the comms toolkit on the live gateway", () => {
         // And the constructors carry their SOURCE, both fields. Asserting the
         // id alone would pass against a constructor that hardcoded the wrong
         // kind, which is the mutation the colliding roster exists for.
-        expect(refFromMcpCredential({ threadId: BOSS3 })).toEqual({
-          memberKind: "thread",
-          memberId: BOSS3,
-        });
-        expect(refFromOperatorSession({ operatorMemberId: "human-walt" })).toEqual({
-          memberKind: "human",
-          memberId: "human-walt",
-        });
+        // BOTH FIELDS on each. Asserting the id alone passes against a
+        // constructor that hardcodes the wrong kind, which is the mutation the
+        // colliding roster exists for.
+        const fromCredential = refFromMcpCredential(invocation(BOSS3));
+        expect(fromCredential.memberKind).toBe("thread");
+        expect(fromCredential.memberId).toBe(BOSS3);
+        // TAKES NO ARGUMENT: there is no session type yet, and a string
+        // parameter would be the payload mistake with a function around it.
+        const fromSession = refFromOperatorSession();
+        expect(fromSession.memberKind).toBe("human");
+        expect(fromSession.memberId).toBe(HUMAN_OPERATOR_MEMBER_ID);
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );
@@ -949,14 +971,14 @@ describe("the comms toolkit on the live gateway", () => {
         // ref, and both must be the channel - a comparison on memberId alone
         // returns whichever row `some` reaches first for BOTH, which is a post
         // attributed to the wrong member on a call that returns success.
-        const asHuman = yield* gateway.getChannelForMember("seniors", {
-          memberKind: "human",
-          memberId: shared,
-        });
-        const asThread = yield* gateway.getChannelForMember("seniors", {
-          memberKind: "thread",
-          memberId: shared,
-        });
+        const asHuman = yield* gateway.getChannelForMember(
+          "seniors",
+          unsafeRefForTest("human", shared),
+        );
+        const asThread = yield* gateway.getChannelForMember(
+          "seniors",
+          unsafeRefForTest("thread", shared),
+        );
         expect(Option.isSome(asHuman)).toBe(true);
         expect(Option.isSome(asThread)).toBe(true);
 
@@ -969,10 +991,10 @@ describe("the comms toolkit on the live gateway", () => {
             { handle: ChannelMemberHandle.make("ghost"), memberKind: "thread", memberId: shared },
           ],
         });
-        const impostor = yield* gateway.getChannelForMember("seniors", {
-          memberKind: "human",
-          memberId: shared,
-        });
+        const impostor = yield* gateway.getChannelForMember(
+          "seniors",
+          unsafeRefForTest("human", shared),
+        );
         expect(Option.isNone(impostor)).toBe(true);
       }).pipe(Effect.provide(TestLayer)),
     30_000,
@@ -990,17 +1012,17 @@ describe("the comms toolkit on the live gateway", () => {
         // a FUTURE caller. Returning None instead would surface as an agent
         // told it is not in a channel it IS in, with nothing saying why.
         const defect = yield* gateway
-          .getChannelForMember("#Seniors", { memberKind: "thread", memberId: BOSS3 })
+          .getChannelForMember("#Seniors", unsafeRefForTest("thread", BOSS3))
           .pipe(Effect.exit);
         expect(defect._tag).toBe("Failure");
         expect(String(defect)).toContain("non-canonical name");
 
         // The canonical form of the same name resolves, so the assertion above
         // is about the FORM rather than about the channel being absent.
-        const found = yield* gateway.getChannelForMember("seniors", {
-          memberKind: "thread",
-          memberId: BOSS3,
-        });
+        const found = yield* gateway.getChannelForMember(
+          "seniors",
+          unsafeRefForTest("thread", BOSS3),
+        );
         expect(Option.isSome(found)).toBe(true);
       }).pipe(Effect.provide(TestLayer)),
     30_000,

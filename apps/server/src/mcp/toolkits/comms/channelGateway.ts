@@ -26,7 +26,9 @@
  *
  * @module channelGateway
  */
+import { HUMAN_OPERATOR_MEMBER_ID } from "@t3tools/contracts";
 import type { ThreadId } from "@t3tools/contracts";
+import type * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
@@ -176,81 +178,67 @@ export interface ChannelPostRecord {
   readonly createdAt: string;
 }
 
+/** Not exported. Its absence elsewhere is what makes the type unconstructible. */
+declare const memberRefBrand: unique symbol;
+
 /**
  * WHO IS ASKING. Derived from the caller's own credential, NEVER from a request
  * field.
  *
- * That rule is the whole of the read side's authorisation and nothing enforces
- * it mechanically. On the write side the decider refuses a channel command that
- * arrives without an issuer, so a gateway that forgot one would fail loudly;
- * here a caller that took this from its request payload would simply read
- * whatever that member can read, successfully, forever. A read tool that passed
- * an agent-supplied ref would let any agent read any channel any member is in.
+ * UNCONSTRUCTIBLE OUTSIDE THIS FILE, and that is a type error rather than a
+ * convention: the brand below is a `unique symbol` that is not exported, so an
+ * object literal with `memberKind` and `memberId` does not satisfy this type
+ * anywhere else. An earlier version of this docstring asserted that property
+ * over a plain interface which was built inline five times in its own tests —
+ * documenting a guard is not having one, and three review lanes said so.
  *
- * The toolkit passes `{ memberKind: "thread", memberId: <the credential's
- * thread> }`. An RPC passes the authenticated session's member. Neither reads
- * it off the wire.
+ * WHY IT MATTERS MORE HERE THAN ON THE WRITE SIDE: the decider refuses a channel
+ * command that arrives without an issuer, so a gateway that forgot one fails
+ * loudly. Nothing refuses a wrong ref. A read handler that passed an
+ * agent-supplied member would return the right answer for the wrong member,
+ * successfully, forever.
  *
- * THERE IS ONE DOOR TODAY AND THERE WILL BE TWO. That is the condition, not the
- * safeguard: `ClientOrchestrationCommand` had two doors into one union and an
- * issuer stamped at one of them, which shipped, because the sweep that proved
- * the stamp was pointed only at the door its author was standing in. Each
- * caller here builds this value inline, so the second one can build it
- * differently — a human read as `"thread"`, or a memberId taken from the
- * payload rather than the session — and nothing in a type would say so.
- *
- * A caller adding itself: assert the KIND you pass, not only the id. The
- * toolkit's lookup tests do, which is what makes "derived from the credential"
- * checkable rather than a sentence in a docstring.
- *
- * CONSTRUCTED ONLY BY THE TWO FUNCTIONS BELOW. Not exported as a shape to build
- * inline, because a docstring is not a guard and this one has nothing behind it.
- *
- * DO NOT COLLAPSE THEM INTO `makeChannelMemberRef(kind, id)`. That is the
- * obvious simplification and it prevents nothing: it accepts the same two
- * fields from anywhere, so a handler passing `payload.memberId` through it is
- * indistinguishable from one passing the session's. The names below are load
- * bearing precisely because they are named for the SOURCE — taking the id from
- * a REQUEST is then not expressible without visibly going around the function,
- * and going around it is a thing a reviewer sees in a diff.
- *
- * The property is not "validate the ref". Nothing here validates anything. It
- * is: make the WRONG thing conspicuous, rather than merely making the right
- * thing available.
+ * DO NOT ADD `makeChannelMemberRef(kind, id)`. It accepts the same two fields
+ * from anywhere, so a handler passing `payload.memberId` through it is
+ * indistinguishable from one passing the session's. The constructors below are
+ * named for their SOURCE because that is the whole mechanism: taking the id
+ * from a request is then not expressible without visibly going around the
+ * function, and going around it is a thing a reviewer sees in a diff. The
+ * property is not validation — nothing here validates anything. It is that the
+ * WRONG thing is conspicuous.
  */
 export interface ChannelMemberRef {
   readonly memberKind: "thread" | "human";
   readonly memberId: string;
+  readonly [memberRefBrand]: true;
 }
 
 /**
- * The member an MCP tool call is acting as: the credential's own thread.
+ * The member an MCP tool call acts as: the credential's own thread.
  *
- * Takes the invocation scope rather than a thread id, so there is no signature
- * a request field fits. The agent's arguments are not in scope here and cannot
- * be.
+ * Takes the invocation SCOPE, not a thread id, so there is no parameter an
+ * agent-supplied value fits. The tool's arguments are not in scope here and
+ * cannot be passed by mistake.
  */
-export const refFromMcpCredential = (scope: { readonly threadId: string }): ChannelMemberRef => ({
-  memberKind: "thread",
-  memberId: scope.threadId,
-});
+export const refFromMcpCredential = (
+  scope: McpInvocationContext.McpInvocationScope,
+): ChannelMemberRef =>
+  ({ memberKind: "thread", memberId: scope.threadId }) as unknown as ChannelMemberRef;
 
 /**
- * The member a browser request is acting as: the operator, from the session.
+ * The member a browser request acts as: the operator.
  *
- * NAMED FOR THE SOURCE, which is the whole of its value. `fromHuman(id)` would
- * accept a memberId out of a request payload and look correct doing it; this
- * one is wrong-looking at the call site the moment the argument is not a
- * session. For M1 the operator is a single seeded identity, so the session
- * carries no member of its own yet and this returns the constant — when it
- * does, this is the one line that changes and every caller inherits it.
+ * TAKES NO ARGUMENT, deliberately. The RPC layer has no session type carrying an
+ * operator identity yet, so any parameter would be a string — and a string
+ * parameter here is the payload mistake with a function around it, which is
+ * exactly what the first version of this was. When a real session type exists,
+ * this signature changes in one place and every caller inherits it.
  */
-export const refFromOperatorSession = (session: {
-  readonly operatorMemberId: string;
-}): ChannelMemberRef => ({
-  memberKind: "human",
-  memberId: session.operatorMemberId,
-});
+export const refFromOperatorSession = (): ChannelMemberRef =>
+  ({
+    memberKind: "human",
+    memberId: HUMAN_OPERATOR_MEMBER_ID,
+  }) as unknown as ChannelMemberRef;
 
 export type ReadDirection = "forward" | "backward";
 
