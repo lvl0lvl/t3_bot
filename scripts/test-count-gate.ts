@@ -351,17 +351,22 @@ export const selectsWorkspace = (target: string, workspace: Workspace, repoRoot:
  * which is the whole defect being repaired here.
  */
 function runWorkspace(repoRoot: string, workspace: Workspace, reportDir: string): Suite {
+  // INJECTIVE, so two workspaces cannot name the same file. It was a lossy
+  // substitution — every character outside `[A-Za-z0-9_-]` became `-`, so
+  // `@t3tools/mobile` and `@t3tools-mobile` both became `-t3tools-mobile` — and
+  // a collision was caught DOWNSTREAM by deleting the file first, because
+  // `existsSync` was otherwise satisfied by the earlier workspace's report when
+  // this one's run failed and wrote nothing. A bug lane executed that: the failed
+  // run returned the other workspace's suite verbatim.
+  //
+  // Percent-escaping is reversible, which the substitution is not: `%` is itself
+  // outside the safe set, so it escapes to `%25` and no two names can produce the
+  // same bytes. `@t3tools/mobile` becomes `%40t3tools%2fmobile.json` — still
+  // readable in a directory listing, which is the reason this is not a hash.
   const outputFile = NodePath.join(
     reportDir,
-    `${workspace.name.replace(/[^A-Za-z0-9_-]/g, "-")}.json`,
+    `${workspace.name.replace(/[^A-Za-z0-9_-]/g, (c) => `%${c.charCodeAt(0).toString(16).padStart(2, "0")}`)}.json`,
   );
-  // THIS RUN'S REPORT, NOT A PREVIOUS ONE'S. The filename is a lossy
-  // sanitisation of the package name, so two names can collapse onto one file —
-  // and `existsSync` was then satisfied by the earlier workspace's report when
-  // this one's run failed and wrote nothing. A bug lane executed that: the
-  // failed run returned the other workspace's suite verbatim. Removing the file
-  // first turns any collision into the honest refusal below.
-  NodeFS.rmSync(outputFile, { force: true });
   const result = NodeChildProcess.spawnSync(
     "pnpm",
     ["--filter", workspace.name, "run", "test", "--reporter=json", `--outputFile=${outputFile}`],
@@ -395,9 +400,15 @@ function runWorkspace(repoRoot: string, workspace: Workspace, reportDir: string)
 /**
  * What a run of this tree would measure, and what it would not.
  *
- * SEPARATE FROM RUNNING IT so `main` can print the scope on the first line of
- * the table, before minutes of test runs. A skipped workspace is scope, and
- * scope that is not printed is the thing this gate exists to stop.
+ * SEPARATE FROM RUNNING IT because `main` has to DECIDE on the scope before it
+ * runs anything: a PR that touches a workspace the gate skips as unmeasurable is
+ * refused, and refusing after the suites have run wastes the minutes it was
+ * refusing to spend. (It does not print any earlier — the table is written after
+ * the comparison — and this docstring used to claim it did.)
+ *
+ * It also returns the workspaces and not only their names, because that refusal
+ * needs their PATHS. `main` used to re-enumerate the repo to get them, with a
+ * different predicate, under a comment saying it was the same one.
  *
  * The BASE tree enumerates its own workspaces when it runs, because a workspace
  * can be added or removed by the very PR being measured; this describes HEAD.
@@ -442,17 +453,31 @@ export const splitScope = (workspaces: ReadonlyArray<Workspace>) => ({
   unmeasurable: workspaces
     .filter((w) => w.testScript !== undefined && isUnmeasurable(w.name))
     .map((w) => w.name),
+  // THE WORKSPACES THEMSELVES, for the one caller that needs a path rather than
+  // a name: `main` refuses a PR that touches an unmeasurable workspace, and
+  // "touches" is decided against the workspace's directory. Returning it here is
+  // what lets that refusal share this predicate instead of re-deriving it.
+  unmeasurableWorkspaces: workspaces.filter(
+    (w) => w.testScript !== undefined && isUnmeasurable(w.name),
+  ),
 });
 
 /**
- * The skipped workspaces this diff touches, which the gate must refuse to skip.
+ * The UNMEASURABLE workspaces this diff touches, which the gate must refuse.
+ *
+ * NAMED FOR THE BUCKET IT IS GIVEN, which it was not: `splitScope` has two
+ * kinds of skip — `skipped`, a workspace with no `test` script, and
+ * `unmeasurable`, one declared undoable in a cold base tree — and only the
+ * second is a refusal. A workspace with no `test` script has no tests to lose,
+ * and one that DROPS its script is caught by the comparison, since base still
+ * reports the files. The old name said the gate refused on both.
  *
  * PURE, and both directions are tested: a PR that touches only `apps/server`
- * while `apps/desktop` is skipped measures fine, and a PR that touches
- * `apps/desktop` while it is skipped is a refusal. A skip is acceptable scope
- * only while the PR did not change it.
+ * while `apps/desktop` is unmeasurable measures fine, and a PR that touches
+ * `apps/desktop` while it is unmeasurable is a refusal. A skip is acceptable
+ * scope only while the PR did not change it.
  */
-export const skippedWorkspacesTouched = (
+export const unmeasurableWorkspacesTouched = (
   changedPaths: ReadonlyArray<string>,
   skipped: ReadonlyArray<Workspace>,
   repoRoot: string,
@@ -849,17 +874,24 @@ function main(): number {
   // SCOPE YOU CHANGED IS SCOPE YOU HAVE TO MEASURE. A workspace skipped for
   // being unmeasurable in a cold tree is acceptable only while the PR did not
   // touch it; the moment it did, "could not measure" is the true answer.
-  // THE SAME PREDICATE `splitScope` USES, and the same one `runSuite` skips on.
-  // It was map-membership here and "has a test script AND is in the map" there,
-  // so a declared workspace that dropped its `test` script was refused-when-
-  // touched by this line while the scope line filed it under "no test script"
-  // and never printed its declared reason.
-  const skippedWorkspaces = listWorkspaces(process.cwd()).filter((workspace) =>
-    isUnmeasurable(workspace.name),
-  );
-  const touched = skippedWorkspacesTouched(
+  //
+  // FROM THE SCOPE ALREADY COMPUTED, which is the point. This enumerated the
+  // repo a second time and filtered it by map membership alone, under a comment
+  // claiming to use the predicate `splitScope` uses — which is "has a `test`
+  // script AND is in the map". A declared workspace that dropped its script was
+  // refused-when-touched by this line while the scope line filed it under "no
+  // test script" and never printed its declared reason, and the two enumerations
+  // could disagree about the repo besides.
+  //
+  // IT ALSO NARROWS WITH THE RUN NOW, and that is a behaviour change: under
+  // `TEST_COUNT_GATE_TARGET` the scope is the selected workspaces, so a narrowed
+  // run no longer refuses because the diff touched something outside what it was
+  // asked to measure. The narrowing is already declared on both the opening and
+  // the closing line, and a run that says what it measured does not also have to
+  // refuse over what it was told not to.
+  const touched = unmeasurableWorkspacesTouched(
     changedPaths(process.cwd(), base),
-    skippedWorkspaces,
+    scope.unmeasurableWorkspaces,
     process.cwd(),
   );
   if (touched.length > 0) {

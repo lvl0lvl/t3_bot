@@ -16,7 +16,7 @@ import {
   jsonArrayPayload,
   listWorkspaces,
   selectsWorkspace,
-  skippedWorkspacesTouched,
+  unmeasurableWorkspacesTouched,
   splitScope,
   workspacesToRun,
   toSuite,
@@ -206,6 +206,34 @@ describe("workspace enumeration", () => {
     expect(scope.skipped).toEqual([]);
   });
 
+  it("keys a suite by REPO-RELATIVE path, which is the only thing base and head share", () => {
+    // THE POSITIVE DIRECTION, which nothing asserted. Every other test here is a
+    // refusal — a file that failed to load, a report with no files — and a
+    // version that kept the runner's absolute path, or relativised against the
+    // wrong root, satisfies all of them. Base and head live in different
+    // directories, so an absolute key means the two suites share no key at all
+    // and `compare` reads every file as one removed and one added: the gate
+    // cries deletion over an unchanged tree, which is what the `realpath`
+    // comment in `toSuite` is an account of.
+    const suite = toSuite(
+      {
+        testResults: [
+          {
+            name: NodePath.join(REPO_ROOT, "apps/server/src/x.test.ts"),
+            status: "passed",
+            assertionResults: [{ fullName: "x > works", status: "passed" }],
+          },
+        ],
+      },
+      REPO_ROOT,
+      "@t3tools/server in the head tree",
+    );
+    expect([...suite.keys()]).toEqual(["apps/server/src/x.test.ts"]);
+    // AND THE NAMES UNDER IT, because a key with the right spelling over an
+    // empty entry compares equal to a file whose tests were all deleted.
+    expect(suite.get("apps/server/src/x.test.ts")?.names).toEqual(["x > works"]);
+  });
+
   it("describes the real repo's scope as a split of its real workspaces", () => {
     // The wiring, once: `describeScope` really does run the enumeration through
     // the split rather than computing something of its own. THREE buckets — a
@@ -227,7 +255,7 @@ describe("workspace enumeration", () => {
 
   it("names the workspace a test file was MOVED OUT OF, not just where it landed", () => {
     // THE PRODUCER, not a hand-written array. Both directions of
-    // `skippedWorkspacesTouched` were already tested — over paths this file
+    // `unmeasurableWorkspacesTouched` were already tested — over paths this file
     // typed out itself. Nothing exercised the function whose input comes from
     // another program, and that is where the hole was.
     //
@@ -272,7 +300,7 @@ describe("workspace enumeration", () => {
         path: NodePath.join(repo, "apps/desktop"),
         testScript: "vp test run",
       };
-      expect(skippedWorkspacesTouched(changed, [desktop], repo)).toEqual(["@t3tools/desktop"]);
+      expect(unmeasurableWorkspacesTouched(changed, [desktop], repo)).toEqual(["@t3tools/desktop"]);
     } finally {
       NodeFS.rmSync(repo, { recursive: true, force: true });
     }
@@ -284,7 +312,7 @@ describe("workspace enumeration", () => {
     // change it — which is the ordinary case and must stay ordinary.
     const desktop = workspace("@t3tools/desktop", "apps/desktop", "vp test run");
     expect(
-      skippedWorkspacesTouched(
+      unmeasurableWorkspacesTouched(
         ["apps/server/src/ws.ts", "scripts/test-count-gate.ts"],
         [desktop],
         REPO,
@@ -298,11 +326,11 @@ describe("workspace enumeration", () => {
     // would be asserting something it never looked at.
     const desktop = workspace("@t3tools/desktop", "apps/desktop", "vp test run");
     expect(
-      skippedWorkspacesTouched(["apps/desktop/src/backend/Thing.ts"], [desktop], REPO),
+      unmeasurableWorkspacesTouched(["apps/desktop/src/backend/Thing.ts"], [desktop], REPO),
     ).toEqual(["@t3tools/desktop"]);
     // A path that merely STARTS with the same letters is not inside it: the
     // comparison is on a directory boundary, not a string prefix.
-    expect(skippedWorkspacesTouched(["apps/desktop-notes/x.ts"], [desktop], REPO)).toEqual([]);
+    expect(unmeasurableWorkspacesTouched(["apps/desktop-notes/x.ts"], [desktop], REPO)).toEqual([]);
   });
 
   it("selects a workspace by package name, by directory, or by nothing at all", () => {
