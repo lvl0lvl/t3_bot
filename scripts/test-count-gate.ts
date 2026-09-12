@@ -175,21 +175,27 @@ const TEST_TARGET = process.env["TEST_COUNT_GATE_TARGET"] ?? "";
  * break would vanish into the same silence. An exception a human wrote down,
  * printed on every run, is the only honest kind.
  *
- * MEASURED, not assumed: `@t3tools/desktop` runs 1260 tests in a working tree
- * and fails to LOAD `src/backend/DesktopBackendConfiguration.test.ts` in a fresh
- * checkout of the base with its own `pnpm install --frozen-lockfile`. Something
- * that tree needs is not produced by the install; WHICH thing is `t3_bot-wjt`,
- * and until that is proven this is an observation rather than a diagnosis.
+ * EMPTY, AND KEPT. Its one entry was `@t3tools/desktop`, declared on
+ * `t3_bot-x4v` when a cold base tree failed to LOAD one of its test files and
+ * the cause was unknown, and removed on `t3_bot-wjt` when the cause was proven:
+ * `electron@44` has no postinstall and fetches its binary lazily on first
+ * `require`, so vitest's parallel workers raced the unpack in any tree where
+ * nothing had required electron yet. `scripts/prefetch-electron.ts` in the root
+ * `prepare` fetches it once, serially, in every install — so the base worktree
+ * this gate builds gets it through the same `pnpm install --frozen-lockfile` it
+ * already runs, with no special case here.
+ *
+ * THAT IS THE SHAPE THE NEXT ENTRY SHOULD FOLLOW: declare it with the observed
+ * symptom and a bead, keep it printed on every run so nobody forgets it is
+ * there, and remove it only when the cause is named and the fix is in the
+ * install rather than in this file. A gate that repaired a tree itself would be
+ * a second place a preparation step could live and drift.
  *
  * THE SKIP IS NOT A LICENCE. If the PR's own diff touches a skipped workspace,
  * the gate exits 2 rather than skipping it: scope you changed is scope you have
  * to measure, and the author prepares that tree by hand for that PR.
  */
-const UNMEASURABLE_IN_COLD_TREE: Readonly<Record<string, string>> = {
-  "@t3tools/desktop":
-    "fails to load src/backend/DesktopBackendConfiguration.test.ts in a cold base checkout " +
-    "(runs 1260 tests in a prepared tree) — t3_bot-wjt",
-};
+const UNMEASURABLE_IN_COLD_TREE: Readonly<Record<string, string>> = {};
 
 /**
  * Whether this workspace is declared unmeasurable, by its OWN key.
@@ -201,7 +207,8 @@ const UNMEASURABLE_IN_COLD_TREE: Readonly<Record<string, string>> = {
  * and was silently never measured. Executed by a contracts lane. Silent
  * under-measurement is the one failure this instrument exists to refuse.
  */
-const isUnmeasurable = (name: string) => Object.hasOwn(UNMEASURABLE_IN_COLD_TREE, name);
+export type Unmeasurable = (name: string) => boolean;
+const isUnmeasurable: Unmeasurable = (name) => Object.hasOwn(UNMEASURABLE_IN_COLD_TREE, name);
 
 /** One workspace, as the package manager reports it. */
 export interface Workspace {
@@ -485,7 +492,15 @@ const select = (
   return selected;
 };
 
-export const splitScope = (workspaces: ReadonlyArray<Workspace>) => {
+export const splitScope = (
+  workspaces: ReadonlyArray<Workspace>,
+  // A PARAMETER, defaulted to the real map, so the buckets stay testable when
+  // the map is empty — which it is, since `t3_bot-wjt`. The two tests that pin
+  // the unmeasurable bucket used to name `@t3tools/desktop` and read the
+  // production map as their fixture; a map with no entries left them no way to
+  // construct the input they exist for. Same seam as `target` on `describeScope`.
+  unmeasurable: Unmeasurable = isUnmeasurable,
+) => {
   // THE WORKSPACES THEMSELVES, because one caller needs a PATH rather than a
   // name: `main` refuses a PR that touches an unmeasurable workspace, and
   // "touches" is decided against the workspace's directory. It used to
@@ -497,11 +512,11 @@ export const splitScope = (workspaces: ReadonlyArray<Workspace>) => {
   // predicates agree while the only fixture that separates them is one nobody
   // has written yet.
   const unmeasurableWorkspaces = workspaces.filter(
-    (w) => w.testScript !== undefined && isUnmeasurable(w.name),
+    (w) => w.testScript !== undefined && unmeasurable(w.name),
   );
   return {
     measured: workspaces
-      .filter((w) => w.testScript !== undefined && !isUnmeasurable(w.name))
+      .filter((w) => w.testScript !== undefined && !unmeasurable(w.name))
       .map((w) => w.name),
     skipped: workspaces.filter((w) => w.testScript === undefined).map((w) => w.name),
     unmeasurable: unmeasurableWorkspaces.map((w) => w.name),
@@ -661,8 +676,11 @@ export function changedPaths(repoRoot: string, base: string): ReadonlyArray<stri
  * `splitScope` reporting a workspace as measured while `runSuite` skips it, so
  * the table claims coverage nobody ran.
  */
-export const workspacesToRun = (workspaces: ReadonlyArray<Workspace>): ReadonlyArray<Workspace> =>
-  workspaces.filter((w) => w.testScript !== undefined && !isUnmeasurable(w.name));
+export const workspacesToRun = (
+  workspaces: ReadonlyArray<Workspace>,
+  unmeasurable: Unmeasurable = isUnmeasurable,
+): ReadonlyArray<Workspace> =>
+  workspaces.filter((w) => w.testScript !== undefined && !unmeasurable(w.name));
 
 /**
  * Every selected workspace, merged.

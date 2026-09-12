@@ -82,12 +82,17 @@ describe("workspace enumeration", () => {
       workspace("@t3tools/desktop", "apps/desktop", "vp test run"),
       workspace("@t3tools/web", "apps/web", "vp test run --project unit"),
     ];
-    expect(workspacesToRun(fixture).map((entry) => entry.name)).toEqual(
-      splitScope(fixture).measured,
+    // THE PREDICATE IS THE FIXTURE'S, not the production map's. The map is
+    // empty since `t3_bot-wjt` proved its one entry out, and a test that read
+    // it would have no unmeasurable workspace to put in the bucket — which is
+    // the vacuous shape the assertion below exists to refuse.
+    const unmeasurable = (name: string) => name === "@t3tools/desktop";
+    expect(workspacesToRun(fixture, unmeasurable).map((entry) => entry.name)).toEqual(
+      splitScope(fixture, unmeasurable).measured,
     );
     // And it is not vacuously equal because both are everything: the fixture
     // carries one of each exclusion, and neither runs.
-    expect(splitScope(fixture).measured).toEqual(["t3", "@t3tools/web"]);
+    expect(splitScope(fixture, unmeasurable).measured).toEqual(["t3", "@t3tools/web"]);
   });
 
   it("finds the JSON array after a pnpm warning, not the bracket inside it", () => {
@@ -200,10 +205,13 @@ describe("workspace enumeration", () => {
     // first caught only by a count identity over the real repo — sum of the
     // three buckets equals the workspace list — which reds for the wrong
     // reason and stops reding the day the identity is restored some other way.
-    const scope = splitScope([
-      workspace("t3", "apps/server", "vp test run"),
-      workspace("@t3tools/desktop", "apps/desktop", "vp test run"),
-    ]);
+    const scope = splitScope(
+      [
+        workspace("t3", "apps/server", "vp test run"),
+        workspace("@t3tools/desktop", "apps/desktop", "vp test run"),
+      ],
+      (name) => name === "@t3tools/desktop",
+    );
     expect(scope.measured).toEqual(["t3"]);
     expect(scope.unmeasurable).toEqual(["@t3tools/desktop"]);
     expect(scope.skipped).toEqual([]);
