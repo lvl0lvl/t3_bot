@@ -987,6 +987,40 @@ const makeWsRpcLayer = (
           return yield* channelShellFor(decoded.value, sequence);
         });
 
+      /**
+       * A CHANNEL ID REACHES THE CLIENT HERE EVEN WHEN IT IS NOT A MEMBER, and
+       * that is a known gap rather than the intent. Both removal branches emit a
+       * bare `channelId`: one when the channel is gone, one when this connection
+       * is not in it. So every change to any channel on the server tells every
+       * connected client that a channel with that id exists — which is not what
+       * `OrchestrationShellSnapshot.channels` promises, and the snapshot door
+       * does honour that promise by filtering in SQL.
+       *
+       * IT DISCLOSES NOTHING TODAY: there is one operator, every connection is
+       * `HUMAN_OPERATOR_CHANNEL_MEMBER`, and that operator owns the database the
+       * ids come from. It becomes channel enumeration across accounts on the day
+       * that constant is replaced by a real session — which its own docstring
+       * says is coming.
+       *
+       * NEITHER AVAILABLE FIX WORKS, which is why this is written down instead
+       * of repaired:
+       *
+       * - A per-connection set of delivered ids breaks the RESUME path. A client
+       *   reconnecting with `afterSequence` receives events and no snapshot, so
+       *   the set is empty and a removal for a channel it really holds would be
+       *   suppressed. An operator removed from a channel while disconnected
+       *   would never be told to drop it — the reverse state, lost, which is a
+       *   worse defect than the one being fixed.
+       * - Reading the event rather than the row cannot decide it either.
+       *   `ChannelMemberRemovedPayload` carries `channelId`, `handle` and
+       *   `updatedAt`, not the `{memberKind, memberId}` this connection is keyed
+       *   on, and the row no longer holds the member who left. Nothing at this
+       *   seam can tell "you were just removed" from "you were never in it".
+       *
+       * Closing it needs the member ref ON the removal event, which is a
+       * contract and decider change. Tracked as a blocking dependency of the
+       * accounts work.
+       */
       const channelShellFor = (
         channelId: ChannelId,
         sequence: number,

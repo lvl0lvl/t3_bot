@@ -19,8 +19,17 @@ import {
  * over a channel that had just received a post.
  *
  * MEMBERS ARE DROPPED, deliberately. `OrchestrationChannelShell` has no members
- * field: a client is sent only the channels it belongs to, so a roster on the
- * wire would tell it who else is in them and cost a list it never renders.
+ * field: the channels a client is sent are the ones it belongs to, so a roster
+ * on the wire would tell it who else is in them and cost a list it never
+ * renders.
+ *
+ * THAT IS TRUE OF THIS PAYLOAD AND NOT OF THE REMOVAL EVENT, and the difference
+ * is worth stating here because this docstring is where a reader looks for the
+ * rule. `channel-removed` carries a bare `channelId`, and the stream emits it
+ * for a channel the connection is NOT a member of — so a change to any channel
+ * on the server tells every connected client that a channel with that id
+ * exists. See `channelShellFor` in `ws.ts`, which says why neither available fix
+ * works.
  */
 export function toChannelShell(row: ProjectionChannelWithActivity): OrchestrationChannelShell {
   return {
