@@ -57,6 +57,19 @@ jobs:
       - name: Typecheck
         run: vpr typecheck
 
+      # THE SCRIPTS PACKAGE, because the test-count gate's own proofs live in it
+      # and ran in NO job on this fork: `test_server` filters to `t3`, and the
+      # upstream job that would cover `@t3tools/scripts` sits queued forever on
+      # runners we do not have. Six tests that never run are six tests that rot,
+      # and the gate cannot measure its own file.
+      #
+      # This is the narrow widening the header asks for — something in scope
+      # HAS broken (nothing was verifying it) — and it is cheap: 21 files, 296
+      # tests, 2.4s, no Electron and no libsecret, which is why the broader
+      # `test` job is still excluded.
+      - name: Test scripts
+        run: vp run --filter @t3tools/scripts test
+
   test_server:
     # apps/server sets `fileParallelism: false`, so its test files run strictly
     # one at a time. Sharding spreads them over separate runners rather than
