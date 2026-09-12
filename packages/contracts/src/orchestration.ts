@@ -1018,10 +1018,20 @@ export type ChannelPostReadDirection = typeof ChannelPostReadDirection.Type;
 /**
  * One post as a reader needs it.
  *
- * NO SEQUENCE, deliberately. The sequence is the cursor's other half, and a
- * client holding both halves can build a cursor for any channel — which is the
- * one thing `decodeChannelCursor` exists to refuse. The comms gateway's
- * `ChannelPostRecord` omits it for the same reason; this is not a new rule.
+ * IT CARRIES ITS SEQUENCE, and an earlier version of this type did not. The
+ * argument for withholding it was that "a client holding both halves can build a
+ * cursor for any channel" — which was false three ways, and two review lanes
+ * proved each part. `nextCursor` is plaintext `${channelId}:${sequence}`, so a
+ * client holds both halves after ONE read; `decodeChannelCursor` never refused
+ * construction, only use against a different channel; and membership, checked
+ * before the cursor is examined, is what actually gates access.
+ *
+ * WITHHOLDING IT COST THE PAGE ITS OWN PROMISE. `OrchestrationChannelPostPage`
+ * says ascending order is the wire's job and not the caller's, and with no field
+ * expressing the order a client had to re-derive it from `createdAt` — which is
+ * millisecond resolution, so two agents replying at once tie it, and the tie-break
+ * fell to the post id. Measured: server order 1..10 rendered as 1, 10, 2, 3, …
+ * and a reply appeared above the question it answered.
  *
  * `authorHandle` rather than a member ref: a reader renders a handle, and who the
  * author IS belongs to the write path.
@@ -1029,6 +1039,13 @@ export type ChannelPostReadDirection = typeof ChannelPostReadDirection.Type;
 export const OrchestrationChannelPost = Schema.Struct({
   id: ChannelPostId,
   channelId: ChannelId,
+  /**
+   * Orders a channel's posts, and is the half of the cursor that moves.
+   *
+   * Unique within a channel and monotonic, so it is a total order — unlike
+   * `createdAt`, which ties.
+   */
+  sequence: NonNegativeInt,
   authorHandle: ChannelMemberHandle,
   body: Schema.String,
   mentions: Schema.Array(ChannelMemberHandle),

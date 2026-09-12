@@ -63,6 +63,7 @@ export class ChannelCursorRejected extends Schema.TaggedError<ChannelCursorRejec
 const toPost = (row: ProjectionChannelPost): OrchestrationChannelPost => ({
   id: row.postId,
   channelId: row.channelId,
+  sequence: row.sequence,
   authorHandle: row.authorHandle,
   body: row.body,
   mentions: row.mentions,

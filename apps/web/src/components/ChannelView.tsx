@@ -69,7 +69,19 @@ export function ChannelView({
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       <ChannelHeader channel={channel} />
-      <ChannelPostRegion channel={channel} />
+      {/*
+        KEYED ON THE CHANNEL, because this region holds `cursor`, `posts` and
+        `reachedStart` in state and the route renders it with no key and no
+        `remountDeps` — so switching `$channelId` keeps the same fiber. Measured
+        before this key existed: channel A's posts rendered under channel B's
+        header, `reachedStart` from A suppressed B's "Earlier posts", and B was
+        asked with A's cursor, which the server refuses and nothing reports.
+
+        A key rather than an effect that clears the three. An effect runs AFTER
+        the first render of the new channel, so the wrong posts paint for a frame
+        and the wrong cursor is already in flight.
+      */}
+      <ChannelPostRegion key={channel.id} channel={channel} />
       <ChannelComposer channel={channel} />
     </div>
   );
@@ -117,9 +129,10 @@ function ChannelHeader({ channel }: { readonly channel: EnvironmentChannelShell 
 /**
  * A channel's posts: the newest page on open, older pages upward on request.
  *
- * ANCHORED AT THE BOTTOM, which is what `justify-end` in the scroll container
- * does for a list shorter than the viewport and what the effect below does once
- * it is longer. A channel opens at its newest post because that is where a
+ * ANCHORED AT THE BOTTOM by `mt-auto` on the inner wrapper for a short list, and
+ * by the effect below once the list is taller than the pane. It used to say
+ * `justify-end` did the first half, and that was the p0: `justify-end` also made
+ * the overflow unscrollable, so the second half never got a chance to run. A channel opens at its newest post because that is where a
  * reader wants to be, and it is the one scroll position that does not need
  * restoring.
  *
@@ -216,8 +229,23 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col justify-end overflow-y-auto">
-      <div className="flex flex-col gap-3 p-4">
+    // `mt-auto` ON THE WRAPPER, NOT `justify-end` ON THE SCROLLER, and the
+    // difference is whether the list can be scrolled at all.
+    //
+    // `justify-content: flex-end` makes content taller than the container spill
+    // past its block-START edge, and block-start overflow is NOT part of the
+    // scrollable overflow region — so the browser reports no scrollable range and
+    // every post above the fold is rendered and permanently unreachable.
+    // Measured on the live element: with `flex-end`, `scrollHeight === clientHeight`
+    // and `maxScrollTop` 0; `flex-start` on the same element, 4312 against 755.
+    // In real Chrome with fifty posts, one was reachable, and forty wheel events
+    // moved nothing.
+    //
+    // My own render pass missed it because the channel had ONE post — which fits
+    // the pane, so the property could not be exercised. `mt-auto` gives the same
+    // bottom alignment for a short list and leaves the overflow scrollable.
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div className="mt-auto flex flex-col gap-3 p-4">
         {reachedStart ? null : (
           <Button
             variant="ghost"

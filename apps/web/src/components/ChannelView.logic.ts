@@ -145,14 +145,19 @@ export function canSendChannelPost(input: {
  * The INCOMING copy wins, because it came from the server and the local one was
  * a prediction.
  *
- * ORDERED BY `createdAt`, NOT BY SEQUENCE, because there is no sequence on the
- * wire — it is the cursor's other half and a client holding both halves could
- * build a cursor for any channel. The id is the tie-break, so two posts sharing
- * a timestamp still have one stable order instead of an order that depends on
- * which page happened to arrive first.
+ * ORDERED BY `sequence`, WHICH IS A TOTAL ORDER. It used to order by `createdAt`
+ * with the post id as a tie-break, and that was a correctness bug rather than a
+ * preference: `createdAt` is millisecond resolution, two agents replying at once
+ * tie it, and the id tie-break is lexicographic — so server order 1..10 rendered
+ * as 1, 10, 2, 3, … and a reply could appear above the question it answered.
+ *
+ * The test that was supposed to hold this asserted STABILITY across arrival
+ * order — merge two posts both ways, check they agree — which the wrong
+ * implementation also satisfies. It never asserted fidelity to the server's
+ * order. Choose the fixture from the property.
  */
 export function mergeChannelPosts<
-  A extends { readonly id: string; readonly createdAt: string },
+  A extends { readonly id: string; readonly sequence: number },
 >(input: { readonly existing: ReadonlyArray<A>; readonly incoming: ReadonlyArray<A> }): Array<A> {
   const byId = new Map<string, A>();
   for (const post of input.existing) {
@@ -161,11 +166,8 @@ export function mergeChannelPosts<
   for (const post of input.incoming) {
     byId.set(post.id, post);
   }
-  return [...byId.values()].sort((left, right) =>
-    left.createdAt === right.createdAt
-      ? left.id.localeCompare(right.id)
-      : left.createdAt < right.createdAt
-        ? -1
-        : 1,
-  );
+  // No tie-break, because there are no ties: `sequence` is unique within a
+  // channel. A tie-break here would be dead code hiding the fact that the old
+  // comparator needed one.
+  return [...byId.values()].sort((left, right) => left.sequence - right.sequence);
 }

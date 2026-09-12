@@ -123,7 +123,15 @@ describe("canSendChannelPost", () => {
 });
 
 describe("mergeChannelPosts", () => {
-  const post = (id: string, createdAt: string, body = id) => ({ id, createdAt, body });
+  // `createdAt` stays on the fixture even though nothing orders by it any more,
+  // because the bug was that something DID: a post carries one, and a fixture
+  // that dropped it could not express "these tie".
+  const post = (id: string, sequence: number, body = id) => ({
+    id,
+    sequence,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    body,
+  });
 
   it("keeps one copy of a post the server re-sent, and prefers the server's", () => {
     // THE OPTIMISTIC POST, RE-READ. The client appends its own post immediately
@@ -132,20 +140,18 @@ describe("mergeChannelPosts", () => {
     // the assertion can say WHICH copy survived — with identical bodies this
     // fixture could not tell "incoming wins" from "existing wins".
     const merged = mergeChannelPosts({
-      existing: [post("p1", "2026-01-01T00:00:01.000Z", "optimistic")],
-      incoming: [post("p1", "2026-01-01T00:00:01.000Z", "from the server")],
+      existing: [post("p1", 1, "optimistic")],
+      incoming: [post("p1", 1, "from the server")],
     });
-    expect(merged).toEqual([
-      { id: "p1", createdAt: "2026-01-01T00:00:01.000Z", body: "from the server" },
-    ]);
+    expect(merged.map((entry) => entry.body)).toEqual(["from the server"]);
   });
 
   it("puts an older page BEFORE what the view already had", () => {
     // Paging upward. A concatenation in the other order would render history
     // after the present, which reads as a data bug rather than a merge bug.
     const merged = mergeChannelPosts({
-      existing: [post("p3", "2026-01-01T00:00:03.000Z")],
-      incoming: [post("p1", "2026-01-01T00:00:01.000Z"), post("p2", "2026-01-01T00:00:02.000Z")],
+      existing: [post("p3", 3)],
+      incoming: [post("p1", 1), post("p2", 2)],
     });
     expect(merged.map((entry) => entry.id)).toEqual(["p1", "p2", "p3"]);
   });
@@ -155,37 +161,47 @@ describe("mergeChannelPosts", () => {
     // prepended the incoming page would pass the test above and put every new
     // reply at the top.
     const merged = mergeChannelPosts({
-      existing: [post("p1", "2026-01-01T00:00:01.000Z")],
-      incoming: [post("p2", "2026-01-01T00:00:02.000Z")],
+      existing: [post("p1", 1)],
+      incoming: [post("p2", 2)],
     });
     expect(merged.map((entry) => entry.id)).toEqual(["p1", "p2"]);
   });
 
-  it("orders two posts sharing a timestamp by id rather than by arrival", () => {
-    // THE INPUT THAT DISTINGUISHES A STABLE ORDER FROM AN ACCIDENTAL ONE. Posts
-    // land in the same millisecond — `createdAt` is a command field, so two
-    // agents replying at once is enough — and a comparator that returned 0 here
-    // would leave the order to whichever page arrived first, so the same history
-    // would render differently after a reload.
-    const forwards = mergeChannelPosts({
-      existing: [post("pb", "2026-01-01T00:00:01.000Z")],
-      incoming: [post("pa", "2026-01-01T00:00:01.000Z")],
-    });
-    const backwards = mergeChannelPosts({
-      existing: [post("pa", "2026-01-01T00:00:01.000Z")],
-      incoming: [post("pb", "2026-01-01T00:00:01.000Z")],
-    });
-    expect(forwards.map((entry) => entry.id)).toEqual(["pa", "pb"]);
-    expect(backwards.map((entry) => entry.id)).toEqual(["pa", "pb"]);
+  it("renders the SERVER's order, with lexicographic ids and equal timestamps", () => {
+    // THE TEST THAT CATCHES THE BUG THIS FILE SHIPPED. Ten posts, ids that sort
+    // lexicographically the wrong way, and every `createdAt` equal — which is
+    // ordinary, since it is millisecond resolution and two agents replying at
+    // once ties it.
+    //
+    // The previous version of this test asserted STABILITY: merge two posts both
+    // ways and check they agree. The wrong comparator satisfied that too, so it
+    // passed while `createdAt` + `id.localeCompare` rendered server order 1..10
+    // as 1, 10, 2, 3, … and a reply appeared above the question it answered.
+    // Stability is a real property and a weaker one; fidelity is the property.
+    const server = Array.from({ length: 10 }, (_, index) => post(`post-${index + 1}`, index + 1));
+    const merged = mergeChannelPosts({ existing: [], incoming: server });
+    expect(merged.map((entry) => entry.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(merged.map((entry) => entry.id)).toEqual(server.map((entry) => entry.id));
+  });
+
+  it("renders the server's order whichever way the pages arrived", () => {
+    // Stability, kept as the second property: paging upward and a live reply put
+    // the same posts into `existing` and `incoming` in opposite roles, and the
+    // rendered order must not depend on which.
+    const older = [post("post-1", 1), post("post-2", 2)];
+    const newer = [post("post-3", 3)];
+    expect(
+      mergeChannelPosts({ existing: newer, incoming: older }).map((entry) => entry.sequence),
+    ).toEqual([1, 2, 3]);
+    expect(
+      mergeChannelPosts({ existing: older, incoming: newer }).map((entry) => entry.sequence),
+    ).toEqual([1, 2, 3]);
   });
 
   it("returns the existing posts unchanged when a page comes back empty", () => {
     // The start of history answers with no posts. Losing what the view already
     // had would blank the channel at the moment the reader scrolled to its top.
-    const merged = mergeChannelPosts({
-      existing: [post("p1", "2026-01-01T00:00:01.000Z")],
-      incoming: [],
-    });
+    const merged = mergeChannelPosts({ existing: [post("p1", 1)], incoming: [] });
     expect(merged.map((entry) => entry.id)).toEqual(["p1"]);
   });
 });
