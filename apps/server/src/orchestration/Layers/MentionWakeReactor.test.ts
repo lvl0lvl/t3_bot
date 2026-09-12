@@ -1916,6 +1916,16 @@ describe("MentionWakeReactor wake budget", () => {
 
   const OTHER_CHANNEL_ID = ChannelId.make("channel-juniors");
 
+  /**
+   * One memberId held by BOTH a human member and a thread member — the fixture
+   * `t3_bot-46h` asks for, because against every other roster in this repo
+   * `memberId === x` and `memberKind === k && memberId === x` are the same
+   * function.
+   */
+  const COLLIDE_CHANNEL_ID = ChannelId.make("channel-collide");
+  const TWIN_MEMBER_ID = "human-walt";
+  const AS_TWIN = { memberKind: "thread", memberId: TWIN_MEMBER_ID } as const;
+
   /** A second channel with the same roster, to prove the budget is per channel. */
   const seedOtherChannel = async (system: System) => {
     await system.run(
@@ -1963,13 +1973,17 @@ describe("MentionWakeReactor wake budget", () => {
     system: System,
     prefix: string,
     count: number,
-    options: { readonly channelId?: ChannelId; readonly mention?: ChannelMemberHandle } = {},
+    options: {
+      readonly channelId?: ChannelId;
+      readonly mention?: ChannelMemberHandle;
+      readonly issuer?: { readonly memberKind: "thread" | "human"; readonly memberId: string };
+    } = {},
   ) => {
     for (let index = 0; index < count; index += 1) {
       await post(system, {
         id: `${prefix}-${index}`,
         mentions: [options.mention ?? MENTION],
-        issuer: AS_BYSTANDER,
+        issuer: options.issuer ?? AS_BYSTANDER,
         ...(options.channelId === undefined ? {} : { channelId: options.channelId }),
       });
     }
@@ -2163,6 +2177,173 @@ describe("MentionWakeReactor wake budget", () => {
 
       await agentPosts(system, "real", 1);
       expect((await wakesFrom(system, "seniors")).length).toBe(1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("is reset by a human post that mentions nobody", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await agentPosts(system, "runaway", WAKE_BUDGET_PER_CHANNEL + 1);
+      expect((await wakesFrom(system, "seniors")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+
+      // NO MENTIONS, deliberately. A human typing "stop" into a channel is the
+      // plainest form of the loop-breaking this whole feature is built around,
+      // and it names nobody. Reset the budget only on the wake path - which is
+      // the natural place to put it, since that is where the rest of the
+      // decision lives - and this gesture silently does nothing, leaving the
+      // human no way out but the one they cannot see.
+      await post(system, { id: "human-stop", mentions: [] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      await agentPosts(system, "after-human", 1);
+      expect((await wakesFrom(system, "seniors")).length).toBe(WAKE_BUDGET_PER_CHANNEL + 1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("is not reset by a thread member sharing the human member's id", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+
+      // THE COLLIDING ROSTER (`t3_bot-46h`), and it is reachable through the
+      // aggregate today rather than only through a pre-invariant event - which
+      // is that bead's open question, answered here by construction. The
+      // ORDERING is the whole fixture: `requireChannelMemberShape` refuses a
+      // HUMAN member whose memberId names an existing thread, so the human goes
+      // into the roster first and the thread of that name is created after.
+      // Nothing refuses the reverse, and no invariant makes memberId unique.
+      await system.run(
+        system.engine.dispatch(
+          {
+            type: "channel.create",
+            commandId: CommandId.make("cmd-channel-collide"),
+            channelId: COLLIDE_CHANNEL_ID,
+            name: "collide",
+            members: [
+              { handle: ChannelMemberHandle.make("woken"), memberKind: "thread", memberId: WOKEN },
+              {
+                handle: ChannelMemberHandle.make("walt"),
+                memberKind: "human",
+                memberId: TWIN_MEMBER_ID,
+              },
+            ],
+            createdAt: NOW,
+          },
+          { issuer: WALT },
+        ),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-thread-twin"),
+          projectId: PROJECT_ID,
+          threadId: ThreadId.make(TWIN_MEMBER_ID),
+          title: "Twin",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: NOW,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch(
+          {
+            type: "channel.member.add",
+            commandId: CommandId.make("cmd-member-twin"),
+            channelId: COLLIDE_CHANNEL_ID,
+            member: {
+              handle: ChannelMemberHandle.make("twin"),
+              memberKind: "thread",
+              memberId: TWIN_MEMBER_ID,
+            },
+          },
+          { issuer: WALT },
+        ),
+      );
+
+      await system.startReactor();
+      await agentPosts(system, "twin", WAKE_BUDGET_PER_CHANNEL + 1, {
+        channelId: COLLIDE_CHANNEL_ID,
+        issuer: AS_TWIN,
+      });
+      expect((await wakesFrom(system, "collide")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+
+      // THE ASSERTION THE FIXTURE EXISTS FOR. The twin is a THREAD whose
+      // memberId is also a human member's, so a reset that resolved the author
+      // by memberId - or that read the kind off whichever roster row matched
+      // first - reads this agent's post as the human's and hands the runaway
+      // its own way out. Against every other fixture in this repository that
+      // check and `authorRef.memberKind === "human"` are the same function.
+      await agentPosts(system, "twin-again", 1, {
+        channelId: COLLIDE_CHANNEL_ID,
+        issuer: AS_TWIN,
+      });
+      expect((await wakesFrom(system, "collide")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+
+      // And the other direction, without which this proves only that nothing
+      // resets it: the HUMAN of that same memberId does clear it.
+      await post(system, { id: "collide-human", mentions: [], channelId: COLLIDE_CHANNEL_ID });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      await agentPosts(system, "twin-after-human", 1, {
+        channelId: COLLIDE_CHANNEL_ID,
+        issuer: AS_TWIN,
+      });
+      expect((await wakesFrom(system, "collide")).length).toBe(WAKE_BUDGET_PER_CHANNEL + 1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("does not spend the budget twice for a post the held cursor replays", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    // The first channel read fails, so that post's wake fails and the cursor
+    // holds - which is this reactor's DESIGNED behaviour, not an edge case. Every
+    // post after it is then replayed on the next start alongside the failed one.
+    let system = await makeSystem(databasePath, { channels: channelReadsFailing(1) });
+    const replayed = 5;
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+
+      await agentPosts(system, "held", 1);
+      await agentPosts(system, "spent", replayed);
+      // The held post woke nobody; the five after it did.
+      expect((await wakesFrom(system, "seniors")).length).toBe(replayed);
+      await system.dispose();
+
+      system = await makeSystem(databasePath);
+      await system.startReactor();
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      // The held post is replayed and woken; the five are replayed and absorbed
+      // by the derived commandId, so the thread has six wakes and not eleven.
+      expect((await wakesFrom(system, "seniors")).length).toBe(replayed + 1);
+
+      // THE PROPERTY: those five replays must not have spent the budget a second
+      // time. Key the spend on the timestamp instead of the post and the channel
+      // has burned eleven of its twenty here, so the posts below run out early -
+      // a channel latched off by the replay of wakes it had already paid for,
+      // with nothing in the log to say why.
+      await agentPosts(system, "rest", WAKE_BUDGET_PER_CHANNEL - (replayed + 1));
+      expect((await wakesFrom(system, "seniors")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
