@@ -12,6 +12,12 @@
  * gateway's seam stages its ids as strings; the client door brands them and
  * passes the brand's underlying string in. Both callers get the same decisions.
  *
+ * THE PAGING ARITHMETIC LIVES HERE TOO, for the reason above rather than as a
+ * convenience: the over-fetch, which end of it to drop, which row the cursor comes
+ * off, and whether there is a next page are four decisions that have to agree with
+ * the format, and they were written twice in two styles. They agreed only while the
+ * store returned exactly what LIMIT asked for.
+ *
  * @module channelCursor
  */
 import * as Option from "effect/Option";
@@ -71,4 +77,55 @@ export const decodeChannelCursor = (channelId: string, cursor: string): Option.O
     return Option.none<number>();
   }
   return Option.some(sequence);
+};
+
+/**
+ * How many rows to ask the store for when the caller wants `limit` of them.
+ *
+ * ONE MORE THAN ASKED FOR. `nextCursor` has to say whether another post exists in
+ * that direction, and the extra row answers it without a second query — the row
+ * itself is never returned to the caller.
+ */
+export const channelPostOverFetch = (limit: number): number => limit + 1;
+
+/**
+ * Which of the over-fetched rows are the page, and the cursor to continue from.
+ *
+ * Takes the rows the store returned ASCENDING in both directions, which is what
+ * `listPosts` and `listPostsBackward` both promise, and returns rows rather than
+ * posts: the two doors map a row to a different shape, and the gateway's drops
+ * `sequence`, so the cursor has to be taken here while the row still carries one.
+ *
+ * BACKWARD DROPS FROM THE FRONT. Going backward the over-fetched row is the OLDEST
+ * one and going forward the NEWEST, so slicing the tail in both directions would
+ * discard the post the caller asked for and keep the probe — a channel rendered one
+ * post behind itself.
+ *
+ * `rows.length - limit` rather than `slice(-limit)`, which are the same expression
+ * for every limit but one: `slice(-0)` is `slice(0)` and returns the WHOLE
+ * over-fetched array, so a limit of zero would answer with a post the caller
+ * declined to ask for.
+ */
+export const resolveChannelPostPage = <A extends { readonly sequence: number }>(input: {
+  readonly channelId: string;
+  readonly direction: "forward" | "backward";
+  readonly limit: number;
+  readonly rows: ReadonlyArray<A>;
+}): { readonly rows: ReadonlyArray<A>; readonly nextCursor: string | null } => {
+  // `>` rather than `=== overFetch`: the question is whether more rows exist than
+  // the caller wanted, and a store that ever returned two extra would answer the
+  // equality with "no more pages" — the caught-up lie this module exists to stop.
+  const more = input.rows.length > input.limit;
+  const rows = more
+    ? input.direction === "backward"
+      ? input.rows.slice(input.rows.length - input.limit)
+      : input.rows.slice(0, input.limit)
+    : input.rows;
+  // Forward points AFTER the last row returned; backward points BEFORE the first.
+  const edge = input.direction === "backward" ? rows[0] : rows[rows.length - 1];
+  return {
+    rows,
+    nextCursor:
+      more && edge !== undefined ? encodeChannelCursor(input.channelId, edge.sequence) : null,
+  };
 };

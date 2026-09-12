@@ -32,7 +32,11 @@ import {
   type ChannelMemberRef,
   type ProjectionChannelPost,
 } from "../persistence/Services/ProjectionChannels.ts";
-import { decodeChannelCursor, encodeChannelCursor } from "./channelCursor.ts";
+import {
+  channelPostOverFetch,
+  decodeChannelCursor,
+  resolveChannelPostPage,
+} from "./channelCursor.ts";
 
 /**
  * The caller asked for a channel it is not in, or one that does not exist.
@@ -109,9 +113,7 @@ export function readChannelPostPage(input: {
 
     const at = yield* resolveCursor(channelId, cursor);
 
-    // One more than asked for, to answer "is there another page" rather than
-    // guess at it.
-    const overFetch = limit + 1;
+    const overFetch = channelPostOverFetch(limit);
     const rows =
       direction === "backward"
         ? yield* projectionChannels.listPostsBackward({
@@ -125,20 +127,15 @@ export function readChannelPostPage(input: {
             afterSequence: Option.getOrUndefined(at),
           });
 
-    const more = rows.length === overFetch;
-    // BACKWARD DROPS FROM THE FRONT. Both reads return ASCENDING, so going
-    // backward the over-fetched row is the OLDEST one — dropping from the end
-    // there would discard the newest post and show a channel one post behind.
-    const page = more ? (direction === "backward" ? rows.slice(1) : rows.slice(0, limit)) : rows;
-
-    // The cursor points where the next read continues FROM: before the first row
-    // going backward, after the last going forward. `null` when this page reached
-    // the end in that direction.
-    const edge = direction === "backward" ? page[0] : page[page.length - 1];
+    // Shared with the comms gateway, beside the codec: over-fetch, which end to
+    // drop, which row the cursor comes off and whether a next page exists are
+    // decisions about the cursor format, and this door held its own copy of all
+    // four in a different style from the other door's.
+    const page = resolveChannelPostPage({ channelId, direction, limit, rows });
     return {
       channelId,
-      posts: page.map(toPost),
-      nextCursor: more && edge !== undefined ? encodeChannelCursor(channelId, edge.sequence) : null,
+      posts: page.rows.map(toPost),
+      nextCursor: page.nextCursor,
     };
   });
 }
