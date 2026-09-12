@@ -461,6 +461,41 @@ export const ProjectIconOverride = Schema.Union([
 ]);
 export type ProjectIconOverride = typeof ProjectIconOverride.Type;
 
+/**
+ * A channel member. `memberId` of a thread member is its ThreadId, but the
+ * field is never named `threadId`: a top-level `threadId` on a `channel.*`
+ * payload routes the command to the thread aggregate, and nothing catches it.
+ */
+export const ChannelMember = Schema.Struct({
+  handle: ChannelMemberHandle,
+  memberKind: Schema.Literals(["thread", "human"]),
+  memberId: TrimmedNonEmptyString,
+});
+export type ChannelMember = typeof ChannelMember.Type;
+
+/** Identifies a post's author. Derived server-side, never supplied by an agent. */
+export const ChannelAuthorRef = Schema.Struct({
+  memberKind: Schema.Literals(["thread", "human"]),
+  memberId: TrimmedNonEmptyString,
+});
+export type ChannelAuthorRef = typeof ChannelAuthorRef.Type;
+
+/**
+ * A channel as the decider sees it. Membership is here because every write
+ * invariant needs it; posts are not, because this model is rebuilt on every
+ * event and a channel's history is unbounded. Post bodies live in the
+ * projection the gateway reads.
+ */
+export const OrchestrationChannel = Schema.Struct({
+  id: ChannelId,
+  name: TrimmedNonEmptyString,
+  members: Schema.Array(ChannelMember),
+  archivedAt: Schema.NullOr(IsoDateTime),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationChannel = typeof OrchestrationChannel.Type;
+
 export const OrchestrationProject = Schema.Struct({
   id: ProjectId,
   title: TrimmedNonEmptyString,
@@ -761,6 +796,8 @@ export const OrchestrationReadModel = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   projects: Schema.Array(OrchestrationProject),
   threads: Schema.Array(OrchestrationThread),
+  // Optional on the wire so snapshots cached by pre-channel servers still decode.
+  channels: Schema.optional(Schema.Array(OrchestrationChannel)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationReadModel = typeof OrchestrationReadModel.Type;
@@ -990,25 +1027,6 @@ export const ProjectCreateCommand = Schema.Struct({
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   createdAt: IsoDateTime,
 });
-
-/**
- * A channel member. `memberId` of a thread member is its ThreadId, but the
- * field is never named `threadId`: a top-level `threadId` on a `channel.*`
- * payload routes the command to the thread aggregate, and nothing catches it.
- */
-export const ChannelMember = Schema.Struct({
-  handle: ChannelMemberHandle,
-  memberKind: Schema.Literals(["thread", "human"]),
-  memberId: TrimmedNonEmptyString,
-});
-export type ChannelMember = typeof ChannelMember.Type;
-
-/** Identifies a post's author. Derived server-side, never supplied by an agent. */
-export const ChannelAuthorRef = Schema.Struct({
-  memberKind: Schema.Literals(["thread", "human"]),
-  memberId: TrimmedNonEmptyString,
-});
-export type ChannelAuthorRef = typeof ChannelAuthorRef.Type;
 
 /** A mention cap keeps one post from fanning out to an unbounded wake set. */
 const ChannelMentions = Schema.Array(ChannelMemberHandle).check(Schema.isMaxLength(32));

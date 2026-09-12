@@ -37,6 +37,11 @@ import {
 import {
   listThreadsByProjectId,
   requireActiveProjectWorkspaceRootAbsent,
+  requireChannel,
+  requireChannelAbsent,
+  requireChannelAuthorIsMember,
+  requireChannelHandlesUnique,
+  requireChannelMentionsResolve,
   requireProject,
   requireProjectAbsent,
   requireThread,
@@ -2015,6 +2020,164 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
       return [unsettledEvent, activityAppendedEvent];
+    }
+
+    case "channel.create": {
+      yield* requireChannelAbsent({ readModel, command, channelId: command.channelId });
+      yield* requireChannelHandlesUnique({ command, members: command.members });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.created",
+        payload: {
+          channelId: command.channelId,
+          name: command.name,
+          members: command.members,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "channel.meta.update": {
+      yield* requireChannel({ readModel, command, channelId: command.channelId });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.meta-updated",
+        payload: {
+          channelId: command.channelId,
+          ...(command.name !== undefined ? { name: command.name } : {}),
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "channel.archive": {
+      yield* requireChannel({ readModel, command, channelId: command.channelId });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.archived",
+        payload: {
+          channelId: command.channelId,
+          archivedAt: occurredAt,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "channel.unarchive": {
+      yield* requireChannel({ readModel, command, channelId: command.channelId });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.unarchived",
+        payload: {
+          channelId: command.channelId,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "channel.member.add": {
+      const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
+      yield* requireChannelHandlesUnique({
+        command,
+        members: [...channel.members, command.member],
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.member-added",
+        payload: {
+          channelId: command.channelId,
+          member: command.member,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "channel.member.remove": {
+      const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
+      if (!channel.members.some((member) => member.handle === command.handle)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Handle '${command.handle}' is not a member of channel '${command.channelId}'.`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.member-removed",
+        payload: {
+          channelId: command.channelId,
+          handle: command.handle,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "channel.post.create": {
+      const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
+      // Membership and mention resolution are enforced here, not only in the
+      // toolkit: its pre-check and this write are not atomic, and every future
+      // caller inherits whatever the aggregate accepts.
+      const author = yield* requireChannelAuthorIsMember({
+        command,
+        channel,
+        authorRef: command.authorRef,
+      });
+      yield* requireChannelMentionsResolve({ command, channel, mentions: command.mentions });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.post-created",
+        payload: {
+          channelId: command.channelId,
+          postId: command.postId,
+          authorRef: command.authorRef,
+          // Resolved from membership so the reactor never joins to find it.
+          authorHandle: author.handle,
+          body: command.body,
+          mentions: command.mentions,
+          parentPostId: command.parentPostId,
+          createdAt: command.createdAt,
+        },
+      };
     }
 
     default: {

@@ -1,4 +1,11 @@
 import {
+  ChannelArchivedPayload as ContractsChannelArchivedPayloadSchema,
+  ChannelCreatedPayload as ContractsChannelCreatedPayloadSchema,
+  ChannelMemberAddedPayload as ContractsChannelMemberAddedPayloadSchema,
+  ChannelMemberRemovedPayload as ContractsChannelMemberRemovedPayloadSchema,
+  ChannelMetaUpdatedPayload as ContractsChannelMetaUpdatedPayloadSchema,
+  ChannelPostCreatedPayload as ContractsChannelPostCreatedPayloadSchema,
+  ChannelUnarchivedPayload as ContractsChannelUnarchivedPayloadSchema,
   ProjectCreatedPayload as ContractsProjectCreatedPayloadSchema,
   ProjectMetaUpdatedPayload as ContractsProjectMetaUpdatedPayloadSchema,
   ProjectDeletedPayload as ContractsProjectDeletedPayloadSchema,
@@ -33,6 +40,13 @@ import {
 } from "@t3tools/contracts";
 
 // Server-internal alias surface, backed by contract schemas as the source of truth.
+export const ChannelArchivedPayload = ContractsChannelArchivedPayloadSchema;
+export const ChannelCreatedPayload = ContractsChannelCreatedPayloadSchema;
+export const ChannelMemberAddedPayload = ContractsChannelMemberAddedPayloadSchema;
+export const ChannelMemberRemovedPayload = ContractsChannelMemberRemovedPayloadSchema;
+export const ChannelMetaUpdatedPayload = ContractsChannelMetaUpdatedPayloadSchema;
+export const ChannelPostCreatedPayload = ContractsChannelPostCreatedPayloadSchema;
+export const ChannelUnarchivedPayload = ContractsChannelUnarchivedPayloadSchema;
 export const ProjectCreatedPayload = ContractsProjectCreatedPayloadSchema;
 export const ProjectMetaUpdatedPayload = ContractsProjectMetaUpdatedPayloadSchema;
 export const ProjectDeletedPayload = ContractsProjectDeletedPayloadSchema;
