@@ -400,6 +400,13 @@ const post = async (
     readonly id: string;
     readonly mentions: ReadonlyArray<ChannelMemberHandle>;
     readonly parentPostId?: ChannelPostId;
+    /**
+     * Defaults to `NOW`, which every test above wanted and one below must not
+     * have: two posts sharing a timestamp tie on the pending turn's sort key,
+     * and a test that reads which row wins a tie is reading SQLite's rowid
+     * rather than the behaviour it names.
+     */
+    readonly createdAt?: string;
   },
 ) =>
   system.run(
@@ -412,7 +419,7 @@ const post = async (
         body: "have a look at this",
         mentions: input.mentions,
         parentPostId: input.parentPostId ?? null,
-        createdAt: NOW,
+        createdAt: input.createdAt ?? NOW,
       },
       { issuer: WALT },
     ),
@@ -1768,12 +1775,26 @@ describe("MentionWakeReactor", () => {
       expect(Option.isSome(pending)).toBe(true);
       expect(Option.isSome(pending) ? String(pending.value.messageId) : null).toBe(derived);
 
-      // AND IT IS THE POST'S OWN, not merely some turn on that thread. Deriving
-      // the key for a DIFFERENT post must not match - without this the
-      // assertion above passes against a projector that keeps the last turn
-      // whatever started it, which is the failure a second post causes.
+      // AND IT NAMES THE THREAD IT WOKE, not just the post. The key for the
+      // SAME post on the bystander's thread must not match.
+      //
+      // This replaces a negative that could not fail: it compared against the
+      // key for `post-other`, a post this fixture never creates and which
+      // exists nowhere in the repo, so no implementation could have produced
+      // it. A review lane measured that and was right. The comment above it was
+      // worse than the assertion - it credited this line with catching "a
+      // projector that keeps the last turn whatever started it", which the
+      // exact-match assertion above already catches and which a one-post
+      // fixture cannot stage at all. That property belongs to the two-post test
+      // below, which is where it now lives.
+      //
+      // The bystander's key differs from the woken thread's in the THREAD half
+      // alone, so this distinguishes a key that carries the thread from one
+      // that does not - and `comms-wake:<channel>:<post>` without the thread is
+      // a real mutant, since one post can wake several members and they would
+      // then share a correlation id.
       expect(String(Option.isSome(pending) ? pending.value.messageId : "")).not.toBe(
-        wakeKey(CHANNEL_ID, "post-other", WOKEN),
+        wakeKey(CHANNEL_ID, "post-correlate", BYSTANDER),
       );
 
       // AND THE BYSTANDER HAS NO TURN AT ALL. A correlation that matched on
@@ -1795,8 +1816,24 @@ describe("MentionWakeReactor", () => {
     try {
       await seedChannel(system);
       await system.startReactor();
-      await post(system, { id: "post-first", mentions: [MENTION] });
-      await post(system, { id: "post-second", mentions: [MENTION] });
+      // DISTINCT TIMESTAMPS, and this is the whole repair. With both posts on
+      // `NOW` the two pending rows tie on `requested_at`, which is what
+      // `getPendingProjectionTurn` orders by — so removing the DELETE from
+      // `replacePendingTurnStart` left two tied rows and SQLite returned the
+      // older one, reddening this test for a reason that has nothing to do with
+      // replacing. Measured by a review lane: give the posts realistic
+      // timestamps and that named mutant SURVIVES. A minute apart is what two
+      // posts a turn apart actually look like.
+      await post(system, {
+        id: "post-first",
+        mentions: [MENTION],
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      await post(system, {
+        id: "post-second",
+        mentions: [MENTION],
+        createdAt: "2026-01-01T00:01:00.000Z",
+      });
       await system.run(
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
@@ -1818,9 +1855,15 @@ describe("MentionWakeReactor", () => {
       expect(Option.isSome(pending) ? String(pending.value.messageId) : null).toBe(
         wakeKey(CHANNEL_ID, "post-second", WOKEN),
       );
-      expect(Option.isSome(pending) ? String(pending.value.messageId) : null).not.toBe(
-        wakeKey(CHANNEL_ID, "post-first", WOKEN),
-      );
+
+      // THE ROW COUNT IS WHAT PINS THE DELETE. The assertion above says which
+      // pending row wins; only this one says the other row is GONE. They are
+      // different claims and the first is answered by `ORDER BY requested_at
+      // DESC` whether or not anything was deleted — which is why the first
+      // version of this test passed against a projector that never replaced.
+      // One pending placeholder, not two.
+      const rows = await system.run(system.turns.listByThreadId({ threadId: WOKEN }));
+      expect(rows.filter((row) => row.turnId === null).length).toBe(1);
 
       // Both posts DID wake the thread - so the missing link above is about
       // what the projection retains, not about a wake that never happened.
