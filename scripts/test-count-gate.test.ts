@@ -1,12 +1,29 @@
 import { describe, expect, it } from "vite-plus/test";
 
+// @effect-diagnostics nodeBuiltinImport:off - tests a CLI gate that reads the
+// filesystem; the subject under test is the node API, not an Effect service.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import {
   CannotMeasure,
   compare,
+  describeScope,
   isRegression,
+  changedPaths,
+  jsonArrayPayload,
+  listWorkspaces,
+  selectsWorkspace,
+  unmeasurableWorkspacesTouched,
+  splitScope,
+  workspacesToRun,
+  reportFileName,
   toSuite,
   type RunnerReport,
   type Suite,
+  type Workspace,
 } from "./test-count-gate.ts";
 
 const suite = (entries: Record<string, ReadonlyArray<string>>): Suite =>
@@ -41,6 +58,408 @@ const headReportWithBrokenFile: RunnerReport = {
 const baseReportWithBrokenFile: RunnerReport = {
   testResults: [neverLoaded(FILE), loaded("apps/server/src/ok.test.ts")],
 };
+
+const REPO = NodePath.resolve(import.meta.dirname, "..");
+
+const workspace = (name: string, path: string, testScript?: string): Workspace => ({
+  name,
+  path: NodePath.join(REPO, path),
+  testScript,
+});
+
+describe("workspace enumeration", () => {
+  it("runs exactly the workspaces the scope line calls measured", () => {
+    // THE PRINTED SCOPE AND THE EXECUTED SCOPE ARE ONE SET. They were decided in
+    // two places — `splitScope` for the table, two `continue`s for the run — and
+    // a QA lane deleted either `continue` with all twenty tests green. The
+    // dangerous drift is the quiet one: the table claiming a workspace was
+    // measured that nothing ran.
+    const fixture = [
+      workspace("t3", "apps/server", "vp test run"),
+      workspace("@t3tools/marketing", "apps/marketing"),
+      workspace("@t3tools/desktop", "apps/desktop", "vp test run"),
+      workspace("@t3tools/web", "apps/web", "vp test run --project unit"),
+    ];
+    expect(workspacesToRun(fixture).map((entry) => entry.name)).toEqual(
+      splitScope(fixture).measured,
+    );
+    // And it is not vacuously equal because both are everything: the fixture
+    // carries one of each exclusion, and neither runs.
+    expect(splitScope(fixture).measured).toEqual(["t3", "@t3tools/web"]);
+  });
+
+  it("finds the JSON array after a pnpm warning, not the bracket inside it", () => {
+    // THE HEADLINE FIX OF THIS PR, AND NOTHING PINNED IT. pnpm prints
+    // `[WARN] Unsupported engine: wanted: {"node":"^24.13.1"}` ahead of the
+    // payload; the parse used to take the first `[` anywhere, which is the
+    // bracket of `[WARN]`. A history lane found the tolerance had been MOVED
+    // here rather than removed, while the PR body claimed it was gone.
+    //
+    // The discriminator is the character AFTER the bracket: a JSON array opens
+    // with whitespace, `{` or `]`; `[WARN]` opens with a letter.
+    const warned = [
+      '[WARN] Unsupported engine: wanted: {"node":"^24.13.1"} (current: {"node":"v24.12.0"})',
+      "[",
+      '  { "name": "t3", "path": "/repo/apps/server" }',
+      "]",
+      "",
+    ].join("\n");
+    const payload = jsonArrayPayload(warned);
+    expect(payload).toBeDefined();
+    expect(JSON.parse(payload!)).toEqual([{ name: "t3", path: "/repo/apps/server" }]);
+
+    // A compact payload on one line is still found.
+    expect(JSON.parse(jsonArrayPayload('[{"name":"t3"}]')!)).toEqual([{ name: "t3" }]);
+    // An empty array is a payload, not an absence.
+    expect(jsonArrayPayload("[]")).toBe("[]");
+    // And a stream with no payload at all is undefined, so the caller refuses
+    // rather than parsing a warning.
+    expect(jsonArrayPayload("[WARN] something\n[WARN] else")).toBeUndefined();
+    expect(jsonArrayPayload("")).toBeUndefined();
+  });
+
+  it("drops the ROOT package, whose test script runs every other workspace", () => {
+    // `@t3tools/monorepo`'s `test` is `vp run -r test` — an aggregator. Left in
+    // the list it runs the whole repo once more inside the loop that is already
+    // running it: every file measured twice, and the second pass nested.
+    const names = listWorkspaces(REPO).map((entry) => entry.name);
+    expect(names).not.toContain("@t3tools/monorepo");
+    // And the enumeration is not empty, so the assertion above is about the
+    // root rather than about listWorkspaces returning nothing.
+    expect(names).toContain("@t3tools/scripts");
+  });
+
+  it("finds only pnpm-workspace members, so a nested checkout cannot be one", () => {
+    // THE REASON THIS ASKS THE PACKAGE MANAGER INSTEAD OF WALKING DIRECTORIES.
+    // A walk finds `.claude/worktrees/<other branch>` — a full checkout of
+    // somebody else's branch — and measures its tests as this tree's. That is
+    // not hypothetical: it is what the PM's gate run on main did, collecting
+    // `scripts/build-desktop-artifact.test.ts` out of a senior's worktree.
+    // `pnpm ls` answers from pnpm-workspace.yaml, so a nested checkout is not a
+    // member and cannot be found — by construction, not by an exclusion list
+    // someone has to remember to extend.
+    // THE PROPERTY IS MEMBERSHIP, NOT A PATH SUBSTRING. The first version of
+    // this test asserted no path contains `/.claude/` — and a quality lane
+    // measured that in a senior's own worktree, which is where CLAUDE.md tells
+    // seniors to work, ALL SIXTEEN workspace paths contain it, starting with the
+    // repo root. It reds for every reviewer and passes for the author, who
+    // happened to develop this under /private/tmp. It also never tested its
+    // stated property: a nested checkout IS inside the repo root, so the
+    // enclosing assertion passes for one.
+    //
+    // What actually excludes a nested checkout is pnpm workspace membership, so
+    // that is what this asserts: every returned path is one of the directories
+    // pnpm-workspace.yaml's globs reach, relative to the repo root.
+    const real = NodeFS.realpathSync(REPO);
+    const globs = NodeFS.readFileSync(NodePath.join(REPO, "pnpm-workspace.yaml"), "utf8")
+      .split("\n")
+      .map((line) => /^\s*-\s*(\S+)\s*$/.exec(line)?.[1])
+      .filter((entry): entry is string => entry !== undefined && !entry.includes(":"));
+    expect(globs.length).toBeGreaterThan(0);
+
+    for (const entry of listWorkspaces(REPO)) {
+      const relative = NodePath.relative(real, NodeFS.realpathSync(entry.path));
+      expect(relative.startsWith("..")).toBe(false);
+      // Every member sits exactly where a glob says it may: `apps/*` admits
+      // `apps/server` and nothing deeper, `scripts` admits itself.
+      const matched = globs.some((glob) =>
+        glob.endsWith("/*") ? NodePath.dirname(relative) === glob.slice(0, -2) : relative === glob,
+      );
+      expect({ path: relative, matched }).toEqual({ path: relative, matched: true });
+    }
+  });
+
+  it("puts a workspace with no `test` script on the SKIPPED side, by name", () => {
+    // A WORKSPACE WITH NO `test` SCRIPT IS SCOPE THE GATE DOES NOT COVER, so it
+    // is named in the output rather than dropped silently.
+    //
+    // THE FIXTURE HAS ONE, which is the entire point. The first version of this
+    // test asked the real repo whether the split was "consistent" — and
+    // `measured: everything, skipped: []` is perfectly consistent, so a mutant
+    // that reported every skipped workspace as measured survived it. The input
+    // that separates the two implementations is a workspace with no test
+    // script, and a test that will not name one has to bring one.
+    const scope = splitScope([
+      workspace("t3", "apps/server", "vp test run"),
+      workspace("@t3tools/marketing", "apps/marketing"),
+      workspace("@t3tools/web", "apps/web", "vp test run --project unit"),
+    ]);
+    expect(scope.measured).toEqual(["t3", "@t3tools/web"]);
+    expect(scope.skipped).toEqual(["@t3tools/marketing"]);
+  });
+
+  it("puts a workspace declared unmeasurable in a cold tree in its OWN bucket", () => {
+    // A THIRD BUCKET, and it is not the same as having no tests: this one HAS a
+    // test script and the gate still cannot run it against a cold base. It must
+    // not land in `measured`, because the scope line would then claim a
+    // workspace nobody measured.
+    //
+    // BY FIXTURE, not by arithmetic. A mutant that reported it as measured was
+    // first caught only by a count identity over the real repo — sum of the
+    // three buckets equals the workspace list — which reds for the wrong
+    // reason and stops reding the day the identity is restored some other way.
+    const scope = splitScope([
+      workspace("t3", "apps/server", "vp test run"),
+      workspace("@t3tools/desktop", "apps/desktop", "vp test run"),
+    ]);
+    expect(scope.measured).toEqual(["t3"]);
+    expect(scope.unmeasurable).toEqual(["@t3tools/desktop"]);
+    expect(scope.skipped).toEqual([]);
+  });
+
+  it("gives two workspaces two report files, whatever their names collapse to", () => {
+    // THE INPUT THAT SEPARATES THE TWO IMPLEMENTATIONS, which is the only reason
+    // this pair is here: under the old substitution both of these became
+    // `-t3tools-mobile.json`, and the second workspace's run then read — or
+    // overwrote — the first one's report. Every other name in this repo survives
+    // the substitution intact, so no fixture drawn from the real workspace list
+    // could tell the two apart.
+    expect(reportFileName("@t3tools/mobile")).not.toBe(reportFileName("@t3tools-mobile"));
+    // AND IT IS STILL A FILENAME a person can read in a directory listing, which
+    // is the reason it is an escape rather than a hash.
+    expect(reportFileName("@t3tools/mobile")).toBe("%40t3tools%2fmobile.json");
+    // `%` escapes too, or the encoding would not be reversible and the collision
+    // would come back one level up: `a%2fb` and `a/b` must not meet.
+    expect(reportFileName("a%2fb")).not.toBe(reportFileName("a/b"));
+    // A name already safe is left alone, so the common case stays legible.
+    expect(reportFileName("t3")).toBe("t3.json");
+  });
+
+  it("keys a suite by REPO-RELATIVE path, which is the only thing base and head share", () => {
+    // THE POSITIVE DIRECTION, which nothing asserted. Every other test here is a
+    // refusal — a file that failed to load, a report with no files — and a
+    // version that kept the runner's absolute path, or relativised against the
+    // wrong root, satisfies all of them. Base and head live in different
+    // directories, so an absolute key means the two suites share no key at all
+    // and `compare` reads every file as one removed and one added: the gate
+    // cries deletion over an unchanged tree, which is what the `realpath`
+    // comment in `toSuite` is an account of.
+    const suite = toSuite(
+      {
+        testResults: [
+          {
+            name: NodePath.join(REPO_ROOT, "apps/server/src/x.test.ts"),
+            status: "passed",
+            assertionResults: [{ fullName: "x > works", status: "passed" }],
+          },
+        ],
+      },
+      REPO_ROOT,
+      "@t3tools/server in the head tree",
+    );
+    expect([...suite.keys()]).toEqual(["apps/server/src/x.test.ts"]);
+    // AND THE NAMES UNDER IT, because a key with the right spelling over an
+    // empty entry compares equal to a file whose tests were all deleted.
+    expect(suite.get("apps/server/src/x.test.ts")?.names).toEqual(["x > works"]);
+  });
+
+  it("does not call a declared workspace unmeasurable once it has no `test` script", () => {
+    // THE FIXTURE THE REPO CANNOT SUPPLY, and the reason this is not asserted
+    // over the real one: `@t3tools/desktop` is the only declared-unmeasurable
+    // workspace and it HAS a test script, so a filter that forgot to ask about
+    // the script returns the same answer over this repo as one that asks. I
+    // wrote that assertion first and a mutant walked through it.
+    //
+    // A declared workspace with no `test` script is a plain skip, not a refusal.
+    // It has no tests to lose; one that DROPS its script is caught by the
+    // comparison, because base still reports the files. Filing it as
+    // unmeasurable would make `main` refuse every PR that touched it while the
+    // scope line printed it under "no test script", never showing the declared
+    // reason — the two-buckets drift `unmeasurableWorkspaces` exists to end.
+    const scope = splitScope([workspace("@t3tools/desktop", "apps/desktop")]);
+    expect(scope.skipped).toEqual(["@t3tools/desktop"]);
+    expect(scope.unmeasurable).toEqual([]);
+    expect(scope.unmeasurableWorkspaces).toEqual([]);
+  });
+
+  it("describes the real repo's scope as a split of its real workspaces", () => {
+    // The wiring, once: `describeScope` really does run the enumeration through
+    // the split rather than computing something of its own. THREE buckets — a
+    // workspace is measured, skipped for having no `test` script, or skipped as
+    // unmeasurable in a cold base tree — and every workspace lands in exactly
+    // one, so a workspace cannot fall out of the scope line entirely.
+    // THE TARGET IS PASSED, NOT INHERITED. This read the ambient
+    // TEST_COUNT_GATE_TARGET — the narrowing knob documented in this file's own
+    // Usage block — so a developer who exported it to prove something locally
+    // and then ran the suite got a false red on the merge gate's own tests. A
+    // quality lane measured both halves reding under `=apps/web`.
+    const scope = describeScope(REPO, "");
+    const listed = listWorkspaces(REPO);
+    expect(scope.measured.length + scope.skipped.length + scope.unmeasurable.length).toBe(
+      listed.length,
+    );
+    expect(scope.measured).toContain("@t3tools/scripts");
+    // THE TWO FILTERS AGREE, which is the whole of QUAL-28-06: the refusal reads
+    // `unmeasurableWorkspaces` and the scope line prints `unmeasurable`, and
+    // before this they were computed in different places from different
+    // predicates. A workspace refused-when-touched by one and filed under "no
+    // test script" by the other is the drift, and it is invisible until the day
+    // a declared workspace drops its `test` script.
+    expect(scope.unmeasurableWorkspaces.map((workspace) => workspace.name)).toEqual(
+      scope.unmeasurable,
+    );
+  });
+
+  it("names the workspace a test file was MOVED OUT OF, not just where it landed", () => {
+    // THE PRODUCER, not a hand-written array. Both directions of
+    // `unmeasurableWorkspacesTouched` were already tested — over paths this file
+    // typed out itself. Nothing exercised the function whose input comes from
+    // another program, and that is where the hole was.
+    //
+    // `git diff --name-only` detects renames by default and prints ONE path for
+    // the pair: the DESTINATION. So moving a test file out of a skipped
+    // workspace produced a changed-path list that never named that workspace,
+    // the refusal never fired, and the gate went green over a PR that removed
+    // test files from a workspace it refuses to measure. Executed by a
+    // contracts lane in a throwaway repo before it was fixed here.
+    //
+    // A REAL REPO AND A REAL `git mv`, because the property belongs to git's
+    // flags rather than to this code: a fixture of strings would pass against
+    // the broken version.
+    const repo = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "count-gate-rename-"));
+    try {
+      const git = (...args: ReadonlyArray<string>) =>
+        NodeChildProcess.execFileSync("git", [...args], { cwd: repo, encoding: "utf8" });
+      git("init", "--quiet");
+      git("config", "user.email", "gate@example.invalid");
+      git("config", "user.name", "count gate test");
+      NodeFS.mkdirSync(NodePath.join(repo, "apps/desktop/src"), { recursive: true });
+      NodeFS.mkdirSync(NodePath.join(repo, "apps/server/src"), { recursive: true });
+      // Long enough that git's similarity detection calls it a rename rather
+      // than a delete plus an add — which is the case that was broken.
+      NodeFS.writeFileSync(
+        NodePath.join(repo, "apps/desktop/src/Thing.test.ts"),
+        Array.from({ length: 40 }, (_, index) => `it("case ${index}", () => {});`).join("\n"),
+      );
+      git("add", "-A");
+      git("commit", "--quiet", "-m", "base");
+      const base = git("rev-parse", "HEAD").trim();
+      git("mv", "apps/desktop/src/Thing.test.ts", "apps/server/src/Thing.test.ts");
+      git("commit", "--quiet", "-m", "move the tests out");
+
+      const changed = changedPaths(repo, base);
+      expect(changed).toContain("apps/desktop/src/Thing.test.ts");
+      expect(changed).toContain("apps/server/src/Thing.test.ts");
+
+      // And the refusal that depends on it actually fires.
+      const desktop: Workspace = {
+        name: "@t3tools/desktop",
+        path: NodePath.join(repo, "apps/desktop"),
+        testScript: "vp test run",
+      };
+      expect(unmeasurableWorkspacesTouched(changed, [desktop], repo)).toEqual(["@t3tools/desktop"]);
+    } finally {
+      NodeFS.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("does not refuse a PR that touches only workspaces it measures", () => {
+    // THE ADMIT SIDE, and without it the refusal below is satisfied by a gate
+    // that refuses every PR. A skip is acceptable scope while the PR did not
+    // change it — which is the ordinary case and must stay ordinary.
+    const desktop = workspace("@t3tools/desktop", "apps/desktop", "vp test run");
+    expect(
+      unmeasurableWorkspacesTouched(
+        ["apps/server/src/ws.ts", "scripts/test-count-gate.ts"],
+        [desktop],
+        REPO,
+      ),
+    ).toEqual([]);
+  });
+
+  it("refuses a PR that touches a workspace the gate skips", () => {
+    // SCOPE YOU CHANGED IS SCOPE YOU HAVE TO MEASURE. Skipping apps/desktop is
+    // tolerable until the PR edits apps/desktop, at which point a green gate
+    // would be asserting something it never looked at.
+    const desktop = workspace("@t3tools/desktop", "apps/desktop", "vp test run");
+    expect(
+      unmeasurableWorkspacesTouched(["apps/desktop/src/backend/Thing.ts"], [desktop], REPO),
+    ).toEqual(["@t3tools/desktop"]);
+    // A path that merely STARTS with the same letters is not inside it: the
+    // comparison is on a directory boundary, not a string prefix.
+    expect(unmeasurableWorkspacesTouched(["apps/desktop-notes/x.ts"], [desktop], REPO)).toEqual([]);
+  });
+
+  it("selects a workspace by package name, by directory, or by nothing at all", () => {
+    const server = workspace("t3", "apps/server", "vp test run");
+    const web = workspace("@t3tools/web", "apps/web", "vp test run");
+    // An empty target is every workspace: the default is the whole repo.
+    expect(selectsWorkspace("", server, REPO)).toBe(true);
+    expect(selectsWorkspace("", web, REPO)).toBe(true);
+    // By directory, which is how the interim ruling narrowed it.
+    expect(selectsWorkspace("apps/server", server, REPO)).toBe(true);
+    expect(selectsWorkspace("apps/server", web, REPO)).toBe(false);
+    // By package name, because `t3` is what the server is called and a reader
+    // who knows the filter from CI will reach for it.
+    expect(selectsWorkspace("t3", server, REPO)).toBe(true);
+    // A target that matches nothing selects nothing — `main` turns that into a
+    // refusal rather than an empty, green run.
+    expect(selectsWorkspace("apps/nonexistent", server, REPO)).toBe(false);
+    expect(selectsWorkspace("apps/nonexistent", web, REPO)).toBe(false);
+  });
+});
+
+describe("the gate refuses rather than measuring nothing", () => {
+  // EXECUTED, THROUGH THE REAL BINARY. A QA lane mutated five of the six
+  // refusals and nothing red, because every test in this file drives a pure
+  // helper. Four of them return in about two seconds and need no base worktree,
+  // so there was never a cost argument for leaving them unpinned — only the
+  // absence of a seam, and a child process is the seam.
+  const runGate = (args: ReadonlyArray<string>, target?: string) => {
+    const result = NodeChildProcess.spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", NodePath.join(REPO, "scripts/test-count-gate.ts"), ...args],
+      {
+        cwd: REPO,
+        encoding: "utf8",
+        // BOUNDED, because every case here is meant to refuse BEFORE the
+        // expensive work. If a refusal is ever removed the gate walks on into a
+        // cold base worktree and a full install — minutes, not seconds — so a
+        // regression would surface as a hung suite rather than a red one. That
+        // happened during this PR's own mutation run: two mutants turned a
+        // two-second assertion into a base-tree build. The timeout turns it back
+        // into a failure.
+        timeout: 60_000,
+        env:
+          target === undefined ? process.env : { ...process.env, TEST_COUNT_GATE_TARGET: target },
+      },
+    );
+    return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  };
+
+  it("refuses a target that selects no workspace at all", () => {
+    const run = runGate(["--base", "origin/main"], "no-such-workspace-zzz");
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain("matches");
+    // NOT a coverage verdict. Exit 2 and exit 1 mean opposite things to an
+    // author, and the file's contract is that they are never confused.
+    expect(run.stdout).not.toContain("no test lost");
+  });
+
+  it("refuses a selection in which every workspace is skipped", () => {
+    // THE FAIL-OPEN. Without this refusal both sides produce an empty suite,
+    // `compare` returns no rows, and the gate writes "no test lost by count or
+    // by name" over a measurement of nothing — which is the #26 Critical, one
+    // level up. `@t3tools/marketing` declares no `test` script, so selecting
+    // only it selects nothing runnable.
+    const run = runGate(["--base", "origin/main"], "marketing");
+    expect(run.status).toBe(2);
+    expect(run.stdout).not.toContain("no test lost");
+  });
+
+  it("refuses a base ref it cannot diff", () => {
+    const run = runGate(["--base", "refs/heads/no-such-ref-zzz"]);
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain("could not diff");
+  });
+
+  it("refuses an option it does not know", () => {
+    // A mistyped `--allow` means the author BELIEVES a decrease is explained.
+    const run = runGate(["--base", "origin/main", "--allowed", "x=y"]);
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain("unknown option");
+  });
+});
 
 describe("test-count-gate", () => {
   it("passes a file that only gained tests", () => {
@@ -114,8 +533,12 @@ describe("test-count-gate", () => {
     // Read as zero tests, a head that does not compile prints "coverage went
     // DOWN" and lists every test in that file as lost, sending the author to
     // hunt for deletions that never happened.
-    expect(() => toSuite(headReportWithBrokenFile, REPO_ROOT)).toThrow(CannotMeasure);
-    expect(() => toSuite(headReportWithBrokenFile, REPO_ROOT)).toThrow(/failed to load/);
+    expect(() =>
+      toSuite(headReportWithBrokenFile, REPO_ROOT, "@t3tools/web in the head tree"),
+    ).toThrow(CannotMeasure);
+    expect(() =>
+      toSuite(headReportWithBrokenFile, REPO_ROOT, "@t3tools/web in the head tree"),
+    ).toThrow(/failed to load/);
   });
 
   it("refuses to measure when a test file failed to LOAD in the base revision", () => {
@@ -125,18 +548,30 @@ describe("test-count-gate", () => {
     // revisions, so one guard covers both — this test exists because the two
     // failures are not the same failure, and a future refactor that split the
     // parse per revision must red here.
-    expect(() => toSuite(baseReportWithBrokenFile, REPO_ROOT)).toThrow(CannotMeasure);
-    expect(() => toSuite(baseReportWithBrokenFile, REPO_ROOT)).toThrow(/failed to load/);
+    expect(() =>
+      toSuite(baseReportWithBrokenFile, REPO_ROOT, "@t3tools/web in the base tree"),
+    ).toThrow(CannotMeasure);
+    expect(() =>
+      toSuite(baseReportWithBrokenFile, REPO_ROOT, "@t3tools/web in the base tree"),
+    ).toThrow(/failed to load/);
   });
 
-  it("refuses to measure when the runner matched no test files at all", () => {
-    // A GATE THAT MEASURED NOTHING MUST NOT REPORT A PASS. A runner given a
-    // filter that matches nothing emits valid JSON with an empty `testResults`
-    // and exits non-zero; read as an empty suite, every row is `before: 0`,
-    // nothing can regress, and the gate prints a green line. A security lane
-    // executed exactly that and the gate exited 0 over a real deletion.
-    expect(() => toSuite({ testResults: [] }, REPO_ROOT)).toThrow(CannotMeasure);
-    expect(() => toSuite({ testResults: [] }, REPO_ROOT)).toThrow(/measured no test files/);
+  it("refuses to measure when a workspace that has tests reported none", () => {
+    // A GATE THAT MEASURED NOTHING MUST NOT REPORT A PASS. A runner that
+    // matched nothing emits valid JSON with an empty `testResults`; read as an
+    // empty suite, every row is `before: 0`, nothing can regress, and the gate
+    // prints a green line. A security lane executed exactly that and the gate
+    // exited 0 over a real deletion.
+    //
+    // PER WORKSPACE SINCE `t3_bot-x4v`, and the workspace NAME is what makes
+    // the refusal actionable: "nothing measured" over sixteen workspaces does
+    // not say which one to go and look at. A workspace that legitimately has no
+    // tests declares no `test` script and is skipped by name in the scope line,
+    // so it never reaches here.
+    expect(() => toSuite({ testResults: [] }, REPO_ROOT, "@t3tools/web")).toThrow(CannotMeasure);
+    expect(() => toSuite({ testResults: [] }, REPO_ROOT, "@t3tools/web")).toThrow(
+      /@t3tools\/web reported no test files/,
+    );
   });
 
   it("says nothing about a file neither side runs", () => {

@@ -43,11 +43,18 @@
  * catches it, by the rename. `git diff` over the test files is the check for a
  * same-name rewrite, and it is the author's, not this script's.
  *
- * WHAT IT MEASURES: the whole repo, unless narrowed. `TEST_COUNT_GATE_TARGET` is
- * a filter passed to the runner; it exists so a human proving something locally
- * can wait seconds instead of minutes, and CI pays the full cost. A narrowed run
- * says so in the first line of its own table, so a table pasted into a PR body
- * cannot read as a full run.
+ * WHAT IT MEASURES: every workspace that declares a `test` script, running that
+ * script — the workspace's own, not one this file invents. Two exclusions, both
+ * named on every run rather than implied: a workspace with no `test` script, and
+ * one listed in `UNMEASURABLE_IN_COLD_TREE`. A narrowed run says so in the first
+ * line of its own table, so a table pasted into a PR body cannot read as a full
+ * run.
+ *
+ * `TEST_COUNT_GATE_TARGET` SELECTS WORKSPACES — it is matched against a
+ * workspace's package name and its directory. It was "a filter passed to the
+ * runner" under the root-project model this file replaced, and this sentence
+ * still said so a hundred lines above the constant that contradicted it, which
+ * is the first thing a reader meets.
  *
  * THE RULE HAS THREE OBLIGATIONS AND THIS COVERS ONE AND A HALF. Counts and
  * names, mechanised. The reason for a decrease, forced into words by `--allow`
@@ -70,9 +77,14 @@
  * ignore it:
  *   0  measured, nothing lost by count or by name
  *   1  measured, something was lost and nothing explained it
- *   2  COULD NOT MEASURE — no runner, a runner that matched nothing, a base ref
- *      that will not check out (a shallow CI clone does this), a test file that
- *      fails to load in either revision, an `--allow` that matches nothing.
+ *   2  COULD NOT MEASURE — and the list is meant to stay exhaustive, so add to
+ *      it when you add a refusal: no workspace list, a selection matching no
+ *      workspace, a workspace that produced no report, a workspace that declares
+ *      a `test` script and then measures nothing, a test file that fails to load
+ *      in either revision, a base ref that will not check out (a shallow CI
+ *      clone does this), an `--allow` that matches nothing, a stale entry in
+ *      `UNMEASURABLE_IN_COLD_TREE`, and — the one an author actually meets —
+ *      THE PR'S DIFF TOUCHING A WORKSPACE THE GATE SKIPS.
  *      Never confuse this with 1: "your head does not compile" must not reach an
  *      author as "you deleted tests".
  */
@@ -137,49 +149,488 @@ export interface FileTests {
 export type Suite = Map<string, FileTests>;
 
 /**
- * WHAT TO MEASURE, and the default is EVERYTHING.
+ * WHICH WORKSPACES TO MEASURE, and the default is all of them.
  *
- * Empty means no filter, which is the runner's own "run every test in the
- * workspace". It defaulted to `apps/server` — 329 of the repo's ~1,177 test
- * files — so a deletion in `apps/web` (363 files), mobile, desktop, packages or
- * infra produced no row and a green line, and the gate could not even measure
- * its own tests, which live here in `scripts/`. Three lanes found that
- * independently and the PM ruled: CI pays for the whole repo, humans narrow.
+ * A substring matched against the workspace's package NAME and its directory,
+ * so `apps/server` and `server` both select the server.
  *
- * A value here is a runner FILTER, not a directory: it is matched against test
- * file paths as a substring. Narrowing is printed in the table's first line, so
- * a narrowed run cannot be pasted into a PR body as a full one.
+ * NARROW BY DIRECTORY. `t3` looks like the server's package name and selects
+ * THIRTEEN of the fourteen workspaces, because every scoped package here begins
+ * `@t3tools/` — measured, after this docstring offered it as a narrowing
+ * example and would have handed the reader a full run. Narrowing is
+ * printed in the table's first line, so a narrowed run cannot be pasted into a
+ * PR body as a full one.
+ *
+ * IT USED TO BE A RUNNER FILTER FOR ONE ROOT-PROJECT RUN, and that is the bug
+ * this file was rewritten for (`t3_bot-x4v`): see `listWorkspaces`.
  */
 const TEST_TARGET = process.env["TEST_COUNT_GATE_TARGET"] ?? "";
 
 /**
- * The runner's own account of what ran.
+ * Workspaces that cannot be measured in a COLD BASE TREE, with the reason.
  *
- * THE PAYLOAD STARTS AT THE FIRST BRACE because some wrapper versions print a
- * banner first. The input that breaks that: a banner that itself contains a
- * brace — a printed config object, a `{a,b}` glob echoed back, a JSON progress
- * line. Then `JSON.parse` throws on the banner instead, which is why the throw
- * below carries the head of the stream rather than a bare SyntaxError.
+ * DECLARED, NOT DISCOVERED. The gate could notice a base-side load failure and
+ * skip that workspace by itself, and that would be the fail-open this whole
+ * file exists to prevent: a real deletion inside a workspace that happened to
+ * break would vanish into the same silence. An exception a human wrote down,
+ * printed on every run, is the only honest kind.
+ *
+ * MEASURED, not assumed: `@t3tools/desktop` runs 1260 tests in a working tree
+ * and fails to LOAD `src/backend/DesktopBackendConfiguration.test.ts` in a fresh
+ * checkout of the base with its own `pnpm install --frozen-lockfile`. Something
+ * that tree needs is not produced by the install; WHICH thing is `t3_bot-wjt`,
+ * and until that is proven this is an observation rather than a diagnosis.
+ *
+ * THE SKIP IS NOT A LICENCE. If the PR's own diff touches a skipped workspace,
+ * the gate exits 2 rather than skipping it: scope you changed is scope you have
+ * to measure, and the author prepares that tree by hand for that PR.
  */
-function runSuite(cwd: string): Suite {
-  const result = NodeChildProcess.spawnSync(
-    "./node_modules/.bin/vp",
-    // A FILTER, omitted entirely when empty: an empty positional would be
-    // matched against every path and select nothing.
-    ["test", "run", ...(TEST_TARGET === "" ? [] : [TEST_TARGET]), "--reporter=json"],
-    { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
-  );
+const UNMEASURABLE_IN_COLD_TREE: Readonly<Record<string, string>> = {
+  "@t3tools/desktop":
+    "fails to load src/backend/DesktopBackendConfiguration.test.ts in a cold base checkout " +
+    "(runs 1260 tests in a prepared tree) — t3_bot-wjt",
+};
+
+/**
+ * Whether this workspace is declared unmeasurable, by its OWN key.
+ *
+ * `Object.hasOwn`, not a bare index: `UNMEASURABLE_IN_COLD_TREE["toString"]`
+ * resolves to a function through the prototype, so a workspace named
+ * `constructor`, `toString`, `valueOf` or `hasOwnProperty` — all valid npm
+ * package names, all arriving here from a manifest — classified as unmeasurable
+ * and was silently never measured. Executed by a contracts lane. Silent
+ * under-measurement is the one failure this instrument exists to refuse.
+ */
+const isUnmeasurable = (name: string) => Object.hasOwn(UNMEASURABLE_IN_COLD_TREE, name);
+
+/** One workspace, as the package manager reports it. */
+export interface Workspace {
+  readonly name: string;
+  /** Absolute, from the package manager — never from walking directories. */
+  readonly path: string;
+  /** Its own `test` script, or undefined when it declares none. */
+  readonly testScript: string | undefined;
+}
+
+/**
+ * The JSON array in a package manager's stdout, or undefined.
+ *
+ * NOT `indexOf("[")`. That was the tolerance #26 was supposed to have removed
+ * and #28 claimed to have removed — a history lane read the diff and found it
+ * moved here instead, still over a pnpm stdout, and `[` is the first character
+ * of `[WARN] Unsupported engine…`, the exact token the claim quoted as the
+ * breaking input.
+ *
+ * THE DISCRIMINATOR IS THE CHARACTER AFTER THE BRACKET. A JSON array opens with
+ * `[` followed by whitespace, `{` or `]`; `[WARN]` is followed by a letter.
+ *
+ * FROM THAT LINE ONWARD, not that line. The payload is pretty-printed across
+ * many lines, and the first version of this fix returned the single matching
+ * line — `[` — so every real run refused with "was not JSON". The suite caught
+ * it within a minute, which is the argument for this being an exported seam
+ * rather than an expression buried in a function that shells out.
+ */
+export function jsonArrayPayload(stdout: string): string | undefined {
+  const lines = stdout.split("\n");
+  const start = lines.findIndex((line) => /^\s*\[\s*(\{|\]|$)/.test(line));
+  return start === -1 ? undefined : lines.slice(start).join("\n");
+}
+
+/**
+ * The workspaces, FROM THE PACKAGE MANAGER.
+ *
+ * NOT BY WALKING DIRECTORIES, and that is not a stylistic preference: a walk
+ * finds `.claude/worktrees/<other branch>` and measures another branch's tests
+ * as this tree's. That happened — the PM's gate run on main collected
+ * `scripts/build-desktop-artifact.test.ts` out of a senior's nested checkout
+ * and failed to load it against this tree's config. `pnpm ls` answers from
+ * `pnpm-workspace.yaml`, so a nested checkout is not a member and cannot be
+ * found by construction rather than by an exclusion someone has to maintain.
+ *
+ * THE ROOT PACKAGE IS DROPPED. Its `test` script is `vp run -r test` — an
+ * aggregator that runs every other workspace — so including it would run the
+ * whole repo once more inside a loop that is already running it.
+ */
+export function listWorkspaces(repoRoot: string): ReadonlyArray<Workspace> {
+  const result = NodeChildProcess.spawnSync("pnpm", ["ls", "-r", "--depth", "-1", "--json"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  // THE LAST LINE THAT STARTS A JSON ARRAY, not the first `[` anywhere.
+  //
+  // I claimed in #28's body that reading reports from a file "removes the class
+  // instead of widening a tolerance". A history lane read the diff: the
+  // tolerance was MOVED, not removed. This parse still reads a pnpm child's
+  // stdout, and `indexOf("[")` finds the `[` of `[WARN] Unsupported engine…` —
+  // the exact token I quoted as the breaking input. `pnpm ls` happens to emit
+  // clean JSON today, so it was latent rather than live; the fix is not to
+  // widen the tolerance again but to anchor on a line boundary and to REFUSE
+  // rather than throw an uncaught SyntaxError, which is what the exit-code
+  // contract promises.
   const stdout = result.stdout ?? "";
-  const start = stdout.indexOf("{");
-  if (start === -1) {
+  const payload = jsonArrayPayload(stdout);
+  if (payload === undefined) {
     throw new CannotMeasure(
-      `no JSON from the runner in ${cwd}. A suite that cannot RUN is not a suite with zero tests, ` +
-        `and reporting it as an empty map would turn a broken base into a clean pass.\n` +
+      `could not list the workspaces in ${repoRoot}. Without them there is nothing to measure, ` +
+        `and measuring nothing must not report a pass.\n` +
         (result.stderr ?? "").slice(-2000),
     );
   }
-  const parsed = JSON.parse(stdout.slice(start)) as RunnerReport;
-  return toSuite(parsed, cwd);
+  let listed: ReadonlyArray<{ readonly name?: string; readonly path?: string }>;
+  try {
+    listed = JSON.parse(payload) as ReadonlyArray<{
+      readonly name?: string;
+      readonly path?: string;
+    }>;
+  } catch (error) {
+    throw new CannotMeasure(
+      `the workspace list in ${repoRoot} was not JSON: ` +
+        `${error instanceof Error ? error.message : String(error)}. A gate that cannot read the ` +
+        `workspace list must refuse, not crash.`,
+    );
+  }
+  const realRoot = NodeFS.realpathSync(repoRoot);
+  const workspaces: Array<Workspace> = [];
+  for (const entry of listed) {
+    // A WORKSPACE THE GATE CANNOT NAME IS A REFUSAL, NOT A `continue`.
+    //
+    // Dropped here, such an entry landed in NO bucket — not measured, not
+    // skipped, not printed — so its tests could be deleted for ever and the
+    // gate would exit 0. A bug lane built one (`pnpm ls` does list a package
+    // with a path and no name) and proved the scope identity assertion is
+    // structurally blind to it: both sides of `measured + skipped +
+    // unmeasurable === listed.length` are computed from this already-filtered
+    // list, so the equation balances over a workspace neither side ever saw.
+    if (entry.path === undefined) {
+      throw new CannotMeasure(
+        `the package manager listed a workspace with no path in ${repoRoot}; the gate cannot ` +
+          `measure what it cannot locate.`,
+      );
+    }
+    if (entry.name === undefined) {
+      throw new CannotMeasure(
+        `the package manager listed a workspace at ${entry.path} with no \`name\`. The gate ` +
+          `addresses workspaces by name (\`pnpm --filter <name>\`), so it can neither measure ` +
+          `this one nor honestly print it as skipped. Give the package a name.`,
+      );
+    }
+    if (NodeFS.realpathSync(entry.path) === realRoot) continue;
+    const manifest = JSON.parse(
+      NodeFS.readFileSync(NodePath.join(entry.path, "package.json"), "utf8"),
+    ) as { readonly scripts?: Record<string, string> };
+    workspaces.push({
+      name: entry.name,
+      path: entry.path,
+      testScript: manifest.scripts?.["test"],
+    });
+  }
+  return workspaces;
+}
+
+/** Whether `TEST_COUNT_GATE_TARGET` selects this workspace. */
+export const selectsWorkspace = (target: string, workspace: Workspace, repoRoot: string) =>
+  // No `target === ""` arm: `includes("")` is true for every string, so the
+  // empty target already selects everything. A QA lane proved the arm
+  // unkillable, and this file condemns clauses no input can red.
+  workspace.name.includes(target) || NodePath.relative(repoRoot, workspace.path).includes(target);
+
+/**
+ * One workspace's own test run, read from a FILE rather than from stdout.
+ *
+ * `--outputFile` exists and stdout does not survive contact with a package
+ * manager: `pnpm` prints `[WARN] Unsupported engine: wanted: {"node":"^24.13.1"}`
+ * ahead of the payload, and the old "parse from the first brace" tolerance
+ * would have sliced from the brace inside that warning. That was the exact
+ * breaking input the old comment named, reached the first time this ran through
+ * a package script.
+ *
+ * THE PACKAGE'S OWN SCRIPT, not a `vp test run` this file invents. `apps/web`
+ * runs `--project unit` and `apps/desktop` runs `--passWithNoTests`; a gate that
+ * substituted its own invocation would measure a configuration nobody ships,
+ * which is the whole defect being repaired here.
+ */
+/**
+ * One workspace's report file, named so that two workspaces cannot share one.
+ *
+ * IT WAS A LOSSY SUBSTITUTION — every character outside `[A-Za-z0-9_-]` became
+ * `-`, so `@t3tools/mobile` and `@t3tools-mobile` both became
+ * `-t3tools-mobile` — and the collision was caught DOWNSTREAM, by deleting the
+ * file before the run: `existsSync` was otherwise satisfied by the earlier
+ * workspace's report when this one's run wrote none, and a bug lane executed
+ * exactly that, getting the other workspace's suite back verbatim.
+ *
+ * Percent-escaping is reversible where the substitution is not: `%` is itself
+ * outside the safe set, so it escapes to `%25` and no two names can produce the
+ * same bytes. `@t3tools/mobile` becomes `%40t3tools%2fmobile.json` — readable in
+ * a directory listing, which is why this is not a hash.
+ *
+ * EXPORTED BECAUSE IT WAS OTHERWISE UNREACHABLE. Inline in `runWorkspace` the
+ * only caller spawns a package manager, so reverting it to the substitution red
+ * nothing — a claim no input could tell from its opposite, which is the same
+ * shape as the unreachable guard a sweep found in `t3_bot-2oh`.
+ */
+export const reportFileName = (workspaceName: string): string =>
+  `${workspaceName.replace(
+    /[^A-Za-z0-9_-]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).padStart(2, "0")}`,
+  )}.json`;
+
+function runWorkspace(repoRoot: string, workspace: Workspace, reportDir: string): Suite {
+  const outputFile = NodePath.join(reportDir, reportFileName(workspace.name));
+  const result = NodeChildProcess.spawnSync(
+    "pnpm",
+    ["--filter", workspace.name, "run", "test", "--reporter=json", `--outputFile=${outputFile}`],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      // THE TARGET DOES NOT TRAVEL INTO THE CHILD. The workspace is already
+      // chosen by `--filter`, and leaving the variable set made the gate's own
+      // suite red under a narrowed run: a test in `@t3tools/scripts` reads the
+      // same variable and narrowed itself. A red suite under a green gate.
+      env: { ...process.env, TEST_COUNT_GATE_TARGET: undefined },
+    },
+  );
+  if (!NodeFS.existsSync(outputFile)) {
+    throw new CannotMeasure(
+      `${workspace.name} produced no report in ${repoRoot}. A workspace that cannot RUN is not a ` +
+        `workspace with no tests, and reporting it as empty would turn a broken tree into a ` +
+        `clean pass.\n` +
+        (result.stderr ?? "").slice(-2000),
+    );
+  }
+  const parsed = JSON.parse(NodeFS.readFileSync(outputFile, "utf8")) as RunnerReport;
+  // THE WORKSPACE *AND* THE TREE. Naming only the workspace cost a
+  // reproduction: the same workspace passes in one revision and fails to load
+  // in the other, and "failed to load in @t3tools/desktop" does not say which
+  // side to go and look at.
+  return toSuite(parsed, repoRoot, `${workspace.name} in ${repoRoot}`);
+}
+
+/**
+ * What a run of this tree would measure, and what it would not.
+ *
+ * SEPARATE FROM RUNNING IT because `main` has to DECIDE on the scope before it
+ * runs anything: a PR that touches a workspace the gate skips as unmeasurable is
+ * refused, and refusing after the suites have run wastes the minutes it was
+ * refusing to spend. (It does not print any earlier — the table is written after
+ * the comparison — and this docstring used to claim it did.)
+ *
+ * It also returns the workspaces and not only their names, because that refusal
+ * needs their PATHS. `main` used to re-enumerate the repo to get them, with a
+ * different predicate, under a comment saying it was the same one.
+ *
+ * The BASE tree enumerates its own workspaces when it runs, because a workspace
+ * can be added or removed by the very PR being measured; this describes HEAD.
+ */
+export function describeScope(repoRoot: string, target: string = TEST_TARGET) {
+  const listed = listWorkspaces(repoRoot);
+  // A STALE EXCEPTION IS NOT AN EXCEPTION. The map is only ever consulted BY an
+  // existing workspace's name, so an entry naming a workspace that was renamed
+  // or deleted is never read: no warning, no line in the table, and its reason —
+  // with its measured evidence and its bead — sits in the file describing
+  // nothing, for the next reader to trust. Exit 2 is the honest answer to "the
+  // gate's own configuration no longer describes this repo".
+  const dead = Object.keys(UNMEASURABLE_IN_COLD_TREE).filter(
+    (name) => !listed.some((workspace) => workspace.name === name),
+  );
+  if (dead.length > 0) {
+    throw new CannotMeasure(
+      `${dead.join(", ")} is named in UNMEASURABLE_IN_COLD_TREE and is not a workspace in ` +
+        `${repoRoot}. Remove the entry or fix the name: an exception nobody can point at is ` +
+        `evidence for a claim about nothing.`,
+    );
+  }
+  return splitScope(select(listed, target, repoRoot));
+}
+
+/**
+ * Which of these will be measured, and which skipped for having no `test`.
+ *
+ * PURE, because the version that read the repo could not be told apart from one
+ * that called every workspace measured: a test asserting the split was
+ * "consistent" passed against `measured: all, skipped: []`, since with nothing
+ * skipped there is nothing to contradict. Consistency was never the property.
+ * The property is that a workspace WITHOUT a `test` script lands on the skipped
+ * side, and saying so needs a workspace without one — which a fixture has and
+ * this repo might not, a year from now.
+ */
+/**
+ * The workspaces a target picked, refusing rather than returning none.
+ *
+ * ONE SPELLING FOR BOTH SELECTIONS — `describeScope` describes HEAD and
+ * `runSuite` selects again in each tree, because a workspace can be added or
+ * removed by the PR being measured. A gate that selected nothing must not report
+ * a pass, and that has to hold on both sides.
+ *
+ * ASKED BEFORE THE BASE REF IS, which is not only tidiness. A target matching no
+ * workspace is a configuration error answerable with no git history at all, and
+ * the refusal used to come second: on a shallow CI checkout `origin/main` cannot
+ * be diffed, so a bogus target was reported as an undiffable base. Both are exit
+ * 2, so only the message said which — and the message was wrong.
+ */
+const select = (
+  workspaces: ReadonlyArray<Workspace>,
+  target: string,
+  repoRoot: string,
+): ReadonlyArray<Workspace> => {
+  const selected = workspaces.filter((workspace) => selectsWorkspace(target, workspace, repoRoot));
+  if (selected.length === 0) {
+    throw new CannotMeasure(
+      `no workspace in ${repoRoot} matches '${target}'. A gate that selected nothing must ` +
+        `not report a pass.`,
+    );
+  }
+  return selected;
+};
+
+export const splitScope = (workspaces: ReadonlyArray<Workspace>) => {
+  // THE WORKSPACES THEMSELVES, because one caller needs a PATH rather than a
+  // name: `main` refuses a PR that touches an unmeasurable workspace, and
+  // "touches" is decided against the workspace's directory. It used to
+  // re-enumerate the repo for them under a different predicate.
+  //
+  // AND THE NAME LIST IS DERIVED FROM IT, not filtered again beside it. Two
+  // expressions of one rule is what this whole finding was; a second `.filter`
+  // here would be the same mistake moved four lines, and no test can see two
+  // predicates agree while the only fixture that separates them is one nobody
+  // has written yet.
+  const unmeasurableWorkspaces = workspaces.filter(
+    (w) => w.testScript !== undefined && isUnmeasurable(w.name),
+  );
+  return {
+    measured: workspaces
+      .filter((w) => w.testScript !== undefined && !isUnmeasurable(w.name))
+      .map((w) => w.name),
+    skipped: workspaces.filter((w) => w.testScript === undefined).map((w) => w.name),
+    unmeasurable: unmeasurableWorkspaces.map((w) => w.name),
+    unmeasurableWorkspaces,
+  };
+};
+
+/**
+ * The UNMEASURABLE workspaces this diff touches, which the gate must refuse.
+ *
+ * NAMED FOR THE BUCKET IT IS GIVEN, which it was not: `splitScope` has two
+ * kinds of skip — `skipped`, a workspace with no `test` script, and
+ * `unmeasurable`, one declared undoable in a cold base tree — and only the
+ * second is a refusal. A workspace with no `test` script has no tests to lose,
+ * and one that DROPS its script is caught by the comparison, since base still
+ * reports the files. The old name said the gate refused on both.
+ *
+ * PURE, and both directions are tested: a PR that touches only `apps/server`
+ * while `apps/desktop` is unmeasurable measures fine, and a PR that touches
+ * `apps/desktop` while it is unmeasurable is a refusal. A skip is acceptable
+ * scope only while the PR did not change it.
+ */
+export const unmeasurableWorkspacesTouched = (
+  changedPaths: ReadonlyArray<string>,
+  skipped: ReadonlyArray<Workspace>,
+  repoRoot: string,
+): ReadonlyArray<string> => {
+  const touched = new Set<string>();
+  for (const workspace of skipped) {
+    const prefix = `${NodePath.relative(repoRoot, workspace.path)}/`;
+    for (const changed of changedPaths) {
+      if (changed.startsWith(prefix)) touched.add(workspace.name);
+    }
+  }
+  return [...touched];
+};
+
+/**
+ * The files this PR changed, from git rather than from the working tree.
+ *
+ * `--no-renames`, AND IT IS THE WHOLE FINDING. Git detects renames by default and
+ * `--name-only` then prints ONE path for the pair: the DESTINATION. So moving a
+ * test file OUT of a skipped workspace — `git mv apps/desktop/x.test.ts
+ * apps/server/x.test.ts` — produced a changed-path list that never named
+ * `apps/desktop`, the touched-skipped refusal never fired, and the gate went
+ * green over a PR that removed test files from a workspace it refuses to
+ * measure. A contracts lane executed that in a throwaway repo. A plain deletion
+ * was never affected; the hole was specifically "move them out", which is the
+ * deletion-shaped edit an author is most likely to make.
+ *
+ * THE DOMAIN, stated because the obligation is only as total as its input:
+ * COMMITTED HISTORY ONLY. `base...HEAD` does not see uncommitted work, while the
+ * head suite measures the working tree — so the two halves of this gate disagree
+ * about what "this PR" means for a dirty tree. The gate assumes the branch is
+ * committed, which is what the merge flow requires anyway (unpushed work is
+ * invisible to the PM). Covering a dirty tree is a second ref and a decision,
+ * not a patch.
+ */
+export function changedPaths(repoRoot: string, base: string): ReadonlyArray<string> {
+  const result = NodeChildProcess.spawnSync(
+    "git",
+    ["diff", "-z", "--name-only", "--no-renames", `${base}...HEAD`],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    },
+  );
+  if (result.status !== 0) {
+    throw new CannotMeasure(
+      `could not diff ${base}...HEAD in ${repoRoot}, so the gate cannot tell whether this PR ` +
+        `touched a skipped workspace.\n` +
+        (result.stderr ?? "").slice(-2000),
+    );
+  }
+  // `-z`, SO THE PATHS ARE THE PATHS. Without it git C-quotes any path with a
+  // byte outside ASCII — `"apps/desktop/src/Caf\303\251.test.ts"`, leading
+  // quote included — and the prefix comparison against `apps/desktop/` is then
+  // false, so a PR whose only change inside a skipped workspace has a non-ASCII
+  // filename walks past the refusal. A bug lane executed it. `-z` also removes
+  // the newline-in-filename case that splitting on "\n" mis-splits.
+  return (result.stdout ?? "").split("\0").filter((line) => line !== "");
+}
+
+/**
+ * The workspaces `runSuite` will actually RUN, in order.
+ *
+ * THE PRINTED SCOPE AND THE EXECUTED SCOPE MUST BE THE SAME SET, and nothing
+ * said so: `splitScope` decides what the table claims and `runSuite`'s two
+ * `continue`s decide what runs, and a QA lane deleted either one with all
+ * twenty tests still green. The drift that matters is the quiet direction —
+ * `splitScope` reporting a workspace as measured while `runSuite` skips it, so
+ * the table claims coverage nobody ran.
+ */
+export const workspacesToRun = (workspaces: ReadonlyArray<Workspace>): ReadonlyArray<Workspace> =>
+  workspaces.filter((w) => w.testScript !== undefined && !isUnmeasurable(w.name));
+
+/**
+ * Every selected workspace, merged.
+ *
+ * Keys are repo-root-relative on both sides, so two workspaces cannot collide
+ * and base and head stay comparable.
+ */
+function runSuite(cwd: string): Suite {
+  const repoRoot = cwd;
+  const selected = select(listWorkspaces(repoRoot), TEST_TARGET, repoRoot);
+  const reportDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-count-gate-reports-"));
+  try {
+    const merged: Suite = new Map();
+    // ONE PREDICATE FOR WHAT RUNS, shared with what the scope line prints. A
+    // workspace with no `test` script, and one declared unmeasurable in a cold
+    // tree, are both skipped AND SAID — skipping is scope, and unprinted scope
+    // is the thing this gate exists to stop. `main` has already refused if the
+    // diff touches an unmeasurable one, so reaching here means the PR did not.
+    for (const workspace of workspacesToRun(selected)) {
+      for (const [path, tests] of runWorkspace(repoRoot, workspace, reportDir)) {
+        merged.set(path, tests);
+      }
+    }
+    if (merged.size === 0) {
+      throw new CannotMeasure(
+        `the selected workspaces measured no test files in ${repoRoot}. A gate that measured ` +
+          `nothing must not report a pass.`,
+      );
+    }
+    return merged;
+  } finally {
+    NodeFS.rmSync(reportDir, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -190,7 +641,7 @@ function runSuite(cwd: string): Suite {
  * (exit 2), never a decrease: a head that does not compile reported as "coverage
  * went DOWN" sends the author hunting for deleted tests that are still there.
  */
-export function toSuite(parsed: RunnerReport, cwd: string): Suite {
+export function toSuite(parsed: RunnerReport, cwd: string, measuring: string): Suite {
   const suite: Suite = new Map();
   const realCwd = NodeFS.realpathSync(cwd);
   for (const file of parsed.testResults ?? []) {
@@ -229,7 +680,7 @@ export function toSuite(parsed: RunnerReport, cwd: string): Suite {
     // green while measuring less than it claims.
     if (assertions.length === 0 && file.status === "failed") {
       throw new CannotMeasure(
-        `${relative} failed to load in ${cwd}, so its tests were never counted. ` +
+        `${relative} failed to load in ${measuring}, so its tests were never counted. ` +
           `Fix the file and re-run: a file that cannot load is not a file with no tests.` +
           // THE RUNNER ALREADY SAYS WHAT BROKE. A bug lane counted three signals
           // separating "did not load" from "has no tests" — this status, the
@@ -256,9 +707,9 @@ export function toSuite(parsed: RunnerReport, cwd: string): Suite {
   // valid JSON — and the gate said "no test name lost" and exited 0.
   if (suite.size === 0) {
     throw new CannotMeasure(
-      `the runner measured no test files in ${cwd}` +
-        (TEST_TARGET === "" ? "" : ` with filter '${TEST_TARGET}'`) +
-        `. A gate that measured nothing must not report a pass.`,
+      `${measuring} reported no test files. A workspace that declares a \`test\` script and then ` +
+        `measures nothing is a broken invocation, not a workspace with no tests — a workspace ` +
+        `with none is skipped by name and printed.`,
     );
   }
   return suite;
@@ -458,14 +909,64 @@ function main(): number {
     throw new CannotMeasure(`run this from the repo root (${top}), not ${process.cwd()}`);
   }
 
+  const scope = describeScope(process.cwd());
+
+  // SCOPE YOU CHANGED IS SCOPE YOU HAVE TO MEASURE. A workspace skipped for
+  // being unmeasurable in a cold tree is acceptable only while the PR did not
+  // touch it; the moment it did, "could not measure" is the true answer.
+  //
+  // FROM THE SCOPE ALREADY COMPUTED, which is the point. This enumerated the
+  // repo a second time and filtered it by map membership alone, under a comment
+  // claiming to use the predicate `splitScope` uses — which is "has a `test`
+  // script AND is in the map". A declared workspace that dropped its script was
+  // refused-when-touched by this line while the scope line filed it under "no
+  // test script" and never printed its declared reason, and the two enumerations
+  // could disagree about the repo besides.
+  //
+  // IT ALSO NARROWS WITH THE RUN NOW, and that is a behaviour change: under
+  // `TEST_COUNT_GATE_TARGET` the scope is the selected workspaces, so a narrowed
+  // run no longer refuses because the diff touched something outside what it was
+  // asked to measure. The narrowing is already declared on both the opening and
+  // the closing line, and a run that says what it measured does not also have to
+  // refuse over what it was told not to.
+  const touched = unmeasurableWorkspacesTouched(
+    changedPaths(process.cwd(), base),
+    scope.unmeasurableWorkspaces,
+    process.cwd(),
+  );
+  if (touched.length > 0) {
+    throw new CannotMeasure(
+      `this PR changes ${touched.join(", ")}, which the gate skips as unmeasurable in a cold ` +
+        `base tree. A skipped workspace is acceptable scope only while the PR did not change it. ` +
+        `Prepare that workspace's base tree by hand and measure it for this PR.`,
+    );
+  }
+
   const head = runSuite(process.cwd());
   const baseSuite = withBaseWorktree(base, (cwd) => runSuite(cwd));
   const rows = compare(baseSuite, head);
 
   const width = Math.max(...rows.map((row) => row.path.length), 4);
   // SCOPE ON THE ARTIFACT ITSELF, so a table pasted into a PR body records what
-  // it measured instead of implying the repo.
-  write(`measured ${TEST_TARGET === "" ? "the whole repo" : TEST_TARGET} against ${base}`);
+  // it measured instead of implying the repo — including what it did NOT.
+  // ONE EXPRESSION, USED ON BOTH LINES. The narrowing marker was on the first
+  // line only, and the CLOSING line is the verdict a reader quotes — so the one
+  // sentence most likely to be pasted could not be told apart from a full run.
+  // `TEST_COUNT_GATE_TARGET` is an environment variable, so it leaves no trace
+  // in the command either.
+  const narrowing = TEST_TARGET === "" ? "" : ` [narrowed by '${TEST_TARGET}']`;
+  write(
+    `measured ${scope.measured.length} workspace(s) against ${base}: ${scope.measured.join(", ")}` +
+      narrowing,
+  );
+  if (scope.skipped.length > 0) {
+    write(`skipped, no \`test\` script: ${scope.skipped.join(", ")}`);
+  }
+  for (const name of scope.unmeasurable) {
+    write(
+      `SKIPPED, unmeasurable in a cold base tree: ${name} — ${UNMEASURABLE_IN_COLD_TREE[name]}`,
+    );
+  }
   write(`${"file".padEnd(width)}  base  head`);
   for (const row of rows) {
     if (row.before === row.after && row.lost.length === 0) continue;
@@ -517,7 +1018,7 @@ function main(): number {
     // lost went on to say no name was lost — and this is the line the PM reads
     // before merging.
     write(
-      `\nMeasured ${TEST_TARGET === "" ? "the whole repo" : TEST_TARGET} against ${base}: ` +
+      `\nMeasured ${scope.measured.length} workspace(s) against ${base}${narrowing}: ` +
         (lostUnderAllow === 0
           ? "no test lost by count or by name."
           : `${lostUnderAllow} lost name(s), each explained by --allow above.`),
@@ -529,7 +1030,7 @@ function main(): number {
     );
     return 0;
   }
-  writeErr("\nTest coverage went DOWN and nothing explained it:");
+  writeErr(`\nTest coverage went DOWN and nothing explained it${narrowing}:`);
   for (const row of failures) {
     writeErr(`  ${row.path}: ${row.before} -> ${row.after}`);
     for (const name of row.lost) writeErr(`      lost: ${name}`);
