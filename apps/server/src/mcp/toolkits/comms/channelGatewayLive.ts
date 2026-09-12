@@ -96,6 +96,15 @@ const make = Effect.gen(function* () {
       const row = yield* channels
         .getChannelByName(name)
         .pipe(Effect.mapError(() => storeUnavailable("getChannelForMember")));
+      // THESE TWO `Option.none`s MUST STAY ONE ANSWER. A caller that can tell
+      // "no such channel" from "exists, you are not in it" can enumerate
+      // private channel names by probing. The seam held that structurally -
+      // membership was a parameter of the lookup, so there was no ordering to
+      // swap - and this implementation does not: the lookup runs first and
+      // membership is a guard after it, so the property now rests on these two
+      // branches returning the same value. Giving either one a distinguishing
+      // result is a two-line change that no test currently reds
+      // (`t3_bot-glu`), so it is written here rather than left to be noticed.
       if (Option.isNone(row)) {
         return Option.none<Channel>();
       }
