@@ -1,10 +1,12 @@
 /**
  * The canonical form of a channel name and of a member handle.
  *
- * The one place this rule is allowed to live. The decider imports it today. The
- * MCP toolkit does NOT yet — it still carries its own copy, and replacing that
- * copy with this import is `t3_bot-iin`. Until then this module is the single
- * source for one of the two sides, which is half of the point.
+ * The one place this rule is allowed to live, and both sides import it: the
+ * decider through `commandInvariants.ts`, the MCP toolkit through
+ * `toolkits/comms/handlers.ts`, which RE-EXPORTS it so a test can assert one
+ * implementation by reference rather than by behaviour. A behavioural
+ * comparison passes the moment two copies happen to agree, which was true at
+ * most moments while they were diverging.
  *
  * It lives here rather than next to either side because a second copy is the
  * actual defect — the two diverged three times in one
