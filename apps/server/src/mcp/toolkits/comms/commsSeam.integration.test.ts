@@ -101,6 +101,10 @@ const makeSeam = Effect.fn("commsSeam")(function* (opts: {
               ? Option.some<ChannelGateway.Channel>({
                   channelId: CHANNEL_ID,
                   name: canonicalChannelName(opts.channelName),
+                  // Live, because every test in this file is about a channel
+                  // that can be posted to. The archived case is the toolkit's
+                  // to refuse and is pinned in handlers.test.ts.
+                  archivedAt: null,
                   members: opts.members,
                 })
               : Option.none(),

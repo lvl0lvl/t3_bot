@@ -31,7 +31,7 @@ import {
 } from "./toolkits/preview/tools.ts";
 import { PullRequestsToolkitHandlersLive } from "./toolkits/pullRequests/handlers.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
-import { ChannelGatewayUnavailable } from "./toolkits/comms/channelGateway.ts";
+import { ChannelGatewayLive } from "./toolkits/comms/channelGatewayLive.ts";
 import { CommsToolkitHandlersLive } from "./toolkits/comms/handlers.ts";
 import { CommsToolkit } from "./toolkits/comms/tools.ts";
 import {
@@ -609,8 +609,7 @@ export const PreviewToolkitRegistrationLive = Layer.mergeAll(
 
 export const CommsToolkitRegistrationLive = McpServer.toolkit(CommsToolkit).pipe(
   Layer.provide(CommsToolkitHandlersLive),
-  // Swapped for the live gateway when the channel aggregate lands (t3_bot-yyd).
-  Layer.provide(ChannelGatewayUnavailable),
+  Layer.provide(ChannelGatewayLive),
 );
 
 export const PullRequestsToolkitRegistrationLive = McpServer.toolkit(PullRequestsToolkit).pipe(
@@ -637,15 +636,14 @@ const McpTransportLive = McpServer.layerHttp({
   protocols: [McpProtocol.v2025_06_18],
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
-/**
- * `CommsToolkitRegistrationLive` is deliberately absent until the channel
- * aggregate lands (t3_bot-yyd). Its gateway has no implementation yet, so
- * registering it would put three tools in front of every agent that fail on
- * every call — worse than not offering them. Add it here in the same change
- * that supplies the live gateway.
- */
 export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
+  // Registered in the same change that supplies its live gateway, which is what
+  // the note that used to sit here asked for. Before that, these three tools
+  // would have been offered to every agent and failed on every call — worse
+  // than not offering them, since an agent cannot tell "not wired" from "you
+  // are in no channels".
+  CommsToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

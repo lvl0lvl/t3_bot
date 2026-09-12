@@ -113,6 +113,7 @@ import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
 import {
   OrchestrationListenerCallbackError,
   OrchestrationThreadSettleBlockedError,
@@ -962,6 +963,16 @@ const buildAppUnderTest = (options?: {
             streamDomainEvents: Stream.empty,
             latestSequence: Effect.succeed(0),
             ...options?.layers?.orchestrationEngine,
+          }),
+          // The comms toolkit is registered on the real server layer now, and
+          // its live gateway reads the channel projection. This harness mocks
+          // the engine, so it mocks the repository beside it rather than
+          // building a database for a router test that never touches a channel.
+          Layer.mock(ProjectionChannelRepository)({
+            getChannelByName: () => Effect.succeedNone,
+            getChannelById: () => Effect.succeedNone,
+            getPost: () => Effect.succeedNone,
+            listPosts: () => Effect.succeed([]),
           }),
           Layer.mock(ThreadDeletionReactor)({
             start: () => Effect.void,

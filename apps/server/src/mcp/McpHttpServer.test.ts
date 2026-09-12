@@ -17,6 +17,9 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
+import { makeSqlitePersistenceLive } from "../persistence/Layers/Sqlite.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { ChannelGatewayUnavailable } from "./toolkits/comms/channelGateway.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -52,8 +55,18 @@ const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" })),
   Layer.provideMerge(NodeServices.layer),
 );
+// The live gateway is what this registration now carries, so the harness has to
+// supply what the gateway needs: the engine it dispatches through and the
+// projection it reads. This test asserts the TOOL LIST rather than any call, so
+// the services are never exercised - they are here because the registration
+// cannot be constructed without them, which is the compiler saying the wiring
+// is real.
 const CommsTestLayer = McpHttpServer.CommsToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provide(OrchestrationLayerLive),
+  Layer.provide(makeSqlitePersistenceLive(":memory:")),
+  Layer.provide(RepositoryIdentityResolver.layer),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-comms-test-" })),
   Layer.provide(NodeServices.layer),
 );
 const PullRequestsTestLayer = McpHttpServer.PullRequestsToolkitRegistrationLive.pipe(
