@@ -253,6 +253,25 @@ describe("workspace enumeration", () => {
     expect(suite.get("apps/server/src/x.test.ts")?.names).toEqual(["x > works"]);
   });
 
+  it("does not call a declared workspace unmeasurable once it has no `test` script", () => {
+    // THE FIXTURE THE REPO CANNOT SUPPLY, and the reason this is not asserted
+    // over the real one: `@t3tools/desktop` is the only declared-unmeasurable
+    // workspace and it HAS a test script, so a filter that forgot to ask about
+    // the script returns the same answer over this repo as one that asks. I
+    // wrote that assertion first and a mutant walked through it.
+    //
+    // A declared workspace with no `test` script is a plain skip, not a refusal.
+    // It has no tests to lose; one that DROPS its script is caught by the
+    // comparison, because base still reports the files. Filing it as
+    // unmeasurable would make `main` refuse every PR that touched it while the
+    // scope line printed it under "no test script", never showing the declared
+    // reason — the two-buckets drift `unmeasurableWorkspaces` exists to end.
+    const scope = splitScope([workspace("@t3tools/desktop", "apps/desktop")]);
+    expect(scope.skipped).toEqual(["@t3tools/desktop"]);
+    expect(scope.unmeasurable).toEqual([]);
+    expect(scope.unmeasurableWorkspaces).toEqual([]);
+  });
+
   it("describes the real repo's scope as a split of its real workspaces", () => {
     // The wiring, once: `describeScope` really does run the enumeration through
     // the split rather than computing something of its own. THREE buckets — a
