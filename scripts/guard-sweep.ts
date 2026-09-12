@@ -8,8 +8,9 @@
  * exactly like a working one. Every defect this was built from was green under
  * multiple review lanes and died to a two-line mutation.
  *
- * FOUR THINGS IT REFUSES TO DO, each because doing them produced a wrong answer
- * that looked like a right one:
+ * WHAT IT REFUSES TO DO, each because doing it produced a wrong answer that
+ * looked like a right one. Numbered rather than counted, because the count
+ * said FOUR while the list said five for as long as the fifth existed:
  *
  * 1. It never reports a mutation it could not apply as a survivor. An anchor
  *    that is absent, or that occurs more than once, is `not-run`. A four-space
@@ -40,16 +41,30 @@
  *    survives that untouched, and only a wider mutation finds it. A sweep with
  *    no `wider` rows has measured one half of the question.
  *
- * AND ONE THING IT CANNOT DO FOR YOU. A defence built from two independent
- * parts needs each part mutated SEPARATELY. An escaper that both substitutes
- * control characters and JSON-quotes will survive a test that only asks "is the
- * hostile line still one line", because either part alone satisfies that — and
- * mutating "the escaping" as one unit shows a kill and tells you nothing. Write
- * one mutation per part and pick an input no single part can rescue.
+ * AND TWO THINGS IT CANNOT DO FOR YOU, both of which report clean.
+ *
+ * A defence built from two independent parts needs each part mutated
+ * SEPARATELY. An escaper that both substitutes control characters and
+ * JSON-quotes will survive a test that only asks "is the hostile line still one
+ * line", because either part alone satisfies that — and mutating "the escaping"
+ * as one unit shows a kill and tells you nothing. Write one mutation per part
+ * and pick an input no single part can rescue.
+ *
+ * A CONSTANT NEEDS ITS DEFINITION MUTATED, not only its call sites. A test that
+ * asserts a value by comparing it against the same constant the code spends
+ * moves both sides of its comparison together, so it can detect that value's
+ * ABSENCE and never its wrongness — while every call-site mutation kills it,
+ * because a call site that stops spending the constant does produce a
+ * difference. Only mutating the declaration separates the two. I swept two
+ * issuer stamps that way, got three kills from three call-site mutants, and
+ * reported the test as pinned; a reviewer mutating the constant found the
+ * survivor in one edit. If a config's subject is an identity, a flag or a limit
+ * that tests import, mutate where it is DECLARED.
  */
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -203,15 +218,23 @@ export const judge = (baseline: RunResult, mutant: RunResult): Verdict => {
  * A run that produced no parsable JSON is `total: 0`, which the caller must
  * treat as "no measurement" rather than "nothing failed" — a suite that failed
  * to load has an empty failure set and is not a green run.
+ *
+ * IT ONLY LOOKS FOR THE REPORTER'S OWN OPENING, `{"numTotalTestSuites"`. It used
+ * to fall back to the first `{` anywhere in stdout, which made that promise
+ * false: a test that logs a brace put the slice's start inside its own output,
+ * `JSON.parse` threw, and the sweep died with an unhandled exception instead of
+ * reporting no measurement. The fallback was a guess at robustness and bought
+ * the opposite — a crash where the design already had a `not-run` path waiting.
+ *
+ * The parse is guarded for the same reason and returns the same thing:
+ * truncated output is not a green run either.
  */
 export const readVitestJson = (stdout: string): RunResult => {
-  const start = stdout.indexOf('{"numTotalTestSuites"');
-  const fallback = stdout.indexOf("{");
-  const from = start >= 0 ? start : fallback;
+  const from = stdout.indexOf('{"numTotalTestSuites"');
   if (from < 0) {
     return { failed: new Set(), total: 0 };
   }
-  const parsed = JSON.parse(stdout.slice(from)) as {
+  type VitestJson = {
     readonly testResults?: ReadonlyArray<{
       readonly name?: string;
       readonly assertionResults?: ReadonlyArray<{
@@ -221,6 +244,15 @@ export const readVitestJson = (stdout: string): RunResult => {
       }>;
     }>;
   };
+  let parsed: VitestJson;
+  try {
+    parsed = JSON.parse(stdout.slice(from)) as VitestJson;
+  } catch {
+    // Truncated or interleaved output. NO MEASUREMENT, which the caller turns
+    // into `not-run` — never an empty failure set, which would read as a green
+    // run and make every mutation under it "survive".
+    return { failed: new Set(), total: 0 };
+  }
   const failed = new Set<string>();
   let total = 0;
   for (const file of parsed.testResults ?? []) {
@@ -339,6 +371,24 @@ export class GuardSweepProcessError extends Schema.TaggedError<GuardSweepProcess
 // Running it
 // ---------------------------------------------------------------------------
 
+/**
+ * Runs a command and reports EVERYTHING it observed: stdout, stderr, exit code.
+ *
+ * IT USED TO RETURN STDOUT ALONE, having awaited the exit code and thrown it
+ * away, with stderr piped to `"ignore"`. That made two of this tool's five
+ * refusals properties of git SUCCEEDING rather than properties of the tool. Point
+ * the sweep at a directory that is not a git repository: `git status --porcelain`
+ * exits 128, writes its complaint to the discarded stderr, and leaves stdout
+ * empty — so the dirty-tree check read `""` as clean, the sweep mutated an
+ * uncommitted file, the restore failed silently under `Effect.ignore`, and the
+ * run exited 0 reporting a survivor with the content gone. Two review lanes
+ * reproduced that independently.
+ *
+ * It does NOT fail on a non-zero exit, and must not: the test command is
+ * expected to exit non-zero, because a killed mutant is a failing suite. The
+ * code is returned so each caller can say what it means, and `mustSucceed` is
+ * for the four that mean "or there is no measurement".
+ */
 const capture = Effect.fn("guardSweep.capture")(function* (
   argv: ReadonlyArray<string>,
   cwd: string,
@@ -350,24 +400,56 @@ const capture = Effect.fn("guardSweep.capture")(function* (
   }
   const fail = (cause: unknown) => new GuardSweepProcessError({ command, detail: String(cause) });
   const handle = yield* spawner
-    .spawn(ChildProcess.make(command, args, { cwd, stdin: "ignore", stderr: "ignore" }))
+    .spawn(ChildProcess.make(command, args, { cwd, stdin: "ignore", stderr: "pipe" }))
     .pipe(Effect.mapError(fail));
-  const [stdout] = yield* Effect.all(
-    [handle.stdout.pipe(Stream.decodeText(), Stream.mkString), handle.exitCode],
+  const [stdout, stderr, exitCode] = yield* Effect.all(
+    [
+      handle.stdout.pipe(Stream.decodeText(), Stream.mkString),
+      handle.stderr.pipe(Stream.decodeText(), Stream.mkString),
+      handle.exitCode,
+    ],
     { concurrency: "unbounded" },
   ).pipe(Effect.mapError(fail));
-  return stdout;
+  return { command, stdout, stderr, exitCode };
+}, Effect.scoped);
+
+/**
+ * For a command whose failure means there is no measurement to report.
+ *
+ * `git status` deciding whether the tree is dirty, `git checkout` putting a
+ * mutated file back, `git worktree add` creating the tree that gets mutated, and
+ * the config's own setup: if any of these fails, every verdict downstream is
+ * about a tree nobody knows the state of. stderr goes into the error, because it
+ * is the only thing that says why.
+ */
+const mustSucceed = Effect.fn("guardSweep.mustSucceed")(function* (
+  argv: ReadonlyArray<string>,
+  cwd: string,
+) {
+  const run = yield* capture(argv, cwd);
+  if (run.exitCode !== 0) {
+    return yield* new GuardSweepProcessError({
+      command: run.command,
+      detail: `exit ${run.exitCode}: ${run.stderr.trim() || "no stderr"}`,
+    });
+  }
+  return run.stdout;
 }, Effect.scoped);
 
 const requireCleanTree = Effect.fn("guardSweep.requireCleanTree")(function* (root: string) {
-  const status = yield* capture(["git", "status", "--porcelain"], root);
+  const status = yield* mustSucceed(["git", "status", "--porcelain"], root);
   if (status.trim() !== "") {
     return yield* new GuardSweepDirtyTreeError({ status: status.trim() });
   }
 });
 
 const runSuite = Effect.fn("guardSweep.runSuite")(function* (config: SweepConfig, root: string) {
-  const stdout = yield* capture([...config.testCommand, "--reporter=json"], root);
+  // A NON-ZERO EXIT IS THE NORMAL CASE here and carries no information: a
+  // killed mutant is a failing suite. The report is the json on stdout; the code
+  // is deliberately not consulted, because the one time it was — inferring a
+  // kill from it — a module that failed to LOAD exited non-zero having run
+  // nothing and every mutation under it "died".
+  const { stdout } = yield* capture([...config.testCommand, "--reporter=json"], root);
   return readVitestJson(stdout);
 });
 
@@ -399,7 +481,14 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (config: SweepConfi
     }
     yield* fs.writeFileString(file, outcome.source);
     const result = yield* runSuite(config, root).pipe(
-      Effect.ensuring(capture(["git", "checkout", "--", mutation.file], root).pipe(Effect.ignore)),
+      // THE RESTORE IS NOT BEST-EFFORT. It used to be `Effect.ignore`, which
+      // turned a failed `git checkout` into a mutated file left on disk and a
+      // report that read as a clean run. `orDie` because there is no recovery:
+      // continuing would sweep the next mutation against a still-mutated tree
+      // and attribute the result to the wrong line.
+      Effect.ensuring(
+        mustSucceed(["git", "checkout", "--", mutation.file], root).pipe(Effect.orDie),
+      ),
     );
     const verdict =
       result.total === 0
@@ -437,9 +526,16 @@ const scratchWorktree = (repo: string) =>
     const path = yield* Path.Path;
     const parent = yield* fs.makeTempDirectoryScoped({ prefix: "guard-sweep-" });
     const tree = path.join(parent, "tree");
-    yield* capture(["git", "worktree", "add", "--detach", tree, "HEAD"], repo);
+    yield* mustSucceed(["git", "worktree", "add", "--detach", tree, "HEAD"], repo);
     yield* Effect.addFinalizer(() =>
-      capture(["git", "worktree", "remove", "--force", tree], repo).pipe(Effect.ignore),
+      // Tolerated, unlike the others: the sweep is finished and this tree is
+      // disposable. Said out loud anyway, because what is left behind is a git
+      // worktree the operator now has to remove by hand.
+      mustSucceed(["git", "worktree", "remove", "--force", tree], repo).pipe(
+        Effect.catchCause((cause) =>
+          Console.error(`could not remove the sweep worktree at ${tree}: ${Cause.pretty(cause)}`),
+        ),
+      ),
     );
     return tree;
   });
@@ -478,7 +574,7 @@ export const guardSweepCommand = Command.make(
       yield* Console.log(`sweeping a worktree of ${repo} at ${tree}`);
       if (parsed.setupCommand !== undefined) {
         yield* Console.log(`setup: ${parsed.setupCommand.join(" ")}`);
-        yield* capture(parsed.setupCommand, tree);
+        yield* mustSucceed(parsed.setupCommand, tree);
       } else {
         // Said rather than discovered from a wall of module-resolution errors.
         yield* Console.log(
