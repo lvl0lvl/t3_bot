@@ -35,7 +35,9 @@ import {
   type CommandIssuer,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
+import * as ProjectionSnapshotQuery from "./Services/ProjectionSnapshotQuery.ts";
 import * as OrchestrationEngine from "./Services/OrchestrationEngine.ts";
 
 /**
@@ -54,6 +56,7 @@ const SEED_ISSUER: CommandIssuer = { memberKind: "system", memberId: "hierarchy-
  * generated. A fresh id per boot would create a second hierarchy on every
  * restart and every invariant would be satisfied while doing it.
  */
+const SEED_PROJECT_ID = ProjectId.make("project-t3bot");
 const PM_THREAD = ThreadId.make("thread-pm");
 const BOSS1_THREAD = ThreadId.make("thread-boss1");
 const BOSS3_THREAD = ThreadId.make("thread-boss3");
@@ -78,34 +81,57 @@ const SEEDED_THREADS = [
 ] as const;
 
 /**
- * Seed the hierarchy into an EXISTING project, or do nothing because it is
- * already seeded.
+ * Seed the hierarchy for `workspaceRoot`, or do nothing because it is already
+ * seeded.
  *
- * IT DOES NOT CREATE THE PROJECT, and that is the correction that matters. The
- * server already bootstraps one from its cwd — `autoBootstrapProjectFromCwd`
- * resolves `getActiveProjectByWorkspaceRoot(serverConfig.cwd)` and creates one
- * with a generated id when absent. A seeder creating its own would be a SECOND
- * project for the same path, which `requireActiveProjectWorkspaceRootAbsent`
- * refuses outright — so the version of this that created one passed its test and
- * would have failed on the first real boot.
+ * IT ASKS WHICH PROJECT OWNS THE ROOT BEFORE CREATING ONE, which is the whole
+ * correction. An earlier version created its own unconditionally and would have
+ * failed on the first real boot: the server's own `autoBootstrapProjectFromCwd`
+ * path creates a project for the same root, and
+ * `requireActiveProjectWorkspaceRootAbsent` refuses a second one. Its test
+ * passed throughout, because the fixture created no other project.
  *
- * The caller supplies the project, because the caller is the only thing that
- * knows which one this environment bootstrapped.
+ * Asking first is exactly what that bootstrap does. It is also why this does not
+ * simply take a projectId from its caller: the caller that knows the id is the
+ * bootstrap phase, and that phase runs only under a CLI flag which defaults to
+ * OFF — so seeding from there would seed the demo on almost no server, silently.
+ *
+ * The read costs this one step its pure idempotence-by-receipt. That is a
+ * deliberate trade: the read and the create both run on the single command
+ * worker, so nothing interleaves between them, and the create still carries a
+ * deterministic id so a second boot short-circuits on the receipt anyway. The
+ * read is belt, the receipt is braces.
  */
 export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
-  readonly projectId: ProjectId;
+  readonly workspaceRoot: string;
   readonly createdAt: string;
 }) {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
+  const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const dispatch = (command: Parameters<typeof engine.dispatch>[0]) =>
     engine.dispatch(command, { issuer: SEED_ISSUER });
+
+  const existingProject = yield* projections.getActiveProjectByWorkspaceRoot(input.workspaceRoot);
+  const projectId = Option.isSome(existingProject)
+    ? existingProject.value.id
+    : yield* Effect.as(
+        dispatch({
+          type: "project.create",
+          commandId: CommandId.make("seed-project"),
+          projectId: SEED_PROJECT_ID,
+          title: "t3_bot",
+          workspaceRoot: input.workspaceRoot,
+          createdAt: input.createdAt,
+        }),
+        SEED_PROJECT_ID,
+      );
 
   for (const thread of SEEDED_THREADS) {
     yield* dispatch({
       type: "thread.create",
       commandId: CommandId.make(`seed-thread-${thread.handle}`),
       threadId: thread.id,
-      projectId: input.projectId,
+      projectId,
       title: thread.title,
       modelSelection: {
         instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("claude")),

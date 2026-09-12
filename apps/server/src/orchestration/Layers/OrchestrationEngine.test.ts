@@ -2244,9 +2244,7 @@ describe("OrchestrationEngine", () => {
           createdAt: now(),
         }),
       );
-      await system.run(
-        HierarchySeeder.seedHierarchy({ projectId: seededProjectId, createdAt: now() }),
-      );
+      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
 
       const seeded = await system.readModel();
       expect(seeded.projects.filter((project) => project.deletedAt === null)).toHaveLength(1);
@@ -2289,9 +2287,7 @@ describe("OrchestrationEngine", () => {
 
       // Boot 2: the same commands, same ids. The project is already there, as it
       // would be on a real restart.
-      await system.run(
-        HierarchySeeder.seedHierarchy({ projectId: seededProjectId, createdAt: now() }),
-      );
+      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
 
       const reseeded = await system.readModel();
       expect(reseeded.projects.filter((project) => project.deletedAt === null)).toHaveLength(1);
@@ -2301,6 +2297,33 @@ describe("OrchestrationEngine", () => {
       // THE ASSERTION THIS TEST EXISTS FOR: not one receipt was rewritten, so
       // not one command was decided a second time.
       expect(await readAcceptedAt(system)).toEqual(firstReceipts);
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a project when no project owns the workspace root yet", async () => {
+    // The OTHER branch. The test above seeds into a project the bootstrap made,
+    // so it only ever exercises the resolve path — and the create path is the
+    // one that runs on a genuinely empty state directory, which is the state the
+    // demo is supposed to be reproducible from.
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-hierarchy-fresh-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    const workspaceRoot = NodePath.join(directory, "repo");
+    const system = await createOrchestrationSystem(databasePath);
+    try {
+      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
+
+      const seeded = await system.readModel();
+      const projects = seeded.projects.filter((project) => project.deletedAt === null);
+      expect(projects).toHaveLength(1);
+      expect(projects[0]?.workspaceRoot).toBe(workspaceRoot);
+      // The threads must hang off the project the seeder just made, not off
+      // nothing: a thread pointing at a project that does not exist is the same
+      // dangling shape the member-shape invariant refuses one level up.
+      expect(seeded.threads.every((thread) => thread.projectId === projects[0]?.id)).toBe(true);
+      expect(seeded.channels).toHaveLength(2);
     } finally {
       await system.dispose();
       await NodeFSP.rm(directory, { recursive: true, force: true });
