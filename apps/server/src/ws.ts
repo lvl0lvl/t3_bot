@@ -1644,31 +1644,27 @@ const makeWsRpcLayer = (
                 Stream.flatMap((items) => Stream.fromIterable(items)),
               );
 
-              const loadSnapshot = projectionSnapshotQuery
-                .getShellSnapshot()
-                .pipe(
-                  // The channels this connection's member is in, attached AFTER
-                  // the snapshot so they are never older than its sequence. Both
-                  // this and the HTTP shell route go through one function: the
-                  // browser bootstraps over HTTP and then resumes by sequence, so
-                  // a socket-only wiring leaves the sidebar permanently empty
-                  // while every socket test passes.
-                  Effect.flatMap((snapshot) =>
-                    withMemberChannels({ snapshot, member: connectionMember }),
-                  ),
-                )
-                .pipe(
-                  Effect.tapError((cause) =>
-                    Effect.logError("orchestration shell snapshot load failed", { cause }),
-                  ),
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationGetSnapshotError({
-                        message: "Failed to load orchestration shell snapshot",
-                        cause,
-                      }),
-                  ),
-                );
+              const loadSnapshot = projectionSnapshotQuery.getShellSnapshot().pipe(
+                // The channels this connection's member is in, attached AFTER
+                // the snapshot so they are never older than its sequence. Both
+                // this and the HTTP shell route go through one function: the
+                // browser bootstraps over HTTP and then resumes by sequence, so
+                // a socket-only wiring leaves the sidebar permanently empty
+                // while every socket test passes.
+                Effect.flatMap((snapshot) =>
+                  withMemberChannels({ snapshot, member: connectionMember }),
+                ),
+                Effect.tapError((cause) =>
+                  Effect.logError("orchestration shell snapshot load failed", { cause }),
+                ),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetSnapshotError({
+                      message: "Failed to load orchestration shell snapshot",
+                      cause,
+                    }),
+                ),
+              );
 
               // Offer the completion marker into the same queue as live events.
               // Anything buffered while snapshot/replay work was in flight is
