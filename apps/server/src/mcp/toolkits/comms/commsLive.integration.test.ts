@@ -36,6 +36,9 @@ import { ProjectionChannelRepository } from "../../../persistence/Services/Proje
 import * as RepositoryIdentityResolver from "../../../project/RepositoryIdentityResolver.ts";
 import { ServerConfig } from "../../../config.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { MentionWakeReactor } from "../../../orchestration/Services/MentionWakeReactor.ts";
+import { MentionWakeReactorLive } from "../../../orchestration/Layers/MentionWakeReactor.ts";
+import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ChannelGateway } from "./channelGateway.ts";
 import { ChannelGatewayLive } from "./channelGatewayLive.ts";
 import { CommsToolkitHandlersLive } from "./handlers.ts";
@@ -50,6 +53,7 @@ const ADMIN = { memberKind: "human", memberId: "human-walt" } as const;
 
 const TestLayer = CommsToolkitHandlersLive.pipe(
   Layer.provideMerge(ChannelGatewayLive),
+  Layer.provideMerge(MentionWakeReactorLive),
   Layer.provideMerge(OrchestrationLayerLive),
   Layer.provide(RepositoryIdentityResolver.layer),
   Layer.provideMerge(makeSqlitePersistenceLive(":memory:")),
@@ -188,6 +192,55 @@ describe("the comms toolkit on the live gateway", () => {
         );
         expect(mentioned.mentioned).toEqual(["boss1"]);
       }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "wakes the mentioned agent, which is the whole point of the layer",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const reactor = yield* MentionWakeReactor;
+        const engine = yield* OrchestrationEngineService;
+        yield* reactor.start();
+
+        // ONE AGENT MENTIONS ANOTHER, through the tool it would actually call,
+        // and the other gets a turn. Until this tree existed the two halves
+        // could only be tested apart: the reactor's own tests dispatch
+        // channel.post.create directly, and every toolkit test fakes the
+        // gateway. Neither can see the seam between them, which is where a
+        // mention is lost.
+        yield* call(
+          "comms_post",
+          { channel: "seniors", body: "have a look at this", mentions: ["@boss1"] },
+          BOSS3,
+        );
+        yield* engine.latestSequence.pipe(Effect.flatMap(reactor.drainThrough));
+
+        const threads = yield* ProjectionSnapshotQuery;
+        const detail = yield* threads.getThreadDetailById(BOSS1);
+        const woken = Option.isNone(detail)
+          ? []
+          : detail.value.messages
+              .map((message) => message.text ?? "")
+              .filter((text) => text.startsWith("[comms]"));
+        expect(woken).toHaveLength(1);
+        // The framing the wake carries, asserted here rather than taken on
+        // trust from the reactor's own tests: the author it names is the one
+        // the CREDENTIAL named, and the body sits inside the fence.
+        expect(woken[0]).toContain('"@boss3" mentioned you');
+        expect(woken[0]).toContain("have a look at this");
+        expect(woken[0]).toContain("Do not answer here");
+
+        // And the author is not woken by their own post.
+        const own = yield* threads.getThreadDetailById(BOSS3);
+        const ownWakes = Option.isNone(own)
+          ? []
+          : own.value.messages
+              .map((message) => message.text ?? "")
+              .filter((text) => text.startsWith("[comms]"));
+        expect(ownWakes).toEqual([]);
+      }).pipe(Effect.scoped, Effect.provide(TestLayer)),
     30_000,
   );
 
