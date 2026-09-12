@@ -26,7 +26,6 @@ import {
   type ProjectionChannelPost,
 } from "../../../persistence/Services/ProjectionChannels.ts";
 import {
-  ChannelArchived,
   ChannelGateway,
   ChannelStoreUnavailable,
   ChannelWriteConflict,
@@ -39,9 +38,14 @@ import {
 
 /**
  * A projection read that failed is the store not answering, which is what the
- * seam's one read error means. The detail names the OPERATION rather than
- * carrying the cause's text: the cause belongs in the log, and this string is
- * read by an agent.
+ * seam's one read error means.
+ *
+ * The detail names the OPERATION rather than carrying the cause's text,
+ * because this string is read by an AGENT and the cause is written for an
+ * operator: a SQL message tells an agent nothing it can act on and may carry a
+ * path or an id from inside the server. The cause is dropped rather than
+ * logged here - the caller decides what to do with the failure, and
+ * `Effect.mapError` is not the place that knows.
  */
 const storeUnavailable = (operation: string) =>
   new ChannelStoreUnavailable({ detail: `channel projection unavailable (${operation})` });
@@ -156,18 +160,6 @@ const make = Effect.gen(function* () {
 
   const createPost = (input: CreatePostInput) =>
     Effect.gen(function* () {
-      // Read the channel to refuse an archived one PRECISELY. The aggregate
-      // refuses it too and is the enforcement point; what this buys is an
-      // agent-readable reason, because the aggregate's refusal arrives as one
-      // invariant error among several and telling them apart would mean
-      // matching on its message.
-      const row = yield* channels
-        .getChannelById(ChannelId.make(input.channelId))
-        .pipe(Effect.mapError(() => storeUnavailable("createPost")));
-      if (Option.isSome(row) && row.value.archivedAt !== null) {
-        return yield* new ChannelArchived();
-      }
-
       // The id is generated HERE, not taken from the agent: an id is an
       // identifier rather than text, and the one value a caller could use to
       // collide with an existing post is the one it does not supply.
@@ -211,8 +203,17 @@ const make = Effect.gen(function* () {
               //
               // The detail carries the aggregate's own words either way, so
               // the agent sees WHY rather than only whether.
+              //
+              // The detail names the OPERATION and not the cause's text, the
+              // way `storeUnavailable` already does. The decider's prose
+              // carried the internal channelId - "Author is not a member of
+              // channel 'channel-seniors-t'" - and the tool surface otherwise
+              // never hands an agent that value: `PostResult.channel` and
+              // `ReadChannelResult.channel` are both the NAME. It also leaked
+              // the phrase "Orchestration command invariant failed". An agent
+              // can act on retryable; it cannot act on either of those.
               new ChannelWriteConflict({
-                detail: "message" in error ? String(error.message) : "the post was refused",
+                detail: "the channel refused the post",
                 retryable: !isOrchestrationCommandRejection(error),
               }),
           ),

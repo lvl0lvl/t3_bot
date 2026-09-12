@@ -234,6 +234,21 @@ const make = Effect.gen(function* () {
     if (body.length === 0) {
       return yield* new CommsEmptyBodyError();
     }
+    // ARCHIVED IS DECIDED HERE, from the channel the caller already proved
+    // membership on, rather than by the gateway re-reading the row.
+    //
+    // The decider runs `requireChannelNotArchived` AFTER
+    // `requireChannelAuthorIsMember` on purpose: "archived" tells the reader
+    // the channel EXISTS, which a non-member must not learn, so the two have to
+    // stay one answer to an outsider. The gateway had no membership check of
+    // its own, so that ordering was held only by this file calling
+    // `requireChannel` first - a rule in another file, about a different
+    // function, which is exactly the coupling the post id taught us not to
+    // rely on. Here the membership proof and the archived check are the same
+    // value.
+    if (input.channel.archivedAt !== null) {
+      return yield* new CommsChannelArchivedError({ channel: input.channel.name });
+    }
     const resolved = resolveMentions(input.mentions ?? [], input.channel.members);
     if ("unknown" in resolved) {
       return yield* new CommsMemberNotFoundError({ handles: resolved.unknown });
