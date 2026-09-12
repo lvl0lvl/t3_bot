@@ -58,6 +58,8 @@ message types: `comms/README.md` there.
   any index; a nonce "not equal to the constant I tried" admits every other constant; a count of zero
   wakes is satisfied when the wake went to the other thread. Assert existence before position, the
   property rather than the mutant you wrote, and re-read every negative when a fixture grows a subject.
+- **A guard wired at N call sites needs N tests.** "I tested the guard" is not "I tested every site";
+  removing the check from one site must red a test that names that site.
 - Comments state the input that would break the code, not the reason it is safe.
 - Before pushing, write the adversarial question you would give a reviewer — "what legitimate input
   does this now reject that worked before?" — and answer it yourself. Writing the prompt is the review.
