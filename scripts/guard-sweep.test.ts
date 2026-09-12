@@ -10,6 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   applyMutation,
+  exitCodeFor,
   formatReport,
   judge,
   readVitestJson,
@@ -260,5 +261,51 @@ describe("formatReport", () => {
       { mutation: mutation(), verdict: { _tag: "survived" } },
     ]);
     expect(report).toContain("already failing and cannot be evidence");
+  });
+});
+
+describe("exitCodeFor", () => {
+  const killed = (id: string) =>
+    ({ mutation: mutation({ id }), verdict: { _tag: "killed", by: ["f.ts > real"] } }) as const;
+  const survived = (id: string) =>
+    ({ mutation: mutation({ id }), verdict: { _tag: "survived" } }) as const;
+  const notRun = (id: string) =>
+    ({
+      mutation: mutation({ id }),
+      verdict: { _tag: "not-run", reason: "anchor not found" },
+    }) as const;
+
+  it("is 0 only when everything was measured and everything died", () => {
+    expect(exitCodeFor([killed("a"), killed("b")])).toBe(0);
+  });
+
+  it("is 2 for a survivor", () => {
+    // A survivor is a MEASUREMENT — an unpinned guard, a finding to act on.
+    expect(exitCodeFor([killed("a"), survived("b")])).toBe(2);
+  });
+
+  it("is 3 when something was not measured at all", () => {
+    expect(exitCodeFor([killed("a"), notRun("b")])).toBe(3);
+  });
+
+  it("is 3 rather than 2 when BOTH a survivor and a not-run are present", () => {
+    // THE FIXTURE THAT SEPARATES THE TWO ORDERINGS, and the three above cannot:
+    // each holds at most one of the two conditions, so checking survivors first
+    // and checking not-runs first agree on all of them.
+    //
+    // NOT RUN has to win. It is the ABSENCE of a measurement, and it undermines
+    // the rest of the run — every `find` is a quotation of a file the config does
+    // not own, so once one anchor is stale the others are quoting the same moving
+    // target and the survivor list can no longer be read as complete. Reporting 2
+    // here would say "one unpinned guard, otherwise fine" about a sweep that does
+    // not know what it missed.
+    expect(exitCodeFor([survived("a"), notRun("b")])).toBe(3);
+  });
+
+  it("is 0 for an empty sweep, which the config schema already refuses", () => {
+    // Reachable only by calling this directly: `SweepConfig` requires at least
+    // one mutation. Stated rather than left to be discovered, since 0 here means
+    // "nothing survived" and not "nothing was asked".
+    expect(exitCodeFor([])).toBe(0);
   });
 });

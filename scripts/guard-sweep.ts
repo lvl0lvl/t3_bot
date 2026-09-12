@@ -41,6 +41,11 @@
  *    survives that untouched, and only a wider mutation finds it. A sweep with
  *    no `wider` rows has measured one half of the question.
  *
+ * ITS EXIT CODE IS A VERDICT: 0 all killed, 2 a survivor, 3 something NOT RUN,
+ * 1 the tool or config failed. Every outcome used to be 0 and only a crash was
+ * non-zero, which made the code an anti-signal — 0 for the healthy state and 0
+ * for the worst one. See `exitCodeFor` for why NOT RUN is louder than a survivor.
+ *
  * AND TWO THINGS IT CANNOT DO FOR YOU, both of which report clean.
  *
  * A defence built from two independent parts needs each part mutated
@@ -471,7 +476,21 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (config: SweepConfi
   const swept: Array<SweptMutation> = [];
   for (const mutation of config.mutations) {
     const file = path.join(root, mutation.file);
-    const source = yield* fs.readFileString(file);
+    // A STALE PATH IS THE SAME CLASS AS A STALE ANCHOR, so it gets the same
+    // answer. It used to abort the whole sweep with an untagged PlatformError and
+    // discard every measurement already paid for, while a missing anchor degraded
+    // to NOT RUN — the header presents NOT RUN as the universal degradation and
+    // one half of the same input class did not get it.
+    const read = yield* fs.readFileString(file).pipe(Effect.result);
+    if (read._tag === "Failure") {
+      swept.push({
+        mutation,
+        verdict: { _tag: "not-run", reason: `could not read ${mutation.file}` },
+      });
+      yield* Console.log(`${mutation.id}: NOT RUN — could not read ${mutation.file}`);
+      continue;
+    }
+    const source = read.success;
     const outcome = applyMutation(source, mutation);
     if (outcome._tag !== "applied") {
       const reason = describeApplyFailure(outcome, mutation.file);
@@ -509,8 +528,45 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (config: SweepConfi
     );
   }
 
-  return formatReport(baseline, swept);
+  return { report: formatReport(baseline, swept), swept };
 });
+
+/**
+ * The process's verdict, because a report only a human reads cannot gate.
+ *
+ *   0  every mutation measured, every one killed
+ *   2  at least one SURVIVED, and everything was measured
+ *   3  at least one was NOT RUN
+ *
+ * 3 IS LOUDER THAN 2, and that is the judgement. A survivor is a MEASUREMENT —
+ * an unpinned guard, a finding to act on. A NOT RUN is the ABSENCE of one, and it
+ * undermines the rest of the run: every `find` is a quotation of a file the
+ * config does not own, so if one anchor went stale the others are quoting the
+ * same moving target and the survivor list can no longer be read as complete. An
+ * unmeasured sweep must not be able to hide behind one that merely found
+ * something.
+ *
+ * 1 is not produced here. It is what the runtime already exits with when the
+ * tool or its config failed, which is a third thing again: nothing was measured
+ * AND the instrument is broken.
+ */
+export const exitCodeFor = (swept: ReadonlyArray<SweptMutation>): 0 | 2 | 3 => {
+  if (swept.some((entry) => entry.verdict._tag === "not-run")) {
+    return 3;
+  }
+  return swept.some((entry) => entry.verdict._tag === "survived") ? 2 : 0;
+};
+
+/**
+ * Ends the process with `code`, and does nothing at all for 0.
+ *
+ * A plain `return` for the healthy case so the runtime's own success path stays
+ * intact; an explicit exit only when there is a verdict to carry. The scope's
+ * finalizers — which remove the sweep worktree — run before this, because it is
+ * the command's return value rather than a call inside it.
+ */
+const exitWith = (code: 0 | 2 | 3) =>
+  code === 0 ? Effect.void : Effect.sync(() => process.exit(code));
 
 /**
  * A worktree of `repo` at its current HEAD, removed when the scope closes.
@@ -566,8 +622,9 @@ export const guardSweepCommand = Command.make(
 
       if (inPlace) {
         yield* Console.log(`sweeping ${repo} IN PLACE — no copy was made`);
-        yield* Console.log(yield* sweep(parsed, repo));
-        return;
+        const outcome = yield* sweep(parsed, repo);
+        yield* Console.log(outcome.report);
+        return yield* exitWith(exitCodeFor(outcome.swept));
       }
 
       const tree = yield* scratchWorktree(repo);
@@ -581,7 +638,9 @@ export const guardSweepCommand = Command.make(
           "no setupCommand: a fresh worktree has no node_modules, so the suite will probably fail to load",
         );
       }
-      yield* Console.log(yield* sweep(parsed, tree));
+      const outcome = yield* sweep(parsed, tree);
+      yield* Console.log(outcome.report);
+      return yield* exitWith(exitCodeFor(outcome.swept));
     }),
 ).pipe(Command.withDescription("Break one guard at a time and report which ones nothing notices."));
 
