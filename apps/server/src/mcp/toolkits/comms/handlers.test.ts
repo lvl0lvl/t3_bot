@@ -719,6 +719,26 @@ describe("comms toolkit helpers", () => {
     });
   });
 
+  it("reaches a member whose handle has no canonical form, by its exact handle", () => {
+    // "@" canonicalizes to nothing, so no forgiving spelling can reach it and
+    // every attempt was silently dropped — while comms_read_channel offered it
+    // as mentionable. Exact matching is what makes it addressable at all.
+    expect(
+      resolveMentions(["@"], [{ handle: "@", memberKind: "human", memberId: "human-sigil" }]),
+    ).toEqual({ handles: ["@"] });
+  });
+
+  it("does not wake that member with formatting noise", () => {
+    // The mirror of the test above, and the reason the canonical map refuses an
+    // empty key: "   " and "@@" also canonicalize to nothing, so a member
+    // stored "@" would be woken by a stray space on a post addressed to nobody.
+    const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
+      { handle: "@", memberKind: "human", memberId: "human-sigil" },
+    ];
+    expect(resolveMentions(["   "], members)).toEqual({ handles: [] });
+    expect(resolveMentions(["@@"], members)).toEqual({ handles: [] });
+  });
+
   it("ignores an empty mention rather than failing the post", () => {
     expect(resolveMentions(["@", "  ", "boss1"], MEMBERS)).toEqual({ handles: ["boss1"] });
   });

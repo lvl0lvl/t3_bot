@@ -100,8 +100,15 @@ export function resolveMentions(
   members: ReadonlyArray<ChannelGateway.ChannelMember>,
 ): { readonly handles: ReadonlyArray<string> } | { readonly unknown: ReadonlyArray<string> } {
   const byExactHandle = new Map(members.map((member) => [member.handle, member] as const));
+  // Empty keys are kept out deliberately. A member whose handle canonicalizes
+  // to nothing — "@" — would otherwise be reachable through this map by any
+  // spelling that also canonicalizes to nothing, so a stray space or a bare
+  // "@@" from the agent would wake a real member on a post addressed to
+  // nobody. Such a member is still reachable by its exact handle above.
   const byHandle = new Map(
-    members.map((member) => [canonicalHandle(member.handle), member] as const),
+    members
+      .map((member) => [canonicalHandle(member.handle), member] as const)
+      .filter(([key]) => key.length > 0),
   );
   const handles: Array<string> = [];
   const unknown: Array<string> = [];
