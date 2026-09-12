@@ -984,6 +984,102 @@ export const OrchestrationShellSnapshot = Schema.Struct({
 });
 export type OrchestrationShellSnapshot = typeof OrchestrationShellSnapshot.Type;
 
+/**
+ * A page-size ceiling the SERVER owns, because a client asking for a million
+ * posts is a client that gets them.
+ *
+ * REFUSED BY THE SCHEMA, not clamped inside the handler. A silent clamp answers a
+ * different question than the one asked, and the caller cannot tell a clamped
+ * page from the end of the channel — the same confusion between "no more" and
+ * "not allowed" that the cursor's channel half exists to end.
+ *
+ * The floor is 1 rather than 0. Zero is a request for nothing, which no caller
+ * means and which would arrive as an empty page indistinguishable from an empty
+ * channel.
+ */
+export const CHANNEL_POST_PAGE_LIMIT_MAX = 200;
+export const ChannelPostPageLimit = PositiveInt.check(
+  Schema.isLessThanOrEqualTo(CHANNEL_POST_PAGE_LIMIT_MAX),
+);
+export type ChannelPostPageLimit = typeof ChannelPostPageLimit.Type;
+
+/**
+ * Which WINDOW of a channel's history to read. Never which order it arrives in.
+ *
+ * "backward" is the newest page and then upward, which is what opening a channel
+ * needs. "forward" is oldest-first from a cursor, which is what a client catching
+ * up on a channel it already has needs. Both return ASCENDING rows — see
+ * `OrchestrationChannelPostPage`.
+ */
+export const ChannelPostReadDirection = Schema.Literals(["forward", "backward"]);
+export type ChannelPostReadDirection = typeof ChannelPostReadDirection.Type;
+
+/**
+ * One post as a reader needs it.
+ *
+ * NO SEQUENCE, deliberately. The sequence is the cursor's other half, and a
+ * client holding both halves can build a cursor for any channel — which is the
+ * one thing `decodeChannelCursor` exists to refuse. The comms gateway's
+ * `ChannelPostRecord` omits it for the same reason; this is not a new rule.
+ *
+ * `authorHandle` rather than a member ref: a reader renders a handle, and who the
+ * author IS belongs to the write path.
+ */
+export const OrchestrationChannelPost = Schema.Struct({
+  id: ChannelPostId,
+  channelId: ChannelId,
+  authorHandle: ChannelMemberHandle,
+  body: Schema.String,
+  mentions: Schema.Array(ChannelMemberHandle),
+  parentPostId: Schema.NullOr(ChannelPostId),
+  createdAt: IsoDateTime,
+});
+export type OrchestrationChannelPost = typeof OrchestrationChannelPost.Type;
+
+/**
+ * One page of a channel's posts, ALWAYS ascending by sequence in both
+ * directions.
+ *
+ * ASCENDING IS THE WIRE'S PROMISE, not the caller's job. `direction` chooses the
+ * window and which way `nextCursor` points; it never chooses the order. Every
+ * consumer renders oldest-at-top, so returning a backward page newest-first would
+ * put a `.reverse()` in each of them — a step that is correct until someone
+ * forgets it, and a page nobody reversed reads as though time runs backwards,
+ * which gets diagnosed as a data bug rather than a rendering one.
+ * `listPostsBackward` reverses once, where a real-database test holds it.
+ *
+ * `nextCursor` IS OPAQUE. Hand it back verbatim; never construct or parse one.
+ * `null` means there is nothing further IN THAT DIRECTION — the newest post going
+ * forward, the beginning of history going backward. It does NOT record the
+ * direction that issued it, so keep a cursor with the direction you obtained it
+ * with.
+ *
+ * A cursor from ANOTHER channel is refused rather than answered with an empty
+ * page. The empty page is byte for byte what "you are caught up" looks like, and
+ * answering with one is the defect `t3_bot-e60` was filed for.
+ */
+export const OrchestrationChannelPostPage = Schema.Struct({
+  channelId: ChannelId,
+  posts: Schema.Array(OrchestrationChannelPost),
+  nextCursor: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type OrchestrationChannelPostPage = typeof OrchestrationChannelPostPage.Type;
+
+/**
+ * What a client asks for.
+ *
+ * `cursor` omitted means the end of history in the requested direction: the
+ * newest page going backward, the oldest going forward. A client opening a
+ * channel therefore sends `direction: "backward"` and no cursor.
+ */
+export const OrchestrationChannelPostPageRequest = Schema.Struct({
+  channelId: ChannelId,
+  direction: ChannelPostReadDirection,
+  limit: ChannelPostPageLimit,
+  cursor: Schema.optional(TrimmedNonEmptyString),
+});
+export type OrchestrationChannelPostPageRequest = typeof OrchestrationChannelPostPageRequest.Type;
+
 export const OrchestrationShellStreamEvent = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("project-upserted"),
