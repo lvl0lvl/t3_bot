@@ -378,6 +378,35 @@ describe("the comms toolkit on the live gateway", () => {
         // And the end of the channel says so, which is what lets an agent stop
         // rather than poll forever.
         expect(secondPage.nextCursor).toBeNull();
+
+        // A CURSOR THAT IS NOT A CURSOR IS REFUSED, not answered. `Number()`
+        // has no failure case on an arbitrary string: "post-2" became NaN,
+        // matched no row, and came back as an empty page with nextCursor null
+        // - which is byte-for-byte the answer for "you are caught up". Three
+        // unread posts behind a successful reply, on the feature whose entire
+        // purpose is catching up. A post id is the likely wrong value to send,
+        // since posts and cursors are both bare strings in the result.
+        for (const notACursor of ["post-2", "abc", "  ", "-1", "1.5", "0x2", "1e999"]) {
+          const refused = yield* call(
+            "comms_read_channel",
+            { channel: "seniors", limit: 2, cursor: notACursor },
+            BOSS3,
+          ).pipe(Effect.flip);
+          // Whatever it says, it must not be an empty page: an agent cannot
+          // tell a wrong answer from the end of the channel, and it stops.
+          expect(refused).toBeDefined();
+          expect(refused).not.toMatchObject({ posts: [], nextCursor: null });
+        }
+
+        // The rewind half of the same defect: "  " and "-1" coerced to 0 and
+        // silently re-served the OLDEST page, so an agent paging forward would
+        // loop over the same posts forever rather than stop.
+        const stillWorks = yield* call(
+          "comms_read_channel",
+          { channel: "seniors", limit: 2, cursor: firstPage.nextCursor! },
+          BOSS3,
+        );
+        expect(stillWorks.posts.map((post) => post.body)).toEqual(["third"]);
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );

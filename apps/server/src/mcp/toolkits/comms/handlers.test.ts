@@ -133,20 +133,24 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
       // Pages honestly: `cursor` points AFTER the last post returned, `limit`
       // is respected, `nextCursor` is null only when no newer posts remain.
       // A fake that ignores limit and cursor cannot see a paging bug at all.
+      //
+      // DIGITS, like the live layer's, rather than a post id. The two used to
+      // disagree about what a cursor even is - this one looked the cursor up
+      // by postId, and `findIndex` returning -1 for an unknown cursor made
+      // `-1 + 1` the FIRST page, where the live layer returns an empty one. A
+      // fake that answers a bad input differently from the thing it stands in
+      // for is the one place a paging bug can hide from both.
       readPosts: (input) =>
         die("readPosts").pipe(
           Effect.andThen(fail.readPosts ? Effect.fail(fail.readPosts) : Effect.void),
           Effect.andThen(Ref.update(reads, (seen) => [...seen, input])),
           Effect.map(() => {
-            const startIndex =
-              input.cursor === undefined
-                ? 0
-                : allPosts.findIndex((entry) => entry.postId === input.cursor) + 1;
+            const startIndex = input.cursor === undefined ? 0 : Number(input.cursor);
             const page = allPosts.slice(startIndex, startIndex + input.limit);
             const consumed = startIndex + page.length;
             return {
               posts: page,
-              nextCursor: consumed < allPosts.length ? (page.at(-1)?.postId ?? null) : null,
+              nextCursor: consumed < allPosts.length ? String(consumed) : null,
             } satisfies ChannelGateway.ChannelPage;
           }),
         ),
@@ -604,7 +608,11 @@ describe("comms toolkit handlers", () => {
 
       const first = yield* harness.call("comms_read_channel", { channel: "seniors", limit: 2 });
       expect(first.posts.map((entry) => entry.postId)).toEqual(["post-1", "post-2"]);
-      expect(first.nextCursor).toEqual("post-2");
+      // The SHAPE the tool will accept back, not the fake's internal value: a
+      // cursor is opaque to the agent, and asserting the exact string here
+      // pinned this fake's convention rather than the contract. The proof it
+      // is usable is that the next call below is made with it.
+      expect(first.nextCursor).toMatch(/^[0-9]+$/);
 
       const second = yield* harness.call("comms_read_channel", {
         channel: "seniors",

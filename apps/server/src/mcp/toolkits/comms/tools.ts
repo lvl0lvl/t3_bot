@@ -160,6 +160,14 @@ export const ChannelPost = Schema.Struct({
 });
 export type ChannelPost = typeof ChannelPost.Type;
 
+/**
+ * A cursor is the `nextCursor` of an earlier read, handed back verbatim.
+ *
+ * Opaque to the agent and a decimal sequence underneath, so the check is the
+ * narrowest thing that admits every value this server issues.
+ */
+const CURSOR_PATTERN = /^[0-9]+$/;
+
 export const ReadChannelResult = Schema.Struct({
   channel: Schema.String,
   members: Schema.Array(Schema.String).annotate({
@@ -234,9 +242,16 @@ const ReadChannelTool = Tool.make("comms_read_channel", {
       }),
     ),
     cursor: Schema.optional(
-      Schema.String.check(Schema.isNonEmpty()).annotate({
+      // DIGITS ONLY, checked here so a cursor that is not a cursor is refused
+      // before any read rather than answered with an empty page. `Number()` on
+      // an arbitrary string has no failure case: "post-2" and "abc" become NaN
+      // and match no row, which reaches the agent as `nextCursor: null` - the
+      // wire shape of "you are caught up" - while "  ", "-1" and "1.5" rewind
+      // to the oldest page. A post id is the likely wrong value, since posts
+      // and cursors are both bare strings in the result.
+      Schema.String.check(Schema.isPattern(CURSOR_PATTERN)).annotate({
         description:
-          "nextCursor from a previous read, to get the posts after that page. Omit for the oldest posts.",
+          "nextCursor from a previous read, to get the posts after that page. Omit for the oldest posts. Pass it back exactly as given.",
       }),
     ),
   }),

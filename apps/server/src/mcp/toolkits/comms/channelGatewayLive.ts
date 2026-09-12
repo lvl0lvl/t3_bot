@@ -112,6 +112,22 @@ const make = Effect.gen(function* () {
         Effect.mapError(() => storeUnavailable("getPost")),
       );
 
+  /**
+   * A cursor this layer did not issue is a DEFECT, not an empty page.
+   *
+   * The toolkit's schema refuses a non-numeric cursor before the call, so
+   * anything arriving here malformed is a caller bug. Dying says so; coercing
+   * with `Number()` answered it with the wire shape of "you are caught up",
+   * which is the one wrong answer an agent cannot detect - it stops reading.
+   */
+  const requireSequence = (cursor: string) => {
+    const sequence = Number(cursor);
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+      throw new Error(`ChannelGatewayLive received a cursor that is not a sequence: ${cursor}`);
+    }
+    return sequence;
+  };
+
   const readPosts = (input: ReadPostsInput) =>
     // OVER-FETCH BY ONE. `nextCursor` has to say whether a newer post exists,
     // and asking for one more than the caller wanted is how to know without a
@@ -120,7 +136,7 @@ const make = Effect.gen(function* () {
       .listPosts({
         channelId: ChannelId.make(input.channelId),
         limit: input.limit + 1,
-        afterSequence: input.cursor === undefined ? undefined : Number(input.cursor),
+        afterSequence: input.cursor === undefined ? undefined : requireSequence(input.cursor),
       })
       .pipe(
         Effect.mapError(() => storeUnavailable("readPosts")),
