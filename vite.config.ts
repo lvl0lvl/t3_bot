@@ -32,6 +32,7 @@ export default defineConfig({
   fmt: {
     ignorePatterns: [
       ".repos/**",
+      ".beads/**",
       ".alchemy",
       "dist",
       "dist-electron",

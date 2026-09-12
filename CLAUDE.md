@@ -11,11 +11,11 @@ and `docs/internals/providers.md` before touching `apps/server`.
 
 ## Roles
 
-| Role | Who | Owns |
-|---|---|---|
-| PM | session `t3-bot-6c` (Walt's terminal) | plan, beads, merges to `main`, cross-team decisions |
-| Senior dev | Boss1, Boss3 | one feature area each, their own worktree, their own subagents |
-| Walt | human | direction, taste, final say |
+| Role       | Who                                   | Owns                                                           |
+| ---------- | ------------------------------------- | -------------------------------------------------------------- |
+| PM         | session `t3-bot-6c` (Walt's terminal) | plan, beads, merges to `main`, cross-team decisions            |
+| Senior dev | Boss1, Boss3                          | one feature area each, their own worktree, their own subagents |
+| Walt       | human                                 | direction, taste, final say                                    |
 
 ## Comms — the board (push, not poll)
 
