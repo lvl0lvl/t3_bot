@@ -678,6 +678,36 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
   // SQLITE(2067) naming the driver instead of the problem. Canonicalisation
   // makes this MORE reachable, not less: "#Seniors" now collides with
   // "seniors", which is the whole point of folding.
+  it.effect("refuses recreating a channel id, even under a free name", () =>
+    Effect.gen(function* () {
+      // requireChannelAbsent was UNPINNED: making it inert passed all 602 tests.
+      // The engine restart test's comment says it guards this, and it does not —
+      // requireChannelNameAvailable now refuses that recreate first, so the test
+      // passes for a different reason than the one it names. A fix of mine masked
+      // the guard standing next to it.
+      //
+      // A FREE name is the input that separates them: name availability passes, so
+      // only requireChannelAbsent can refuse this.
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-same-id"),
+          // The id the fixture already holds.
+          channelId: CHANNEL,
+          name: "a-name-nobody-holds",
+          members: [{ handle: PM, memberKind: "thread", memberId: "thread-pm" }],
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+        issuer: ADMIN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("cannot be created twice");
+      }
+    }),
+  );
+
   it.effect("refuses a second channel whose canonical name is already taken", () =>
     Effect.gen(function* () {
       const error = yield* decideOrchestrationCommand({
