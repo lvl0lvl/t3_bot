@@ -27,7 +27,11 @@
  * @module channelGateway
  */
 import { refFromThreadCredential } from "@t3tools/contracts";
-import type { ChannelMemberRef, ThreadId } from "@t3tools/contracts";
+import type {
+  ChannelMemberRef,
+  OrchestrationChannelPostWakeOutcome,
+  ThreadId,
+} from "@t3tools/contracts";
 import type * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -184,6 +188,20 @@ export interface Channel {
   readonly archivedAt: string | null;
 }
 
+/**
+ * One thread a post woke, and how that wake's turn ended.
+ *
+ * Strings, like every id on this seam. The vocabulary is the contract's
+ * (`OrchestrationChannelPostWakeOutcome`) and is NOT re-declared here as a
+ * union: the seam would then be a second spelling of the five words, and the
+ * handler that copies them across would compile against either.
+ */
+export interface ChannelPostWakeRecord {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly outcome: OrchestrationChannelPostWakeOutcome;
+}
+
 export interface ChannelPostRecord {
   readonly postId: string;
   readonly authorHandle: string;
@@ -191,6 +209,13 @@ export interface ChannelPostRecord {
   readonly mentions: ReadonlyArray<string>;
   readonly parentPostId: string | null;
   readonly createdAt: string;
+  /**
+   * The threads this post woke and how each wake ended; ABSENT when it woke
+   * nobody, never an empty array. One element per thread, because a post
+   * mentioning two handles wakes two, and the two turns can end differently
+   * (`t3_bot-j6o`).
+   */
+  readonly wakes?: ReadonlyArray<ChannelPostWakeRecord>;
 }
 
 /**

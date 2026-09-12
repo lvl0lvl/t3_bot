@@ -21,6 +21,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
@@ -333,6 +334,108 @@ describe("the comms toolkit on the live gateway", () => {
               .map((message) => message.text ?? "")
               .filter((text) => text.startsWith("[comms]"));
         expect(ownWakes).toEqual([]);
+      }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "tells the agent its post woke a thread and how that turn ended, by POST id",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const reactor = yield* MentionWakeReactor;
+        const engine = yield* OrchestrationEngineService;
+        yield* reactor.start();
+
+        const setSession = (
+          activeTurnId: TurnId | null,
+          status: "running" | "ready" | "interrupted",
+          at: string,
+        ) =>
+          engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(`cmd-session-${at}`),
+            threadId: BOSS1,
+            session: {
+              threadId: BOSS1,
+              status,
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "full-access",
+              activeTurnId,
+              lastError: null,
+              updatedAt: at,
+            },
+            createdAt: at,
+          });
+
+        // TWO POSTS, BOTH MENTIONING boss1, AND A TURN THAT STARTS BETWEEN
+        // THEM. The first wakes boss1 from idle; the second lands while the
+        // turn is running and is steered into it. That is the sequence in
+        // which the projection loses the second post's link (`t3_bot-j6o`),
+        // and the one an agent most needs to be able to read back.
+        const first = yield* call(
+          "comms_post",
+          { channel: "seniors", body: "first", mentions: ["@boss1"] },
+          BOSS3,
+        );
+        yield* engine.latestSequence.pipe(Effect.flatMap(reactor.drainThrough));
+        const TURN = TurnId.make("turn-boss1-live");
+        yield* setSession(TURN, "running", "2026-01-01T00:00:30.000Z");
+
+        const second = yield* call(
+          "comms_post",
+          { channel: "seniors", body: "second", mentions: ["@boss1"] },
+          BOSS3,
+        );
+        yield* engine.latestSequence.pipe(Effect.flatMap(reactor.drainThrough));
+        yield* setSession(TURN, "running", "2026-01-01T00:01:30.000Z");
+
+        // WHILE IT RUNS, both posts say so, each under its own id.
+        const running = yield* call("comms_read_channel", { channel: "seniors" }, BOSS3);
+        const byId = (page: typeof running) =>
+          new Map(page.posts.map((post) => [post.postId, post.wakes] as const));
+        expect(byId(running).get(first.postId)).toEqual([
+          { threadId: BOSS1, turnId: TURN, outcome: "running" },
+        ]);
+        expect(byId(running).get(second.postId)).toEqual([
+          { threadId: BOSS1, turnId: TURN, outcome: "running" },
+        ]);
+
+        // THEN THE TURN IS INTERRUPTED — THE WAY THE RUNTIME SAYS SO. The
+        // projector settles a turn from the SESSION STATUS that follows it, not
+        // from the interrupt command (`settledTurnStateForSessionStatus`), which
+        // is criterion 1's whole point: a turn boundary the provider never
+        // reported is not one the projection will record. So the fixture ends
+        // the turn with a session-set of `interrupted`, which is what the
+        // adapter emits, and not with `thread.turn.interrupt`, which alone
+        // leaves the turn row `running`.
+        //
+        // The projection's word is "interrupted"; the agent's is "cancelled",
+        // and that mapping is asserted here at the door rather than trusted
+        // from the join's own tests.
+        yield* setSession(null, "interrupted", "2026-01-01T00:02:00.000Z");
+
+        const after = yield* call("comms_read_channel", { channel: "seniors" }, BOSS3);
+        // BOTH POSTS, because both were folded into the one turn that died.
+        // The second post is the one the projection had no link for; an agent
+        // reading only the turn row would have been told about the first and
+        // nothing about the second — criterion 2, on the wire.
+        expect(byId(after).get(first.postId)).toEqual([
+          { threadId: BOSS1, turnId: TURN, outcome: "cancelled" },
+        ]);
+        expect(byId(after).get(second.postId)).toEqual([
+          { threadId: BOSS1, turnId: TURN, outcome: "cancelled" },
+        ]);
+
+        // AND A POST THAT WOKE NOBODY HAS NO `wakes` AT ALL — absent, not
+        // empty — which is the only spelling the contract admits.
+        const plain = yield* call("comms_post", { channel: "seniors", body: "no mention" }, BOSS3);
+        yield* engine.latestSequence.pipe(Effect.flatMap(reactor.drainThrough));
+        const withPlain = yield* call("comms_read_channel", { channel: "seniors" }, BOSS3);
+        const plainPost = withPlain.posts.find((post) => post.postId === plain.postId);
+        expect(plainPost).toBeDefined();
+        expect("wakes" in plainPost!).toBe(false);
       }).pipe(Effect.scoped, Effect.provide(TestLayer)),
     30_000,
   );

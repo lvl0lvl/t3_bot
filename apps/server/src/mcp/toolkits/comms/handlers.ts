@@ -384,6 +384,9 @@ const make = Effect.gen(function* () {
             mentions: post.mentions,
             parentPostId: post.parentPostId,
             createdAt: post.createdAt,
+            // Carried through by spread for the same reason as everywhere
+            // else: absent is the value, not `undefined`.
+            ...(post.wakes === undefined ? {} : { wakes: post.wakes }),
           })),
           nextCursor: page.nextCursor,
         } satisfies ReadChannelResult;
