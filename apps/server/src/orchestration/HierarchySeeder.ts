@@ -9,13 +9,18 @@
  * refused them all. Going through the engine means the seeded hierarchy is
  * subject to the same rules as anything a user creates.
  *
- * IDEMPOTENCE IS BY RECEIPT, not by reading first. Every command below carries a
- * DETERMINISTIC commandId, so the engine's command-receipt idempotency
- * short-circuits the second boot before the decider ever sees it. That is why
- * there is no "does it already exist" query here and no error handling around
- * "already exists": on boot 2 nothing reaches the decider at all. Reading first
- * would also be a lie about atomicity — the read and the write are separate, and
- * only the receipt makes the repeat safe.
+ * IDEMPOTENCE IS BY RECEIPT. Every command below carries a DETERMINISTIC
+ * commandId, so the engine's command-receipt idempotency short-circuits the
+ * second boot before the decider ever sees it. That is why there is no error
+ * handling around "already exists" anywhere here: on boot 2 nothing reaches the
+ * decider at all.
+ *
+ * There is exactly ONE read, and it is not there for idempotence — the receipt
+ * already covers that. It is there because a DIFFERENT writer owns the same
+ * subject: `autoBootstrapProjectFromCwd` also creates a project for the server's
+ * cwd, and two projects for one workspace root is what
+ * `requireActiveProjectWorkspaceRootAbsent` refuses. See `seedHierarchy` for why
+ * that read is safe to separate from its write.
  *
  * CHANNELS COME LAST, and on this tree that is convention rather than
  * enforcement. Once `t3_bot-8i2` lands, a channel member of kind `thread` must
@@ -91,16 +96,21 @@ const SEEDED_THREADS = [
  * `requireActiveProjectWorkspaceRootAbsent` refuses a second one. Its test
  * passed throughout, because the fixture created no other project.
  *
- * Asking first is exactly what that bootstrap does. It is also why this does not
- * simply take a projectId from its caller: the caller that knows the id is the
- * bootstrap phase, and that phase runs only under a CLI flag which defaults to
- * OFF — so seeding from there would seed the demo on almost no server, silently.
+ * Asking first is exactly what that bootstrap does. It does not take the id from
+ * the bootstrap phase instead, because that phase is FORKED — startup does not
+ * await it — so a seeder hanging off it would race the thing it depends on. The
+ * startup wiring resolves that the other way: `hierarchy.seed` runs to
+ * completion BEFORE the bootstrap fork, so the read below sees a settled world
+ * and the bootstrap then resolves the project this seeded rather than creating
+ * a second one.
  *
- * The read costs this one step its pure idempotence-by-receipt. That is a
- * deliberate trade: the read and the create both run on the single command
- * worker, so nothing interleaves between them, and the create still carries a
- * deterministic id so a second boot short-circuits on the receipt anyway. The
- * read is belt, the receipt is braces.
+ * The read costs this one step its pure idempotence-by-receipt, and it is worth
+ * being exact about what does and does not make that safe. It is NOT "the
+ * command worker serialises it": the read is a projection query and does not run
+ * on that worker at all. It is safe because the only other writer of a project
+ * for this root runs strictly after this phase returns, and because the create
+ * still carries a deterministic id — so even a lost race degrades to a refused
+ * duplicate rather than a second hierarchy.
  */
 export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
   readonly workspaceRoot: string;
