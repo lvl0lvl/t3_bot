@@ -19,6 +19,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
@@ -469,6 +470,40 @@ const post = async (
  * coincide - but a NEGATIVE assertion through this helper is only as strong as
  * the fixture's thread being visible.
  */
+/**
+ * Set the woken thread's provider session, which is how a turn STARTS here.
+ *
+ * The session agrees with the thread `seedChannel` created rather than inventing
+ * a provider it was never made with: a fixture whose session names a different
+ * runtime mode than its thread is testing a state the app cannot reach.
+ */
+const setSession = async (
+  system: System,
+  input: {
+    readonly label: string;
+    readonly activeTurnId: TurnId | null;
+    readonly updatedAt: string;
+  },
+) =>
+  system.run(
+    system.engine.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make(`cmd-session-${input.label}`),
+      threadId: WOKEN,
+      session: {
+        threadId: WOKEN,
+        status: "running",
+        providerName: "codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeMode: WOKEN_RUNTIME_MODE,
+        activeTurnId: input.activeTurnId,
+        lastError: null,
+        updatedAt: input.updatedAt,
+      },
+      createdAt: input.updatedAt,
+    }),
+  );
+
 const wakeMessages = async (system: System, threadId: ThreadId = WOKEN) => {
   const detail = await system.run(system.threads.getThreadDetailById(threadId));
   return Option.isNone(detail)
@@ -1838,6 +1873,98 @@ describe("MentionWakeReactor", () => {
         system.turns.getPendingTurnStartByThreadId({ threadId: BYSTANDER }),
       );
       expect(Option.isNone(bystander)).toBe(true);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("loses the second post's link once a turn is RUNNING", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      const RUNNING_TURN = TurnId.make("turn-running");
+      const firstKey = wakeKey(CHANNEL_ID, "post-first", WOKEN);
+      const secondKey = wakeKey(CHANNEL_ID, "post-second", WOKEN);
+
+      // DISTINCT TIMESTAMPS THROUGHOUT, for the reason the test below paid for:
+      // two posts on one timestamp tie on `requested_at`, and an assertion over
+      // a tie reads SQLite's rowid rather than the behaviour it names.
+      await post(system, {
+        id: "post-first",
+        mentions: [MENTION],
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // THE TURN STARTS, which is the step this file has never had — and the
+      // reason the test below cannot show what it describes: with no turn row
+      // there is no second place for a key to be, so "the key is nowhere" has
+      // nowhere to be measured.
+      await setSession(system, {
+        label: "start",
+        activeTurnId: RUNNING_TURN,
+        updatedAt: "2026-01-01T00:00:30.000Z",
+      });
+
+      // AND A POST ARRIVES WHILE IT RUNS. This is the steer `t3_bot-j6o` is
+      // about: the provider folds it into the live turn and emits no
+      // `turn.started`, so it never gets a turn of its own.
+      await post(system, {
+        id: "post-second",
+        mentions: [MENTION],
+        createdAt: "2026-01-01T00:01:00.000Z",
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // THE SECOND POST DID STAGE A ROW, measured BEFORE the next session-set
+      // rather than inferred after it. Without this the test cannot tell "the
+      // link was erased" from "a link was never made", and those call for
+      // opposite fixes: the first is a delete that outruns a reader, the second
+      // would mean the wake never reached the projection at all.
+      const staged = await system.run(
+        system.turns.getPendingTurnStartByThreadId({ threadId: WOKEN }),
+      );
+      expect(Option.isSome(staged) ? String(staged.value.messageId) : null).toBe(secondKey);
+
+      // AN ORDINARY SECOND SESSION-SET, NOT A CANCELLATION, and that is the
+      // point: the bead frames this hole around a wake whose turn was
+      // cancelled, and it opens on the path every turn takes.
+      await setSession(system, {
+        label: "again",
+        activeTurnId: RUNNING_TURN,
+        updatedAt: "2026-01-01T00:01:30.000Z",
+      });
+
+      const rows = await system.run(system.turns.listByThreadId({ threadId: WOKEN }));
+
+      // THE TURN ROW HOLDS THE FIRST POST, BY NAME. "It holds a key" passes with
+      // the defect present — the turn does have a `pendingMessageId`; it is the
+      // other post's.
+      const turnRow = rows.find((row) => row.turnId === RUNNING_TURN);
+      expect(turnRow?.pendingMessageId).toBe(firstKey);
+
+      // AND THE SECOND POST'S KEY IS ON NO ROW AT ALL. This is the assertion
+      // that separates the two implementations, and it is deliberately not
+      // "post-second has a turnId": it does have one, the live turn's, which is
+      // exactly why a turnId cannot identify it.
+      expect(rows.some((row) => row.pendingMessageId === secondKey)).toBe(false);
+      const pending = await system.run(
+        system.turns.getPendingTurnStartByThreadId({ threadId: WOKEN }),
+      );
+      expect(Option.isNone(pending)).toBe(true);
+
+      // BOTH POSTS DID WAKE THE THREAD, so what is missing is a link the
+      // projection dropped rather than a wake that never happened.
+      const woken = await wakeMessages(system, WOKEN);
+      expect(woken.filter((text) => text.includes('post "post-first"'))).toHaveLength(1);
+      expect(woken.filter((text) => text.includes('post "post-second"'))).toHaveLength(1);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
