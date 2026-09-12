@@ -57,3 +57,38 @@ unguarded.
 
 Saved as `.txt` so no toolchain tries to compile it before then. Rename it back
 to `.ts` when it lands, next to `handlers.test.ts`.
+
+## `canonicalOneImplementation.test.ts.txt`
+
+Built by boss1 after the FOURTH divergence between the decider's canonicaliser
+and the toolkit's copy — the one that came from nobody disagreeing. The decider's
+rule was improved (NFC after the fold, whitespace collapsed, variation selectors
+stripped) and the toolkit's copy, correct when written, silently became wrong.
+
+**Why it is not the obvious test.** "The two agree" was green at every moment the
+two copies happened to match, which includes most of the evening. It says nothing
+about tomorrow, because nothing in either file announces that the other moved. So
+this asserts **reference** equality — the toolkit must expose the shared function
+OBJECT, not a behaviourally identical copy. A copy that is right today is a copy
+that can be improved out of agreement tomorrow, and reference equality is what
+fails for it.
+
+**Verified in both directions** before handover, on the tree both halves live on:
+
+| tree state | result |
+|---|---|
+| two implementations (main today) | RED — "the toolkit defines its own canonicalChannelName again" |
+| toolkit re-exports the shared rule (post-`iin`) | GREEN, 3 passed |
+
+So it goes green for the right reason rather than by going vacuous.
+
+The five rows are kept as a **diagnostic**, not a guard: with one implementation
+they pass trivially. They are there so that when someone reintroduces a copy, the
+reference assertion says THAT and the rows say WHICH INPUTS moved, by code point,
+without rediscovering the set. Every row is an input where the two really
+disagreed on 2026-09-12.
+
+**When to land it.** With `t3_bot-iin`, in the same change that imports
+`@t3tools/shared/channelIdentity` and deletes the toolkit's copies — the change
+whose whole purpose this test guards. `t3_bot-0uq` now depends on `iin` in the
+bead graph, so nothing can make the seam reachable before the copy is gone.
