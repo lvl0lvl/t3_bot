@@ -9839,6 +9839,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // A STORE FAILURE IS NOT AN ANSWER. Told "unreadable", a caller concludes this
       // server cannot serve the channel and stops asking; told this, it can retry.
       assert.equal(failure._tag, "OrchestrationReadChannelPostsError");
+      // AND IT CARRIES NO `cause` (`SEC-25-01`). `cause` is `Schema.Defect()`, so attaching
+      // it serialised the whole chain to the client: the repository method, the driver
+      // message, and a filesystem path in the measured case — to anyone holding
+      // `AuthOrchestrationReadScope`, which on this product can be a remote browser. The
+      // cause is logged instead. Asserted as an ABSENCE because that is the only way a
+      // re-attached `cause` reds a test rather than passing quietly.
+      assert.isUndefined((failure as { readonly cause?: unknown }).cause);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

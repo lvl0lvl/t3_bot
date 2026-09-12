@@ -1847,19 +1847,41 @@ const makeWsRpcLayer = (
                       cursor: cause.cursor,
                     }),
                   ),
+                // THE CAUSE IS LOGGED, NOT SENT. `cause` is `Schema.Defect()` on that
+                // contract, so attaching it serialises the whole chain: the repository
+                // method, the driver's message, and in the measured case the path
+                // `/Users/…/.t3/userdata/state.sqlite`. The recipient is any client
+                // holding `AuthOrchestrationReadScope`, which on this product can be a
+                // remote browser or the mobile app over T3 Connect.
+                //
+                // The HTTP twin already does it this way — `failEnvironmentInternal` logs
+                // server-side and answers `{code, reason, traceId}` — and this handler's
+                // docstring claims the two doors differ only in error vocabulary. They
+                // differed in what they disclose. Nothing is lost by logging: the cause is
+                // still where an operator debugging it looks.
+                //
+                // About twenty sibling errors in this file still attach `cause`, so this
+                // is a divergence from an established pattern rather than a fix to it;
+                // `t3_bot-bic` carries the file-wide decision.
                 PersistenceDecodeError: (cause) =>
-                  Effect.fail(
-                    new OrchestrationReadChannelPostsError({
-                      message: "Failed to read the channel's posts",
-                      cause,
-                    }),
+                  Effect.logError("Failed to read the channel's posts", cause).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new OrchestrationReadChannelPostsError({
+                          message: "Failed to read the channel's posts",
+                        }),
+                      ),
+                    ),
                   ),
                 PersistenceSqlError: (cause) =>
-                  Effect.fail(
-                    new OrchestrationReadChannelPostsError({
-                      message: "Failed to read the channel's posts",
-                      cause,
-                    }),
+                  Effect.logError("Failed to read the channel's posts", cause).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new OrchestrationReadChannelPostsError({
+                          message: "Failed to read the channel's posts",
+                        }),
+                      ),
+                    ),
                   ),
               }),
             ),
