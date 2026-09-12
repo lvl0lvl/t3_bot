@@ -511,6 +511,31 @@ export const CommandIssuer = Schema.Struct({
 export type CommandIssuer = typeof CommandIssuer.Type;
 
 /**
+ * The M1 stand-in for a user identity: the one human this environment can name.
+ *
+ * There is no account system here. A server has one operator, at the keyboard,
+ * and nothing distinguishes two browser sessions, so every RPC client is issued
+ * as this member.
+ *
+ * IT IS A CONSTANT IN CONTRACTS RATHER THAN ONE PER CALLER because two callers
+ * are already using it — the hierarchy seeder writes it into `#project`'s
+ * membership and the WebSocket layer stamps it onto every command. If those two
+ * strings ever differ, the operator is a member of a channel they cannot post
+ * to, and `requireChannelAuthorIsMember` refuses with a message about
+ * membership that is true and useless. One definition cannot drift.
+ *
+ * It is NOT a stand-in for authorization. Membership still decides what this
+ * member may do, and `requireChannelAuthorIsMember` refuses a post to a channel
+ * this member is not in — which is the same invariant that will refuse it when
+ * identities are real. The M1 seed puts the operator in both seeded channels, so
+ * nothing is refused on a fresh server; the check is load-bearing the moment a
+ * channel exists that they are not in.
+ *
+ * Replace it when accounts exist, at both call sites, and delete this.
+ */
+export const HUMAN_OPERATOR_MEMBER_ID = "human-walt";
+
+/**
  * A channel as the decider sees it. Membership is here because every write
  * invariant needs it; posts are not, because this model is rebuilt on every
  * event and a channel's history is unbounded. Post bodies live in the
@@ -1474,17 +1499,21 @@ export type DispatchableClientOrchestrationCommand =
  * What the WebSocket layer will decode from a client. Deliberately NOT every
  * dispatchable command.
  *
- * Channel commands are absent on purpose. They are authorized by the command's
- * engine-stamped issuer, and the only issuer an RPC client can be given today is
- * `human` — which would make every browser session a channel administrator. The
- * MCP path supplies a `thread` issuer from its credential and is where agent
- * channel access belongs.
+ * EXACTLY ONE CHANNEL COMMAND IS HERE: `channel.post.create`. The decider
+ * separates authoring from administering with two different allow-lists —
+ * `requireIssuerCanAuthor` admits human and thread, `requireIssuerCanAdminister`
+ * admits human and system — and this union respects that separation instead of
+ * collapsing it. An RPC client is issued as `human`, which can do both, so the
+ * six administrative channel commands (create, archive, unarchive, meta.update,
+ * member.add, member.remove) staying off the wire is the only thing keeping a
+ * browser session from being a channel administrator.
  *
- * This exclusion used to be the ONLY thing preventing forged authorship, by
- * accident: nothing recorded that it was load-bearing, so adding a channel
- * command here to "finish the integration" would have opened it silently.
- * `orchestration.test.ts` asserts the absence, so that is now a failing test
- * rather than a silent grant.
+ * The exclusion used to cover all seven, and it used to be the ONLY thing
+ * preventing forged authorship, by accident: nothing recorded it was
+ * load-bearing, so adding a channel command here to "finish the integration"
+ * would have opened it silently. `orchestration.test.ts` now asserts the
+ * BOUNDARY rather than the absence — the six by name must not decode, and the
+ * one must — so widening this is a failing test in either direction.
  */
 export const ClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
@@ -1514,6 +1543,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUserInputDismissCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
+  ChannelPostCreateCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 

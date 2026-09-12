@@ -40,6 +40,7 @@ import {
   CommandId,
   ProjectId,
   ProviderDriverKind,
+  HUMAN_OPERATOR_MEMBER_ID,
   ThreadId,
   defaultInstanceIdForDriver,
   type CommandIssuer,
@@ -74,16 +75,16 @@ const PROJECT_CHANNEL = ChannelId.make("channel-project");
 const SENIORS_CHANNEL = ChannelId.make("channel-seniors");
 
 /**
- * The human's member id.
+ * The human's member id, from the one place that defines it.
  *
- * There is no human-identity concept on `main` yet, so this is a fixed value
- * rather than a real account id. It is the field the web UI will need in order
- * to render "you", and it is recorded on `t3_bot-1nx` as the thing to replace
- * when identities exist. Deliberately NOT a thread id: a human member carrying
- * a thread's id is the impersonation route `requireChannelMemberShape` exists to
+ * It was a local constant here and is now shared with the WebSocket layer,
+ * which stamps the same value as the issuer on every command a browser sends.
+ * Two definitions would mean an operator who is a member of a channel they
+ * cannot post to. Deliberately NOT a thread id: a human member carrying a
+ * thread's id is the impersonation route `requireChannelMemberShape` exists to
  * refuse.
  */
-const WALT_MEMBER_ID = "human-walt";
+const WALT_MEMBER_ID = HUMAN_OPERATOR_MEMBER_ID;
 
 const SEEDED_THREADS = [
   { id: PM_THREAD, handle: "pm", title: "PM" },
@@ -183,11 +184,26 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
     commandId: CommandId.make("seed-channel-seniors"),
     channelId: SENIORS_CHANNEL,
     name: "seniors",
-    members: SEEDED_THREADS.map((thread) => ({
-      handle: ChannelMemberHandle.make(thread.handle),
-      memberKind: "thread" as const,
-      memberId: thread.id,
-    })),
+    members: [
+      ...SEEDED_THREADS.map((thread) => ({
+        handle: ChannelMemberHandle.make(thread.handle),
+        memberKind: "thread" as const,
+        memberId: thread.id,
+      })),
+      // The operator is in here too, which is a product decision rather than a
+      // technical one: M1 is Walt asking "@boss1 what is 2+2" in #seniors and
+      // watching the seniors answer each other. A hierarchy where the human
+      // cannot reach the seniors' channel is a later policy, and it is one line
+      // to make when it is wanted.
+      //
+      // It is not a way around the membership check. `requireChannelAuthorIsMember`
+      // still decides, and it decides on this list.
+      {
+        handle: ChannelMemberHandle.make("walt"),
+        memberKind: "human" as const,
+        memberId: WALT_MEMBER_ID,
+      },
+    ],
     createdAt: input.createdAt,
   });
 });
