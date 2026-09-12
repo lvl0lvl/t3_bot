@@ -399,7 +399,7 @@ function runWorkspace(repoRoot: string, workspace: Workspace, reportDir: string)
  * The BASE tree enumerates its own workspaces when it runs, because a workspace
  * can be added or removed by the very PR being measured; this describes HEAD.
  */
-export function describeScope(repoRoot: string) {
+export function describeScope(repoRoot: string, target: string = TEST_TARGET) {
   const listed = listWorkspaces(repoRoot);
   // A STALE EXCEPTION IS NOT AN EXCEPTION. The map is only ever consulted BY an
   // existing workspace's name, so an entry naming a workspace that was renamed
@@ -417,9 +417,7 @@ export function describeScope(repoRoot: string) {
         `evidence for a claim about nothing.`,
     );
   }
-  return splitScope(
-    listed.filter((workspace) => selectsWorkspace(TEST_TARGET, workspace, repoRoot)),
-  );
+  return splitScope(listed.filter((workspace) => selectsWorkspace(target, workspace, repoRoot)));
 }
 
 /**

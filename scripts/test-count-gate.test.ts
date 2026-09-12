@@ -2,7 +2,9 @@ import { describe, expect, it } from "vite-plus/test";
 
 // @effect-diagnostics nodeBuiltinImport:off - tests a CLI gate that reads the
 // filesystem; the subject under test is the node API, not an Effect service.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import {
@@ -10,6 +12,8 @@ import {
   compare,
   describeScope,
   isRegression,
+  changedPaths,
+  jsonArrayPayload,
   listWorkspaces,
   selectsWorkspace,
   skippedWorkspacesTouched,
@@ -62,6 +66,36 @@ const workspace = (name: string, path: string, testScript?: string): Workspace =
 });
 
 describe("workspace enumeration", () => {
+  it("finds the JSON array after a pnpm warning, not the bracket inside it", () => {
+    // THE HEADLINE FIX OF THIS PR, AND NOTHING PINNED IT. pnpm prints
+    // `[WARN] Unsupported engine: wanted: {"node":"^24.13.1"}` ahead of the
+    // payload; the parse used to take the first `[` anywhere, which is the
+    // bracket of `[WARN]`. A history lane found the tolerance had been MOVED
+    // here rather than removed, while the PR body claimed it was gone.
+    //
+    // The discriminator is the character AFTER the bracket: a JSON array opens
+    // with whitespace, `{` or `]`; `[WARN]` opens with a letter.
+    const warned = [
+      '[WARN] Unsupported engine: wanted: {"node":"^24.13.1"} (current: {"node":"v24.12.0"})',
+      "[",
+      '  { "name": "t3", "path": "/repo/apps/server" }',
+      "]",
+      "",
+    ].join("\n");
+    const payload = jsonArrayPayload(warned);
+    expect(payload).toBeDefined();
+    expect(JSON.parse(payload!)).toEqual([{ name: "t3", path: "/repo/apps/server" }]);
+
+    // A compact payload on one line is still found.
+    expect(JSON.parse(jsonArrayPayload('[{"name":"t3"}]')!)).toEqual([{ name: "t3" }]);
+    // An empty array is a payload, not an absence.
+    expect(jsonArrayPayload("[]")).toBe("[]");
+    // And a stream with no payload at all is undefined, so the caller refuses
+    // rather than parsing a warning.
+    expect(jsonArrayPayload("[WARN] something\n[WARN] else")).toBeUndefined();
+    expect(jsonArrayPayload("")).toBeUndefined();
+  });
+
   it("drops the ROOT package, whose test script runs every other workspace", () => {
     // `@t3tools/monorepo`'s `test` is `vp run -r test` — an aggregator. Left in
     // the list it runs the whole repo once more inside the loop that is already
@@ -73,7 +107,7 @@ describe("workspace enumeration", () => {
     expect(names).toContain("@t3tools/scripts");
   });
 
-  it("finds no workspace outside the repo, and none in a nested checkout", () => {
+  it("finds only pnpm-workspace members, so a nested checkout cannot be one", () => {
     // THE REASON THIS ASKS THE PACKAGE MANAGER INSTEAD OF WALKING DIRECTORIES.
     // A walk finds `.claude/worktrees/<other branch>` — a full checkout of
     // somebody else's branch — and measures its tests as this tree's. That is
@@ -82,11 +116,34 @@ describe("workspace enumeration", () => {
     // `pnpm ls` answers from pnpm-workspace.yaml, so a nested checkout is not a
     // member and cannot be found — by construction, not by an exclusion list
     // someone has to remember to extend.
+    // THE PROPERTY IS MEMBERSHIP, NOT A PATH SUBSTRING. The first version of
+    // this test asserted no path contains `/.claude/` — and a quality lane
+    // measured that in a senior's own worktree, which is where CLAUDE.md tells
+    // seniors to work, ALL SIXTEEN workspace paths contain it, starting with the
+    // repo root. It reds for every reviewer and passes for the author, who
+    // happened to develop this under /private/tmp. It also never tested its
+    // stated property: a nested checkout IS inside the repo root, so the
+    // enclosing assertion passes for one.
+    //
+    // What actually excludes a nested checkout is pnpm workspace membership, so
+    // that is what this asserts: every returned path is one of the directories
+    // pnpm-workspace.yaml's globs reach, relative to the repo root.
     const real = NodeFS.realpathSync(REPO);
+    const globs = NodeFS.readFileSync(NodePath.join(REPO, "pnpm-workspace.yaml"), "utf8")
+      .split("\n")
+      .map((line) => /^\s*-\s*(\S+)\s*$/.exec(line)?.[1])
+      .filter((entry): entry is string => entry !== undefined && !entry.includes(":"));
+    expect(globs.length).toBeGreaterThan(0);
+
     for (const entry of listWorkspaces(REPO)) {
-      expect(NodeFS.realpathSync(entry.path).startsWith(real)).toBe(true);
-      expect(entry.path).not.toContain(`${NodePath.sep}.claude${NodePath.sep}`);
-      expect(entry.path).not.toContain(`${NodePath.sep}node_modules${NodePath.sep}`);
+      const relative = NodePath.relative(real, NodeFS.realpathSync(entry.path));
+      expect(relative.startsWith("..")).toBe(false);
+      // Every member sits exactly where a glob says it may: `apps/*` admits
+      // `apps/server` and nothing deeper, `scripts` admits itself.
+      const matched = globs.some((glob) =>
+        glob.endsWith("/*") ? NodePath.dirname(relative) === glob.slice(0, -2) : relative === glob,
+      );
+      expect({ path: relative, matched }).toEqual({ path: relative, matched: true });
     }
   });
 
@@ -134,12 +191,70 @@ describe("workspace enumeration", () => {
     // workspace is measured, skipped for having no `test` script, or skipped as
     // unmeasurable in a cold base tree — and every workspace lands in exactly
     // one, so a workspace cannot fall out of the scope line entirely.
-    const scope = describeScope(REPO);
+    // THE TARGET IS PASSED, NOT INHERITED. This read the ambient
+    // TEST_COUNT_GATE_TARGET — the narrowing knob documented in this file's own
+    // Usage block — so a developer who exported it to prove something locally
+    // and then ran the suite got a false red on the merge gate's own tests. A
+    // quality lane measured both halves reding under `=apps/web`.
+    const scope = describeScope(REPO, "");
     const listed = listWorkspaces(REPO);
     expect(scope.measured.length + scope.skipped.length + scope.unmeasurable.length).toBe(
       listed.length,
     );
     expect(scope.measured).toContain("@t3tools/scripts");
+  });
+
+  it("names the workspace a test file was MOVED OUT OF, not just where it landed", () => {
+    // THE PRODUCER, not a hand-written array. Both directions of
+    // `skippedWorkspacesTouched` were already tested — over paths this file
+    // typed out itself. Nothing exercised the function whose input comes from
+    // another program, and that is where the hole was.
+    //
+    // `git diff --name-only` detects renames by default and prints ONE path for
+    // the pair: the DESTINATION. So moving a test file out of a skipped
+    // workspace produced a changed-path list that never named that workspace,
+    // the refusal never fired, and the gate went green over a PR that removed
+    // test files from a workspace it refuses to measure. Executed by a
+    // contracts lane in a throwaway repo before it was fixed here.
+    //
+    // A REAL REPO AND A REAL `git mv`, because the property belongs to git's
+    // flags rather than to this code: a fixture of strings would pass against
+    // the broken version.
+    const repo = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "count-gate-rename-"));
+    try {
+      const git = (...args: ReadonlyArray<string>) =>
+        NodeChildProcess.execFileSync("git", [...args], { cwd: repo, encoding: "utf8" });
+      git("init", "--quiet");
+      git("config", "user.email", "gate@example.invalid");
+      git("config", "user.name", "count gate test");
+      NodeFS.mkdirSync(NodePath.join(repo, "apps/desktop/src"), { recursive: true });
+      NodeFS.mkdirSync(NodePath.join(repo, "apps/server/src"), { recursive: true });
+      // Long enough that git's similarity detection calls it a rename rather
+      // than a delete plus an add — which is the case that was broken.
+      NodeFS.writeFileSync(
+        NodePath.join(repo, "apps/desktop/src/Thing.test.ts"),
+        Array.from({ length: 40 }, (_, index) => `it("case ${index}", () => {});`).join("\n"),
+      );
+      git("add", "-A");
+      git("commit", "--quiet", "-m", "base");
+      const base = git("rev-parse", "HEAD").trim();
+      git("mv", "apps/desktop/src/Thing.test.ts", "apps/server/src/Thing.test.ts");
+      git("commit", "--quiet", "-m", "move the tests out");
+
+      const changed = changedPaths(repo, base);
+      expect(changed).toContain("apps/desktop/src/Thing.test.ts");
+      expect(changed).toContain("apps/server/src/Thing.test.ts");
+
+      // And the refusal that depends on it actually fires.
+      const desktop: Workspace = {
+        name: "@t3tools/desktop",
+        path: NodePath.join(repo, "apps/desktop"),
+        testScript: "vp test run",
+      };
+      expect(skippedWorkspacesTouched(changed, [desktop], repo)).toEqual(["@t3tools/desktop"]);
+    } finally {
+      NodeFS.rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it("does not refuse a PR that touches only workspaces it measures", () => {
