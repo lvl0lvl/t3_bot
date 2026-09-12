@@ -45,6 +45,7 @@ import {
   requireChannelAuthorIsMember,
   requireChannelHandlesUnique,
   requireChannelMentionsResolve,
+  requireChannelNameAvailable,
   requireProject,
   requireProjectAbsent,
   requireThread,
@@ -2034,6 +2035,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       );
       yield* requireChannelHandlesUnique({ command, members });
       const name = yield* requireCanonicalChannelName({ command, name: command.name });
+      yield* requireChannelNameAvailable({ readModel, command, name });
       return {
         ...(yield* withEventBase({
           aggregateKind: "channel",
@@ -2060,6 +2062,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.name === undefined
           ? undefined
           : yield* requireCanonicalChannelName({ command, name: command.name });
+      if (renamed !== undefined) {
+        // Renaming onto a name another channel holds hits the same unique index
+        // as a duplicate create, so it gets the same typed refusal. Renaming a
+        // channel to the name it already has stays a no-op, not a conflict.
+        yield* requireChannelNameAvailable({
+          readModel,
+          command,
+          name: renamed,
+          exceptChannelId: command.channelId,
+        });
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({

@@ -110,6 +110,39 @@ export function requireCanonicalChannelName(input: {
   );
 }
 
+/**
+ * The canonical name must be free, because migration 051 holds a UNIQUE index
+ * on it and a name is how a mention reaches a channel.
+ *
+ * Without this the decider admits a command the projection must refuse, and the
+ * caller gets "SQLITE(2067) constraint failed" naming the driver instead of the
+ * problem — the one channel rejection that skips the invariant path. The
+ * command still fails atomically, so this buys a usable error, not integrity.
+ *
+ * Archived channels count, exactly as they do in the index: an archived channel
+ * still holds its name, and excluding them here would reopen the same gap.
+ * `exceptChannelId` lets a rename keep its own name.
+ */
+export function requireChannelNameAvailable(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly name: string;
+  readonly exceptChannelId?: ChannelId;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  const taken = input.readModel.channels.find(
+    (channel) => channel.name === input.name && channel.id !== input.exceptChannelId,
+  );
+  if (taken === undefined) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `Channel name '${input.name}' is already used by channel '${taken.id}'.`,
+    ),
+  );
+}
+
 function findChannelById(
   readModel: OrchestrationReadModel,
   channelId: ChannelId,

@@ -274,7 +274,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           type: "channel.create",
           commandId: CommandId.make("cmd-create-case"),
           channelId: ChannelId.make("channel-case"),
-          name: "  #Seniors  ",
+          name: "  #Juniors  ",
           members: [{ handle: PM, memberKind: "thread", memberId: "thread-pm" }],
           createdAt: NOW,
         },
@@ -283,7 +283,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       const events = Array.isArray(decided) ? decided : [decided];
       expect(events[0]?.type).toBe("channel.created");
       if (events[0]?.type === "channel.created") {
-        expect(events[0].payload.name).toBe("seniors");
+        expect(events[0].payload.name).toBe("juniors");
       }
     }),
   );
@@ -339,7 +339,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           type: "channel.create",
           commandId: CommandId.make("cmd-create-sigils"),
           channelId: ChannelId.make("channel-sigils"),
-          name: "  ##SENIORS  ",
+          name: "  ##JUNIORS  ",
           members: [{ handle: PM, memberKind: "thread", memberId: "thread-pm" }],
           createdAt: NOW,
         },
@@ -347,7 +347,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       });
       const events = Array.isArray(decided) ? decided : [decided];
       if (events[0]?.type === "channel.created") {
-        expect(events[0].payload.name).toBe("seniors");
+        expect(events[0].payload.name).toBe("juniors");
       }
     }),
   );
@@ -440,6 +440,81 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       expect(events[0]?.type).toBe("channel.post-created");
       if (events[0]?.type === "channel.post-created") {
         expect(events[0].payload.mentions).toEqual([BOSS1]);
+      }
+    }),
+  );
+
+  // Migration 051 holds a UNIQUE index on name. Without a decider check the
+  // command is admitted and the projection refuses it, so the caller gets
+  // SQLITE(2067) naming the driver instead of the problem. Canonicalisation
+  // makes this MORE reachable, not less: "#Seniors" now collides with
+  // "seniors", which is the whole point of folding.
+  it.effect("refuses a second channel whose canonical name is already taken", () =>
+    Effect.gen(function* () {
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-dupe-name"),
+          channelId: ChannelId.make("channel-dupe"),
+          // The seeded channel is stored as "seniors".
+          name: "#Seniors",
+          members: [{ handle: PM, memberKind: "thread", memberId: "thread-pm" }],
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is already used by channel");
+      }
+    }),
+  );
+
+  it.effect("counts an archived channel as still holding its name", () =>
+    Effect.gen(function* () {
+      // The unique index carries no WHERE clause, so an archived channel keeps
+      // its name. Excluding archived channels here would admit a command the
+      // projection still refuses — the same gap moved one branch over.
+      const readModel = makeReadModel();
+      const archived = {
+        ...readModel,
+        channels: readModel.channels.map((channel) => ({ ...channel, archivedAt: NOW })),
+      };
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-dupe-archived"),
+          channelId: ChannelId.make("channel-dupe-archived"),
+          name: "seniors",
+          members: [{ handle: PM, memberKind: "thread", memberId: "thread-pm" }],
+          createdAt: NOW,
+        },
+        readModel: archived,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is already used by channel");
+      }
+    }),
+  );
+
+  it.effect("lets a channel keep its own name across a rename", () =>
+    Effect.gen(function* () {
+      // exceptChannelId: renaming "seniors" to "#SENIORS" is a no-op, not a
+      // self-collision. Without the exception every rename would refuse itself.
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.meta.update",
+          commandId: CommandId.make("cmd-meta-self"),
+          channelId: CHANNEL,
+          name: "#SENIORS",
+        },
+        readModel: makeReadModel(),
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events[0]?.type).toBe("channel.meta-updated");
+      if (events[0]?.type === "channel.meta-updated") {
+        expect(events[0].payload.name).toBe("seniors");
       }
     }),
   );
