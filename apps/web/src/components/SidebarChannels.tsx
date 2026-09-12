@@ -3,7 +3,6 @@ import { Link } from "@tanstack/react-router";
 import { ArchiveIcon, HashIcon } from "lucide-react";
 
 import { useChannels } from "../state/entities";
-import { cn } from "../lib/utils";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "./ui/sidebar";
 
 /**
@@ -65,10 +64,17 @@ function SidebarChannelRow({ channel }: { readonly channel: EnvironmentChannelSh
         tooltip={archived ? `#${channel.name} (archived)` : `#${channel.name}`}
       >
         {archived ? <ArchiveIcon aria-hidden /> : <HashIcon aria-hidden />}
-        <span className={cn("truncate", archived && "text-sidebar-muted-foreground/60")}>
-          {channel.name}
-        </span>
-        {archived ? <span className="sr-only">(archived)</span> : null}
+        {/*
+          NOT DIMMED. Carrying "archived" as reduced opacity measured 2.27:1 in
+          light and 3.44:1 in dark against a 4.5:1 requirement — so the one
+          visual signal a sighted user had was the part that failed AA. The row
+          keeps the button's own colour and says the word instead, which is what
+          the channel header already does.
+        */}
+        <span className="truncate">{channel.name}</span>
+        {archived ? (
+          <span className="ms-auto shrink-0 text-xs text-sidebar-muted-foreground">archived</span>
+        ) : null}
       </SidebarMenuButton>
     </SidebarMenuItem>
   );

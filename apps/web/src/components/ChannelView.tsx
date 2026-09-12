@@ -85,7 +85,13 @@ function ChannelHeader({ channel }: { readonly channel: EnvironmentChannelShell 
         and it is what the sidebar orders by, so seeing it move here is how an
         operator confirms their own post landed.
       */}
-      <span className="ms-auto shrink-0 text-xs text-muted-foreground/78">
+      {/*
+        `text-muted-foreground` at full opacity, matching the thread timeline's
+        timestamp. The /78 modifier measured 3.11:1 light and 3.51:1 dark; the
+        same token at full opacity on the same ground measures 4.71:1 and 5.08:1.
+        An opacity modifier on a muted token is where this palette fails AA.
+      */}
+      <span className="ms-auto shrink-0 text-xs text-muted-foreground tabular-nums">
         {channel.latestPostAt === null
           ? "No posts yet"
           : `Last post ${formatDayAwareTimestamp(channel.latestPostAt, settings.timestampFormat)}`}
@@ -105,7 +111,13 @@ function PostsUnavailable() {
   return (
     <Empty className="flex-1">
       <EmptyHeader className="max-w-md">
-        <EmptyTitle className="text-base text-foreground">Posts aren’t readable yet</EmptyTitle>
+        {/*
+          No size override: `EmptyTitle` is `text-xl`, and forcing `text-base`
+          gave a 16/14 step over the body text — 1.14:1, under the 1.25:1
+          minimum for adjacent type levels. Every other full-pane empty state in
+          the app keeps or raises the primitive's size.
+        */}
+        <EmptyTitle className="text-foreground">Posts aren’t readable yet</EmptyTitle>
         <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
           This server sends the channels you are in, but not yet their posts. You can post here and
           the channel’s last-post time will update; reading the history needs a newer server.
@@ -124,7 +136,7 @@ function ChannelUnavailable({ state }: { readonly state: ChannelViewState }) {
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       <Empty className="flex-1">
         <EmptyHeader className="max-w-md">
-          <EmptyTitle className="text-base text-foreground">
+          <EmptyTitle className="text-foreground">
             {unsupported ? "This server has no channels" : "This channel isn’t available"}
           </EmptyTitle>
           <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
@@ -209,6 +221,13 @@ function ChannelComposer({ channel }: { readonly channel: EnvironmentChannelShel
       <div className="flex items-end gap-2">
         <Textarea
           size="sm"
+          // CAPPED, like the thread composer's editor. The primitive is
+          // `field-sizing-content` with no max-height, and it is a flex sibling
+          // of the `flex-1` message region — so at 390px a long draft grew the
+          // control to 89% of the pane, squeezed the region to 39px, and pushed
+          // the explanation's title outside the viewport entirely. This is the
+          // only composer in the app that lacked the cap.
+          className="max-h-50"
           value={body}
           placeholder={`Message #${channel.name}`}
           aria-label={`Message #${channel.name}`}
