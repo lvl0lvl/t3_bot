@@ -865,9 +865,17 @@ describe("the comms toolkit on the live gateway", () => {
         // read answered `nextCursor: null`, which is byte for byte "you are
         // caught up" over posts nobody had seen.
         //
-        // SIX POSTS, because the window has to be small enough to leave unread
-        // posts on BOTH sides of a two-post page. With four, a forward cursor
-        // read backward returns the whole remainder and the lie is invisible.
+        // SIX POSTS, FOR THE PAGING HALF BELOW, not for the refusal. Four
+        // leaves the second page from each end touching a boundary — [p3,p4]
+        // forward and [p1,p2] backward — while six makes both of them the same
+        // MIDDLE pair, which is where an off-by-one at either end shows.
+        //
+        // The claim this comment used to make was that four posts hid the lie.
+        // It was wrong, and it was mine: a review lane rewrote the test with
+        // four and the mutant died anyway. Re-measured on this head — four
+        // posts, direction guard intact: passes; guard removed: the same test
+        // fails. The refusal half is killed by `Effect.flip` over a call that
+        // now succeeds, and the window arithmetic never enters into it.
         for (const body of ["p1", "p2", "p3", "p4", "p5", "p6"]) {
           yield* call("comms_post", { channel: "seniors", body }, BOSS1);
         }
