@@ -190,27 +190,44 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
     commandId: CommandId.make("seed-channel-seniors"),
     channelId: SENIORS_CHANNEL,
     name: "seniors",
-    members: [
-      ...SEEDED_THREADS.map((thread) => ({
-        handle: ChannelMemberHandle.make(thread.handle),
-        memberKind: "thread" as const,
-        memberId: thread.id,
-      })),
-      // The operator is in here too, which is a product decision rather than a
-      // technical one: M1 is Walt asking "@boss1 what is 2+2" in #seniors and
-      // watching the seniors answer each other. A hierarchy where the human
-      // cannot reach the seniors' channel is a later policy, and it is one line
-      // to make when it is wanted.
-      //
-      // It is not a way around the membership check. `requireChannelAuthorIsMember`
-      // still decides, and it decides on this list.
-      {
-        handle: ChannelMemberHandle.make("walt"),
-        memberKind: "human" as const,
-        memberId: WALT_MEMBER_ID,
-      },
-    ],
+    members: SEEDED_THREADS.map((thread) => ({
+      handle: ChannelMemberHandle.make(thread.handle),
+      memberKind: "thread" as const,
+      memberId: thread.id,
+    })),
     createdAt: input.createdAt,
+  });
+
+  // The operator joins #seniors as its OWN command, with its own id, and not by
+  // being added to the list above.
+  //
+  // NEVER CHANGE THE PAYLOAD OF A DETERMINISTIC COMMAND THAT HAS SHIPPED. The
+  // receipt short-circuit compares the commandId and the aggregate ref and never
+  // the payload, so editing `seed-channel-seniors`'s members is a change that
+  // silently does not happen on every environment that has already booted — and
+  // `seedHierarchy` still returns success. The operator would then be missing
+  // from the channel M1 is a demonstration of, and the symptom would be
+  // `requireChannelAuthorIsMember` refusing their post with a message about
+  // membership that is true and useless.
+  //
+  // A new id is the whole fix. Bumping the CREATE's id would not work:
+  // `requireChannelAbsent` and `requireChannelNameAvailable` both refuse a
+  // second create for a channel that exists.
+  //
+  // Why the operator is in here at all is a product decision rather than a
+  // technical one: M1 is Walt asking "@boss1 what is 2+2" in #seniors and
+  // watching the seniors answer each other. It is not a way around the
+  // membership check — `requireChannelAuthorIsMember` still decides, and it
+  // decides on the list this produces.
+  yield* dispatch({
+    type: "channel.member.add",
+    commandId: CommandId.make("seed-channel-seniors-member-walt"),
+    channelId: SENIORS_CHANNEL,
+    member: {
+      handle: ChannelMemberHandle.make("walt"),
+      memberKind: "human",
+      memberId: WALT_MEMBER_ID,
+    },
   });
 });
 

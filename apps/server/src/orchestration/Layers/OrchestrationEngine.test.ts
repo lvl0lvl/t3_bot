@@ -17,6 +17,8 @@ import {
   ProviderDriverKind,
   defaultInstanceIdForDriver,
   ProjectId,
+  ProviderDriverKind,
+  defaultInstanceIdForDriver,
   ThreadId,
   TurnId,
   type OrchestrationCommand,
@@ -2356,6 +2358,122 @@ describe("OrchestrationEngine", () => {
           `thread ${thread.id} is seeded with provider instance '${thread.modelSelection.instanceId}', which this build cannot resolve. Built-in instances: ${[...builtInInstanceIds].sort().join(", ")}`,
         ).toBe(true);
       }
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("adds the operator to a #seniors that was seeded before they were a member", async () => {
+    // THE UPGRADE PATH. Neither test around this one can reach it: both start
+    // from a fresh mkdtemp, and the idempotence test boots the SAME code twice,
+    // which is green either way.
+    //
+    // The seed is idempotent BY RECEIPT — every command carries a deterministic
+    // id and the engine short-circuits on `getByCommandId` before the decider
+    // runs. That check compares the commandId and the aggregate ref and NEVER
+    // THE PAYLOAD. So changing the `members` of a `channel.create` whose id has
+    // already been accepted is a change that silently does not happen, and
+    // `seedHierarchy` still returns success.
+    //
+    // It matters because the membership IS the product decision: M1 is the
+    // operator posting in #seniors and watching the seniors answer. On a state
+    // directory that has already booted, that post is refused by
+    // `requireChannelAuthorIsMember` — with a message about membership that is
+    // true and useless, so it reads as an authorization bug rather than a seed
+    // one. A projection rebuild does not help: the persisted `channel.created`
+    // event carries the old roster.
+    //
+    // THE PRE-STATE IS BUILT BY HAND RATHER THAN BY SEEDING AND REMOVING, and
+    // that is not fussiness. Seeding first and then removing the operator would
+    // consume the receipt of whatever command the fix adds, so boot 2 would
+    // short-circuit that one too and the test would fail against a correct fix.
+    // The only faithful pre-state is one where the new command has never run.
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-seniors-upgrade-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    const workspaceRoot = NodePath.join(directory, "repo");
+    const seedIssuer = HierarchySeeder.__testing.SEED_ISSUER;
+    let system = await createOrchestrationSystem(databasePath);
+    try {
+      // The previous release's seed, replayed: same command ids, and a #seniors
+      // carrying only the three threads.
+      await system.run(
+        system.engine.dispatch(
+          {
+            type: "project.create",
+            commandId: CommandId.make("seed-project"),
+            projectId: ProjectId.make("project-t3bot"),
+            title: "t3_bot",
+            workspaceRoot,
+            createdAt: now(),
+          },
+          { issuer: seedIssuer },
+        ),
+      );
+      for (const thread of HierarchySeeder.__testing.SEEDED_THREADS) {
+        await system.run(
+          system.engine.dispatch(
+            {
+              type: "thread.create",
+              commandId: CommandId.make(`seed-thread-${thread.handle}`),
+              threadId: thread.id,
+              projectId: ProjectId.make("project-t3bot"),
+              title: thread.title,
+              modelSelection: {
+                instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("claude")),
+                model: "claude-opus-5",
+              },
+              runtimeMode: "auto",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              createdAt: now(),
+            },
+            { issuer: seedIssuer },
+          ),
+        );
+      }
+      await system.run(
+        system.engine.dispatch(
+          {
+            type: "channel.create",
+            commandId: CommandId.make("seed-channel-seniors"),
+            channelId: HierarchySeeder.__testing.SENIORS_CHANNEL,
+            name: "seniors",
+            members: HierarchySeeder.__testing.SEEDED_THREADS.map((thread) => ({
+              handle: ChannelMemberHandle.make(thread.handle),
+              memberKind: "thread" as const,
+              memberId: thread.id,
+            })),
+            createdAt: now(),
+          },
+          { issuer: seedIssuer },
+        ),
+      );
+
+      const before = await system.readModel();
+      expect(
+        before.channels
+          .find((channel) => channel.name === "seniors")
+          ?.members.map((member) => member.handle)
+          .sort(),
+      ).toEqual(["boss1", "boss3", "pm"]);
+
+      await system.dispose();
+      system = await createOrchestrationSystem(databasePath);
+
+      // Boot 2 is THIS code against that database.
+      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
+
+      const after = await system.readModel();
+      const seniors = after.channels.find((channel) => channel.name === "seniors");
+      expect(seniors?.members.map((member) => member.handle).sort()).toEqual([
+        "boss1",
+        "boss3",
+        "pm",
+        "walt",
+      ]);
+      expect(seniors?.members.find((member) => member.handle === "walt")?.memberKind).toBe("human");
     } finally {
       await system.dispose();
       await NodeFSP.rm(directory, { recursive: true, force: true });
