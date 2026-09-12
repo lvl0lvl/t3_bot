@@ -500,6 +500,12 @@ it.effect("the hierarchy seed is pointed at the server's own workspace root", ()
         "thread.create",
         "channel.create",
         "channel.create",
+        // The operator joins #seniors as its own command rather than as an entry
+        // in the create's member list, because the receipt short-circuit
+        // compares the commandId and never the payload — so editing an
+        // already-shipped command's members is a change that silently does not
+        // happen on a database that has already booted.
+        "channel.member.add",
       ],
     );
 
