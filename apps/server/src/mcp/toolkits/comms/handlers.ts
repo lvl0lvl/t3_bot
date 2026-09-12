@@ -20,21 +20,38 @@ import {
 } from "./tools.ts";
 
 /**
- * Agents write "#seniors", "Seniors" and "# SENIORS" interchangeably, and the
- * sigil can hide whitespace, so the trim runs on both sides of the strip. A
- * name that is only sigils and spaces normalizes to empty and must be rejected
- * rather than looked up.
+ * Trim, strip leading sigils, trim again, and repeat until nothing more comes
+ * off. One pass is not enough: a sigil can hide behind whitespace that a
+ * previous strip exposed, so `"# #seniors"` loses one `#`, then the space, and
+ * would keep the second `#` forever.
+ *
+ * Shared by both canonicalizers because the stripping rule is genuinely the
+ * same; whether the result is then case-folded is not, and that difference
+ * stays at each caller where a reader can see it.
+ */
+const stripLeadingSigils = (value: string, sigil: RegExp): string => {
+  let current = value.trim();
+  for (;;) {
+    const next = current.replace(sigil, "").trim();
+    if (next === current) return current;
+    current = next;
+  }
+};
+
+/**
+ * Trim, strip leading "#" to fixpoint, lowercase. A name of only sigils and
+ * whitespace canonicalizes to empty and must be rejected rather than looked up.
  *
  * The lowercasing is not the toolkit's rule to make: the decider canonicalizes
  * on the way in, so the projection only ever holds lowercase and an exact
  * lookup cannot match anything else.
  */
 export const canonicalChannelName = (name: string): string =>
-  name.trim().replace(/^#+/, "").trim().toLowerCase();
+  stripLeadingSigils(name, /^#+/).toLowerCase();
 
 /**
- * Sigil and whitespace only. HANDLES ARE NOT CASE-FOLDED, and that is not an
- * oversight — folding them here breaks posting outright.
+ * The same stripping rule as a channel name, WITHOUT the case fold — and that
+ * omission is deliberate rather than an oversight.
  *
  * The aggregate keys handles byte-exactly: `ChannelMemberHandle` is a branded
  * `TrimmedNonEmptyString` with no case rule, `canonicalChannelName` is applied
@@ -47,7 +64,7 @@ export const canonicalChannelName = (name: string): string =>
  * Canonical handles are the intended end state (t3_bot-iin), and they have to
  * land in the aggregate first. Do not fold here until they have.
  */
-const canonicalHandle = (handle: string): string => handle.trim().replace(/^@+/, "").trim();
+const canonicalHandle = (handle: string): string => stripLeadingSigils(handle, /^@+/);
 
 /**
  * Mentions the agent asked for, resolved against the channel's membership, with

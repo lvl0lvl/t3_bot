@@ -304,6 +304,11 @@ describe("comms toolkit handlers", () => {
       ["#SENIORS", "seniors"],
       ["  ##SENIORS  ", "seniors"],
       ["# seniors", "seniors"],
+      // A sigil hiding behind whitespace a previous strip exposed. One pass
+      // leaves the second "#" on forever, which is what makes this rule a
+      // fixpoint rather than a sequence of steps.
+      ["# #seniors", "seniors"],
+      ["#  #  x", "x"],
       // Only sigils and whitespace: empty. The toolkit rejects these before any
       // lookup; the decider rejects them rather than storing a nameless channel.
       ["#", ""],
