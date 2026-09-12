@@ -71,11 +71,11 @@ export function ChannelView({
       <ChannelHeader channel={channel} />
       {/*
         KEYED ON THE CHANNEL, because this region holds `cursor`, `posts` and
-        `reachedStart` in state and the route renders it with no key and no
+        `moreAbove` in state and the route renders it with no key and no
         `remountDeps` — so switching `$channelId` keeps the same fiber. Measured
         before this key existed: channel A's posts rendered under channel B's
-        header, `reachedStart` from A suppressed B's "Earlier posts", and B was
-        asked with A's cursor, which the server refuses and nothing reports.
+        header, A's paging state suppressed B's "Earlier posts", and B was asked
+        with A's cursor, which the server refuses and nothing reports.
 
         A key rather than an effect that clears the three. An effect runs AFTER
         the first render of the new channel, so the wrong posts paint for a frame
@@ -117,11 +117,20 @@ function ChannelHeader({ channel }: { readonly channel: EnvironmentChannelShell 
         same token at full opacity on the same ground measures 4.71:1 and 5.08:1.
         An opacity modifier on a muted token is where this palette fails AA.
       */}
-      <span className="ms-auto shrink-0 text-xs text-muted-foreground tabular-nums">
-        {channel.latestPostAt === null
-          ? "No posts yet"
-          : `Last post ${formatDayAwareTimestamp(channel.latestPostAt, settings.timestampFormat)}`}
-      </span>
+      {/*
+        NOTHING WHEN THERE IS NO LAST POST, rather than "No posts yet". The pane
+        directly below says "No posts yet. Say something to start the channel.",
+        so this slot was rendering the same sentence a second time about 60px
+        above it — measured as two nodes carrying that text in all four
+        viewport/theme combinations, which reads as a repeated element rather
+        than as two facts. This slot answers WHEN the last post was; on a channel
+        with no posts there is no such time, and the pane owns the sentence.
+      */}
+      {channel.latestPostAt === null ? null : (
+        <span className="ms-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+          {`Last post ${formatDayAwareTimestamp(channel.latestPostAt, settings.timestampFormat)}`}
+        </span>
+      )}
     </WorkspacePageHeader>
   );
 }
@@ -152,6 +161,12 @@ function ChannelHeader({ channel }: { readonly channel: EnvironmentChannelShell 
  * WELL UNDER `CHANNEL_POST_PAGE_LIMIT_MAX`, which is the server's ceiling and
  * not a target: this is the number that fills a tall pane once with room to
  * scroll, so opening a channel is one request rather than two.
+ *
+ * A FIXTURE THAT MEANS TO EXERCISE PAGING NEEDS MORE POSTS THAN THIS. A channel
+ * holding exactly this many is answered with one full page and `nextCursor:
+ * null`, so `moreAbove` is false and the pager never renders — a render pass
+ * seeded with fifty posts measured the scrolling and reported on a control that
+ * was not on the screen. Seed at least this many plus one.
  */
 const CHANNEL_POST_PAGE_SIZE = 50;
 
@@ -161,7 +176,20 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // page, which is what opening a channel wants.
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [posts, setPosts] = useState<ReadonlyArray<OrchestrationChannelPost>>([]);
-  const [reachedStart, setReachedStart] = useState(false);
+  // THREE FACTS IN ONE VARIABLE, because they are three answers to one question
+  // and the fourth combination does not exist: `undefined` is "no page has
+  // arrived yet", `true` is "a page arrived and there is more above it", `false`
+  // is "a page arrived and it reached the beginning of history".
+  //
+  // A separate boolean starting `false` admitted that fourth combination, and it
+  // was reachable on every open: the pager rendered before any page landed, over
+  // an empty pane, and clicking it did nothing because there was no cursor yet.
+  //
+  // NOT A LATCH, and the input that distinguishes the two is a channel whose whole
+  // history fits one page: it answers `nextCursor: null`, and when the next post
+  // arrives the re-read's page is full and carries a cursor again. A latch would
+  // have hidden the pager on that channel for the rest of the session.
+  const [moreAbove, setMoreAbove] = useState<boolean | undefined>(undefined);
   const bottom = useRef<HTMLDivElement | null>(null);
 
   const request = orchestrationEnvironment.channelPosts({
@@ -208,9 +236,7 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
       return;
     }
     setPosts((existing) => mergeChannelPosts({ existing, incoming: arrived.posts }));
-    if (arrived.nextCursor === null) {
-      setReachedStart(true);
-    }
+    setMoreAbove(arrived.nextCursor !== null);
   }, [arrived]);
 
   // ANCHORED ON THE NEWEST POST, not on every merge. Scrolling to the bottom
@@ -252,7 +278,7 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
     // bottom alignment for a short list and leaves the overflow scrollable.
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <div className="mt-auto flex flex-col gap-3 p-4">
-        {reachedStart ? null : (
+        {moreAbove ? (
           <Button
             variant="ghost"
             size="sm"
@@ -267,7 +293,7 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
           >
             {page.waiting ? "Loading earlier posts…" : "Earlier posts"}
           </Button>
-        )}
+        ) : null}
         {posts.map((post) => (
           <ChannelPost key={post.id} environmentId={environmentId} post={post} />
         ))}
@@ -298,8 +324,19 @@ function ChannelPost({
         `whitespace-pre-wrap`: a post is what its author typed, and newlines are
         the only formatting the composer offers. No markdown rendering — the
         body is not trusted markup and this is not the thread view.
+
+        `wrap-break-word` because pre-wrap PRESERVES break opportunities and does
+        not create them, so a token with none in it sets the column's width. A
+        180-character token and a spaceless URL took the region to `scrollWidth`
+        1310 against `clientWidth` 390 at phone width, one paragraph accounting for
+        936 of it: the list scrolled sideways, and a reader who went right to finish
+        a URL took every other post with them. URLs, PR links, commit SHAs and bead
+        ids are what this channel carries, so this is the ordinary case.
+
+        Matching `MessagesTimeline`'s message body, which is
+        `whitespace-pre-wrap wrap-break-word` for the same reason.
       */}
-      <p className="whitespace-pre-wrap text-sm text-foreground">{post.body}</p>
+      <p className="whitespace-pre-wrap wrap-break-word text-sm text-foreground">{post.body}</p>
     </article>
   );
 }

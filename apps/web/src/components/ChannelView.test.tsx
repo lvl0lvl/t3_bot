@@ -24,11 +24,32 @@ import { describe, expect, it, vi } from "vite-plus/test";
  * below them — the merge, the cursor handling, the state resets — is the real
  * code.
  */
-const EMPTY_PAGE = { posts: [] as ReadonlyArray<unknown>, nextCursor: null };
+/**
+ * ONE SHARED RESULT for a request nothing registered, and its `value` is one
+ * shared object.
+ *
+ * A fresh page object per call gave `arrived` a new identity every render, re-ran
+ * the merge effect, called `setPosts`, and looped until the worker died of an
+ * out-of-memory whose report said only "Worker exited unexpectedly". A real atom
+ * memoises its value, so this is faithfulness rather than convenience.
+ */
+const EMPTY_RESULT = {
+  waiting: false,
+  _tag: "Success",
+  value: { posts: [] as ReadonlyArray<unknown>, nextCursor: null },
+};
 
 const harness = vi.hoisted(() => ({
-  /** What the post-page atom answers with, keyed by the request it was built from. */
-  pages: new Map<string, { posts: ReadonlyArray<unknown>; nextCursor: string | null }>(),
+  /**
+   * What the post-page atom answers with, keyed by the request it was built from.
+   *
+   * A RESULT rather than a page, because "no page has arrived yet" is a result
+   * and not a page: `AsyncResult.Initial` carries `waiting` and no value at all,
+   * and `AsyncResult.value` of it is `none`. That is the state the region is in
+   * on every open until the first read lands, and a mock that could only answer
+   * `Success` could not put the pager's gate under it.
+   */
+  results: new Map<string, unknown>(),
   /** Every request the region built, in order — the record of what it ASKED. */
   asked: [] as Array<{ channelId: string; direction: string; cursor?: string }>,
   refreshes: 0,
@@ -56,13 +77,7 @@ vi.mock("@effect/atom-react", async (importOriginal) => ({
       );
     }
     const key = JSON.stringify(request.__request);
-    // ONE SHARED EMPTY PAGE, not a fresh object per call. A fresh one gave
-    // `arrived` a new identity on every render, so the merge effect — which
-    // depends on it by reference — re-ran, called `setPosts`, re-rendered, and
-    // looped until the worker died. A real atom memoises its value, so this is
-    // faithfulness rather than convenience; see the note at the effect itself.
-    const page = harness.pages.get(key) ?? EMPTY_PAGE;
-    return { waiting: false, _tag: "Success", value: page };
+    return harness.results.get(key) ?? EMPTY_RESULT;
   },
   // Stable per atom, as the real hook is. An unstable one turns the refresh
   // effect into an infinite loop, which is how the OOM above happened.
@@ -124,6 +139,8 @@ vi.mock("../hooks/useSettings", () => ({
 
 const CHANNEL_A = ChannelId.make("channel-a");
 const CHANNEL_B = ChannelId.make("channel-b");
+/** A channel nobody has posted to: `latestPostAt` is null, which the header reads. */
+const CHANNEL_EMPTY = ChannelId.make("channel-empty");
 const ENVIRONMENT = EnvironmentId.make("env-1");
 
 const shell = (id: ChannelId, name: string, latestPostAt: string | null) => ({
@@ -137,10 +154,14 @@ const shell = (id: ChannelId, name: string, latestPostAt: string | null) => ({
 });
 
 vi.mock("../state/entities", () => ({
-  useChannel: ({ channelId }: { readonly channelId: ChannelId }) =>
-    channelId === CHANNEL_A
+  useChannel: ({ channelId }: { readonly channelId: ChannelId }) => {
+    if (channelId === CHANNEL_EMPTY) {
+      return shell(CHANNEL_EMPTY, "quiet", null);
+    }
+    return channelId === CHANNEL_A
       ? shell(CHANNEL_A, "alpha", "2026-01-01T00:00:01.000Z")
-      : shell(CHANNEL_B, "bravo", "2026-01-01T00:00:02.000Z"),
+      : shell(CHANNEL_B, "bravo", "2026-01-01T00:00:02.000Z");
+  },
   useChannelSupport: () => "supported",
 }));
 
@@ -161,13 +182,30 @@ const post = (sequence: number, id: string, body = id) => ({
   createdAt: "2026-01-01T00:00:00.000Z",
 });
 
+// `limit: 50` IS `CHANNEL_POST_PAGE_SIZE`, repeated rather than imported because
+// importing from `./ChannelView` here would load it during the hoisted import
+// phase, ahead of the fixtures the `../state/entities` mock closes over. The
+// repetition is pinned: "asks for the NEWEST page on open" asserts the number the
+// region actually sent, so changing the constant reds that test by name instead of
+// silently missing every key in this map.
+const requestKey = (channelId: ChannelId, cursor?: string) =>
+  JSON.stringify({ channelId, direction: "backward", limit: 50, ...(cursor ? { cursor } : {}) });
+
 const answer = (
   channelId: ChannelId,
   page: { posts: ReadonlyArray<unknown>; nextCursor: string | null },
   cursor?: string,
 ) => {
-  const request = { channelId, direction: "backward", limit: 50, ...(cursor ? { cursor } : {}) };
-  harness.pages.set(JSON.stringify(request), page);
+  harness.results.set(requestKey(channelId, cursor), {
+    waiting: false,
+    _tag: "Success",
+    value: page,
+  });
+};
+
+/** The read before it resolves: waiting, and holding no page at all. */
+const answerNothingYet = (channelId: ChannelId, cursor?: string) => {
+  harness.results.set(requestKey(channelId, cursor), { waiting: true, _tag: "Initial" });
 };
 
 const bodies = (tree: ReactTestRenderer) =>
@@ -177,6 +215,16 @@ const bodies = (tree: ReactTestRenderer) =>
       const paragraphs = article.findAll((node) => node.type === "p");
       return String(paragraphs[paragraphs.length - 1]?.children?.[0] ?? "");
     });
+
+/**
+ * How many times a phrase appears in what was rendered.
+ *
+ * Over the rendered tree rather than over a single node, because the defect this
+ * measures is two nodes in different components saying the same thing — which
+ * every assertion scoped to one component passes.
+ */
+const occurrences = (tree: ReactTestRenderer, phrase: string) =>
+  JSON.stringify(tree.toJSON()).split(phrase).length - 1;
 
 const buttonLabels = (tree: ReactTestRenderer) =>
   tree.root
@@ -195,7 +243,7 @@ describe("ChannelPostRegion", () => {
   };
 
   const reset = () => {
-    harness.pages.clear();
+    harness.results.clear();
     harness.asked.length = 0;
     harness.refreshes = 0;
   };
@@ -240,7 +288,7 @@ describe("ChannelPostRegion", () => {
     // BUG-25-01, and the fixture is the SPA navigation that produced it: the same
     // element type at the same position with no key, which is what the router
     // renders when only `$channelId` changes. The region holds `posts`, `cursor`
-    // and `reachedStart` in state, so without a key on it all three survived the
+    // and `moreAbove` in state, so without a key on it all three survived the
     // switch — channel B rendered channel A's history and asked the server with
     // channel A's cursor, which it refuses.
     reset();
@@ -278,5 +326,61 @@ describe("ChannelPostRegion", () => {
       tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_B} />);
     });
     expect(harness.refreshes).toBeGreaterThan(afterMount);
+  });
+  it("does not offer the pager before any page has arrived", async () => {
+    // THE FOURTH STATE, reachable on every single open. The read is `Initial`
+    // with no value until the first page lands, so `arrived` is undefined — and a
+    // `reachedStart` boolean starting `false` let the pager render anyway, over an
+    // empty pane, offering to fetch older posts while the region held no cursor to
+    // fetch them with. Clicking it did nothing.
+    reset();
+    answerNothingYet(CHANNEL_A);
+    const tree = await mount(CHANNEL_A);
+    expect(bodies(tree)).toEqual([]);
+    // NEITHER LABEL. The control is absent, not disabled: a disabled control still
+    // tells a reader the action exists and is merely busy, and nothing here is
+    // busy on the reader's behalf.
+    expect(buttonLabels(tree)).not.toContain("Earlier posts");
+    expect(buttonLabels(tree)).not.toContain("Loading earlier posts…");
+  });
+
+  it("offers the pager again when a later page says there is more", async () => {
+    // NOT A LATCH, and this is the input that distinguishes the two: a channel
+    // whose whole history fits one page answers `nextCursor: null`, so the pager
+    // is correctly hidden. When the next post arrives the region re-reads under
+    // the same absent cursor, and that page is full and carries a cursor again. A
+    // latched `reachedStart` stayed true and hid the pager for the rest of the
+    // session; every fixture that only grows one page's contents agrees with both
+    // implementations, which is why the earlier tests could not see this.
+    reset();
+    answer(CHANNEL_A, { posts: [post(1, "p-one", "one")], nextCursor: null });
+    const { ChannelView } = await import("./ChannelView");
+    const tree = await mount(CHANNEL_A);
+    expect(buttonLabels(tree)).not.toContain("Earlier posts");
+
+    answer(CHANNEL_A, {
+      posts: [post(1, "p-one", "one"), post(2, "p-two", "two")],
+      nextCursor: "channel-a:1",
+    });
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(bodies(tree)).toEqual(["one", "two"]);
+    expect(buttonLabels(tree)).toContain("Earlier posts");
+  });
+  it("says 'No posts yet' once, not in the header as well", async () => {
+    // MEASURED IN A BROWSER AS TWO NODES in all four viewport/theme combinations:
+    // the header's timestamp slot said "No posts yet" and the pane 60px below said
+    // "No posts yet. Say something to start the channel." One fact, rendered
+    // twice, reads as a repeated element rather than as two things worth knowing.
+    //
+    // Both assertions, because they distinguish three implementations: the header
+    // keeping the phrase gives 2, the PANE losing its sentence gives 1 and 0, and
+    // only the header's slot being empty gives 1 and 1.
+    reset();
+    answer(CHANNEL_EMPTY, { posts: [], nextCursor: null });
+    const tree = await mount(CHANNEL_EMPTY);
+    expect(occurrences(tree, "No posts yet")).toBe(1);
+    expect(occurrences(tree, "No posts yet. Say something to start the channel.")).toBe(1);
   });
 });
