@@ -847,6 +847,7 @@ const MergedLayerTestLayer = McpHttpServer.layer.pipe(
   Layer.provide(RepositoryIdentityResolver.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-merged-test-" })),
   Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(NodeHttpServer.layerTest),
 );
 
 it.effect(
@@ -867,6 +868,6 @@ it.effect(
           expect(names).toContain(name);
         }
       }),
-    ).pipe(Effect.provide(MergedLayerTestLayer), Effect.provide(NodeHttpServer.layerTest)),
+    ).pipe(Effect.provide(MergedLayerTestLayer)),
   30_000,
 );
