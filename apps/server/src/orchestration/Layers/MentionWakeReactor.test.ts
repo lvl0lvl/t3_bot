@@ -34,6 +34,10 @@ import {
   ProjectionStateRepository,
   type ProjectionStateRepositoryShape,
 } from "../../persistence/Services/ProjectionState.ts";
+import {
+  ProjectionChannelRepository,
+  type ProjectionChannelRepositoryShape,
+} from "../../persistence/Services/ProjectionChannels.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { ServerConfig } from "../../config.ts";
@@ -94,9 +98,46 @@ const unreadableCursors = Layer.succeed(ProjectionStateRepository, {
   minLastAppliedSequence: () => Effect.die("unused"),
 } satisfies ProjectionStateRepositoryShape);
 
-const makeLayer = (databasePath: string, cursorOverride?: Layer.Layer<ProjectionStateRepository>) =>
+/**
+ * The real channel repository, with its first `times` reads made to fail.
+ *
+ * It DELEGATES rather than standing in for the repository. The projector
+ * writes channels through this same tag, so a hand-built channel would be a
+ * fixture the aggregate never produced - and the read that matters here is the
+ * reactor's, which has to see a real channel once the failures run out. The
+ * count is what lets one test watch a wake fail and the next one succeed
+ * against the same channel.
+ */
+const channelReadsFailing = (times: number) =>
+  Layer.effect(
+    ProjectionChannelRepository,
+    Effect.gen(function* () {
+      const real = yield* ProjectionChannelRepository;
+      let remaining = times;
+      return {
+        ...real,
+        getChannelById: (channelId) => {
+          if (remaining === 0) {
+            return real.getChannelById(channelId);
+          }
+          remaining -= 1;
+          return Effect.fail(
+            new PersistenceSqlError({ operation: "test", cause: "channel unreadable" }),
+          );
+        },
+      } satisfies ProjectionChannelRepositoryShape;
+    }),
+  );
+
+interface Overrides {
+  readonly cursors?: Layer.Layer<ProjectionStateRepository>;
+  readonly channels?: Layer.Layer<ProjectionChannelRepository, never, ProjectionChannelRepository>;
+}
+
+const makeLayer = (databasePath: string, overrides: Overrides = {}) =>
   MentionWakeReactorLive.pipe(
-    cursorOverride === undefined ? (self) => self : Layer.provide(cursorOverride),
+    overrides.cursors === undefined ? (self) => self : Layer.provide(overrides.cursors),
+    overrides.channels === undefined ? (self) => self : Layer.provide(overrides.channels),
     Layer.provideMerge(OrchestrationEngineLive),
     Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
     Layer.provideMerge(OrchestrationProjectionPipelineLive),
@@ -114,12 +155,9 @@ const makeLayer = (databasePath: string, cursorOverride?: Layer.Layer<Projection
  * A system that can be stopped and started again against the same database,
  * because every criterion here is about what survives a restart.
  */
-const makeSystem = async (
-  databasePath: string,
-  cursorOverride?: Layer.Layer<ProjectionStateRepository>,
-) => {
+const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
   // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- The subject of these tests is a server RESTART: stop the runtime, build a new one over the same database, and assert what survived. it.effect gives one scoped runtime per test and cannot express that, which is the state every criterion here is about.
-  const runtime = ManagedRuntime.make(makeLayer(databasePath, cursorOverride));
+  const runtime = ManagedRuntime.make(makeLayer(databasePath, overrides));
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
   const reactor = await runtime.runPromise(Effect.service(MentionWakeReactor));
   const cursors = await runtime.runPromise(Effect.service(ProjectionStateRepository));
@@ -420,7 +458,7 @@ describe("MentionWakeReactor", () => {
 
   it("refuses to start when the cursor cannot be read", async () => {
     const { directory, databasePath } = await makeDatabasePath();
-    const system = await makeSystem(databasePath, unreadableCursors);
+    const system = await makeSystem(databasePath, { cursors: unreadableCursors });
     try {
       // Absence and failure are one line apart and only one of them may seed at
       // the head. Treating a read failure as "never run" would silently skip
@@ -702,6 +740,86 @@ describe("MentionWakeReactor", () => {
       expect(woken).toBeDefined();
       expect(bystander).toBeDefined();
       expect(markerOf(woken ?? "")).not.toEqual(markerOf(bystander ?? ""));
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("advances the cursor past a post whose wake worked", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    let system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      const beforeThePost = await system.run(system.engine.latestSequence);
+      await post(system, { id: "post-transient", mentions: [MENTION] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      expect(await wakeMessages(system)).toHaveLength(1);
+
+      // The control for the test below. Without it, "the cursor is held when
+      // the wake fails" is satisfied by a cursor that never advances at all -
+      // which would be a reactor that replays its whole backlog on every
+      // start and relies on the receipt check to hide it.
+      const cursor = await system.run(
+        system.cursors.getByProjector({ projector: MENTION_WAKE_CURSOR }),
+      );
+      expect(Option.isSome(cursor) ? cursor.value.lastAppliedSequence : -1).toBeGreaterThan(
+        beforeThePost,
+      );
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("replays a post whose wake failed, and holds the cursor even as later posts succeed", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    let system = await makeSystem(databasePath, { channels: channelReadsFailing(1) });
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      const seeded = await system.run(system.engine.latestSequence);
+
+      await post(system, { id: "post-fails", mentions: [MENTION] });
+      await post(system, { id: "post-works", mentions: [MENTION] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // Holding the cursor is not stopping the reactor: the post AFTER the
+      // failure is still woken, and it is woken now rather than on restart.
+      const duringTheFailure = await wakeMessages(system);
+      expect(duringTheFailure).toHaveLength(1);
+      expect(duringTheFailure[0]).toContain("post post-works");
+
+      // The cursor has not moved at all - not past the post that failed, and
+      // not past the one after it either. Advancing for the later post writes
+      // the failed one out of the replay range just as surely as advancing for
+      // the failed one would have.
+      const cursor = await system.run(
+        system.cursors.getByProjector({ projector: MENTION_WAKE_CURSOR }),
+      );
+      expect(Option.isSome(cursor) ? cursor.value.lastAppliedSequence : -1).toBe(seeded);
+      await system.dispose();
+
+      // The other half, and the one that says why the hold is worth its cost:
+      // the failed post is replayed on the next start and woken for real.
+      system = await makeSystem(databasePath);
+      await system.startReactor();
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      const messages = await wakeMessages(system);
+      expect(messages.filter((text) => text.includes("post post-fails"))).toHaveLength(1);
+      // And exactly once for the post that already succeeded. The replay
+      // re-dispatches it with the same derived commandId and the engine's
+      // receipt check absorbs it, which is what makes the hold affordable.
+      expect(messages.filter((text) => text.includes("post post-works"))).toHaveLength(1);
+      expect(await wakeMessages(system, BYSTANDER)).toHaveLength(0);
     } finally {
       await system.dispose();
       await removeDirectory(directory);

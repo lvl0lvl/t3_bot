@@ -179,16 +179,27 @@ const make = Effect.gen(function* () {
    * is logged at warning rather than debug because the consequence is an agent
    * that never answers, which nothing downstream will notice.
    */
+  /**
+   * Reports whether the wake actually happened, because the cursor may only
+   * move past a post that did.
+   *
+   * Swallowing the failure and advancing anyway marks the post CONSUMED while
+   * no turn exists - "claimed while failed", the same shape as claiming a post
+   * still sitting in the queue. One transient getById or dispatch failure then
+   * loses that wake permanently, because nothing replays it and the derived
+   * commandId never gets its chance to absorb anything.
+   */
   const wakeSafely = (event: PostCreated) =>
     wake(event).pipe(
+      Effect.as(true),
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.failCause(cause)
-          : Effect.logWarning("mention wake skipped", {
+          : Effect.logWarning("mention wake failed; cursor held", {
               postId: event.payload.postId,
               channelId: event.payload.channelId,
               cause: Cause.pretty(cause),
-            }),
+            }).pipe(Effect.as(false)),
       ),
     );
 
@@ -207,10 +218,31 @@ const make = Effect.gen(function* () {
    * Every event goes through here, not just the ones that wake somebody,
    * because the cursor has to move past the others too.
    */
+  /**
+   * The sequence of the first post whose wake failed, or null while every wake
+   * has landed. The worker is a single fiber, so this is plain state.
+   */
+  let heldAt: number | null = null;
+
   const processEvent = (event: OrchestrationEvent) =>
     Effect.gen(function* () {
       if (event.type === "channel.post-created" && event.payload.mentions.length > 0) {
-        yield* wakeSafely(event);
+        const woken = yield* wakeSafely(event);
+        if (!woken && heldAt === null) {
+          heldAt = event.sequence;
+        }
+      }
+      // The cursor stops at the last sequence BEFORE the first failed wake and
+      // stays there until a restart replays from it. Later posts are still
+      // woken - what is held is the cursor, not the reactor - because holding
+      // it costs a duplicate dispatch that the derived commandId absorbs,
+      // while letting it run past the failure costs the mention itself.
+      //
+      // Advancing only for the event that failed is not enough: the next event
+      // carries a higher sequence, so its advance writes the failed post out of
+      // the replay range just the same.
+      if (heldAt !== null) {
+        return;
       }
       yield* advance(event).pipe(
         Effect.catchCause((cause) =>
