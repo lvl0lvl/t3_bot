@@ -165,6 +165,53 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
     }),
   );
 
+  // The server holds two independent command-to-aggregate mappings: the
+  // engine's routing switch and these per-event literals. Receipt scope is
+  // correct only while they agree, and nothing in the type system relates
+  // them — a channel command stamped "thread" here would make a legitimate
+  // retry of an already-succeeded command fail as a conflict. This pins the
+  // decider's half for every channel command.
+  it.effect("stamps the channel aggregate on every channel command", () =>
+    Effect.gen(function* () {
+      const commands = [
+        {
+          type: "channel.meta.update",
+          commandId: CommandId.make("cmd-meta"),
+          channelId: CHANNEL,
+          name: "renamed",
+        },
+        { type: "channel.archive", commandId: CommandId.make("cmd-arch"), channelId: CHANNEL },
+        { type: "channel.unarchive", commandId: CommandId.make("cmd-unarch"), channelId: CHANNEL },
+        {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add"),
+          channelId: CHANNEL,
+          member: {
+            handle: ChannelMemberHandle.make("boss3"),
+            memberKind: "thread" as const,
+            memberId: "thread-boss3",
+          },
+        },
+        {
+          type: "channel.member.remove",
+          commandId: CommandId.make("cmd-rm"),
+          channelId: CHANNEL,
+          handle: BOSS1,
+        },
+        postCommand({}),
+      ] as const;
+
+      for (const command of commands) {
+        const decided = yield* decideOrchestrationCommand({ command, readModel: makeReadModel() });
+        const events = Array.isArray(decided) ? decided : [decided];
+        for (const event of events) {
+          expect(event.aggregateKind).toBe("channel");
+          expect(event.aggregateId).toBe(CHANNEL);
+        }
+      }
+    }),
+  );
+
   it.effect("creates a channel and stamps createdAt and updatedAt together", () =>
     Effect.gen(function* () {
       const decided = yield* decideOrchestrationCommand({

@@ -71,8 +71,19 @@ interface CommandEnvelope {
  *
  * A catch-all thread branch was the alternative. The compiler rejects that for a
  * command with no `threadId` field, but a command that happens to carry one is
- * routed silently, attaching its events, receipt, and `hasEventAfter` scope to
- * whichever thread the payload names.
+ * routed silently.
+ *
+ * What that actually corrupts is narrower than it looks, and worth stating
+ * because the obvious guess is wrong. This result reaches only telemetry, the
+ * command-receipt conflict check, and the rejected receipt. Events carry the
+ * aggregate the decider stamped on them, the accepted receipt is stamped from
+ * that event, and both `hasEventAfter` call sites hardcode the thread kind. So
+ * the server holds two independent command-to-aggregate mappings — this switch
+ * and the decider's per-event literals — and what protects receipt scope is
+ * that they AGREE. When they disagree, the accepted receipt records the
+ * decider's aggregate while the conflict check compares this one, and a
+ * legitimate retry of a command that already succeeded is refused as a
+ * conflict. Nothing in the type system relates the two.
  *
  * Returns null rather than throwing when nothing matches. The call site turns
  * that into a rejection of the one command: this runs in the engine's single
