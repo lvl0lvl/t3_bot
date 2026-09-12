@@ -52,6 +52,12 @@ message types: `comms/README.md` there.
 **Nothing merges to `main` without `/review-pr` first.** Flow: senior opens PR against
 `origin/main` → runs `/review-pr` → fixes findings → posts `REPORT` "PR ready" → PM merges.
 
+**Lanes never mutate the author's live tree.** Any review lane that mutation-tests or probes by
+editing source does it in its own scratch worktree (`git worktree add <tmp> HEAD`), never in the
+worktree the author is editing. A lane "restores" to what it read, not what you have since written —
+that silently reverted two correctness fixes in #4. Copy in, never symlink; write into a copy, never
+into a live tree.
+
 **`gh` targets the fork, never upstream.** This clone has `upstream` = Theo's public repo, and
 `gh` resolved to it until `gh repo set-default lvl0lvl/t3_bot` was run (repo-level git config,
 shared by every worktree). Belt and braces: pass `--repo lvl0lvl/t3_bot` on every `gh` write
