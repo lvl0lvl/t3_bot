@@ -33,8 +33,8 @@
  * rather than in someone's memory.
  */
 import * as NodeChildProcess from "node:child_process";
-import * as NodeFs from "node:fs";
-import * as NodeOs from "node:os";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 /**
@@ -88,7 +88,7 @@ function runSuite(cwd: string): Suite {
     }>;
   };
   const suite: Suite = new Map();
-  const realCwd = NodeFs.realpathSync(cwd);
+  const realCwd = NodeFS.realpathSync(cwd);
   for (const file of parsed.testResults ?? []) {
     if (file.name === undefined) continue;
     // Relative, so base and head agree: they live in different directories and
@@ -101,7 +101,7 @@ function runSuite(cwd: string): Suite {
     // two unresolved paths yields `../../../../../private/var/...`, so every
     // file appears as one removed and one added and the gate cries wolf on an
     // unchanged tree. Measured: it did exactly that on its first end-to-end run.
-    const relative = NodePath.relative(realCwd, NodeFs.realpathSync(file.name));
+    const relative = NodePath.relative(realCwd, NodeFS.realpathSync(file.name));
     const names = (file.assertionResults ?? [])
       // SKIPPED IS A DECREASE. A test turned into `it.skip` still appears in the
       // report and would otherwise count as present, which is exactly the
@@ -122,7 +122,7 @@ function runSuite(cwd: string): Suite {
  * work to measure the base would be that incident with a cron job.
  */
 function withBaseWorktree<A>(baseRef: string, use: (cwd: string) => A): A {
-  const root = NodeFs.mkdtempSync(NodePath.join(NodeOs.tmpdir(), "t3-count-gate-"));
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-count-gate-"));
   const tree = NodePath.join(root, "base");
   NodeChildProcess.execFileSync("git", ["worktree", "add", "--detach", tree, baseRef], {
     stdio: "inherit",
@@ -137,7 +137,7 @@ function withBaseWorktree<A>(baseRef: string, use: (cwd: string) => A): A {
     NodeChildProcess.execFileSync("git", ["worktree", "remove", "--force", tree], {
       stdio: "inherit",
     });
-    NodeFs.rmSync(root, { recursive: true, force: true });
+    NodeFS.rmSync(root, { recursive: true, force: true });
   }
 }
 
