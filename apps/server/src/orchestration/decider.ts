@@ -48,6 +48,7 @@ import {
   requireChannelHandlesUnique,
   requireChannelMentionsResolve,
   requireChannelNameAvailable,
+  requireChannelNotArchived,
   requireIssuerCanAdminister,
   requireIssuerCanAuthor,
   requireProject,
@@ -2229,6 +2230,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         issuer: yield* requireCommandIssuer({ command, issuer }),
       });
       const author = yield* requireChannelAuthorIsMember({ command, channel, authorRef });
+      // After the member check, for the same reason the mention check is: that a
+      // channel is ARCHIVED tells the reader it EXISTS, which a non-member must
+      // not learn — "archived" and "no such channel" have to stay one answer to
+      // an outsider.
+      yield* requireChannelNotArchived({ command, channel });
       // After the author check, never before: canonicalising can itself fail on
       // a handle of only sigils, and a guard that fires earlier would let a
       // non-member tell a malformed mention from being excluded.

@@ -251,4 +251,65 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       }
     }),
   );
+
+  it.effect("refuses a post to an archived channel", () =>
+    Effect.gen(function* () {
+      // Archived is readable, not postable. A retired channel that still accepts
+      // posts wakes its members from something nobody is watching.
+      const archived = readModel();
+      const error = yield* decideOrchestrationCommand({
+        command: channelProbe("channel.post.create") as never,
+        readModel: {
+          ...archived,
+          channels: archived.channels.map((channel) => ({ ...channel, archivedAt: NOW })),
+        },
+        issuer: MEMBER_THREAD,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is archived and cannot accept new posts");
+      }
+    }),
+  );
+
+  it.effect("tells an outsider nothing about an archived channel existing", () =>
+    Effect.gen(function* () {
+      // "Archived" reveals the channel EXISTS. The member check runs first, so a
+      // non-member gets the membership answer and learns nothing — swapping the
+      // two guards is a one-line change that turns this into an existence
+      // oracle, which is why it is pinned rather than left to the ordering.
+      const archived = readModel();
+      const error = yield* decideOrchestrationCommand({
+        command: channelProbe("channel.post.create") as never,
+        readModel: {
+          ...archived,
+          channels: archived.channels.map((channel) => ({ ...channel, archivedAt: NOW })),
+        },
+        issuer: OUTSIDER_THREAD,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("Author is not a member");
+        expect(error.detail).not.toContain("archived");
+      }
+    }),
+  );
+
+  it.effect("still allows unarchiving an archived channel", () =>
+    Effect.gen(function* () {
+      // The way out. Refusing posts must not also refuse the command that makes
+      // the channel postable again — a one-way door is a bug.
+      const archived = readModel();
+      const decided = yield* decideOrchestrationCommand({
+        command: channelProbe("channel.unarchive") as never,
+        readModel: {
+          ...archived,
+          channels: archived.channels.map((channel) => ({ ...channel, archivedAt: NOW })),
+        },
+        issuer: HUMAN,
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events[0]?.type).toBe("channel.unarchived");
+    }),
+  );
 });

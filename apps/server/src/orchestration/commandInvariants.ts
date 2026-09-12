@@ -131,10 +131,13 @@ export function requireIssuerCanAdminister(input: {
  * is deliberately indistinguishable from "you are not a member", so a case
  * mismatch would otherwise be unreportable.
  *
- * Every leading sigil goes, not just one: the sigil is decoration, so "##general"
- * is a fat-finger that must resolve rather than create a second channel. The
- * exact rule is pinned as a table in `canonicalChannelName.test.ts`; the two
- * normalisers have diverged once already, over exactly this.
+ * The operation: trim, strip every leading "#", trim, repeat until nothing
+ * changes, then lowercase. Every sigil goes, not just one, because the sigil is
+ * decoration and "##general" is a fat-finger that must resolve rather than
+ * create a second channel; the repeat is what carries "# #seniors" past the
+ * space to "seniors". The exact rule is pinned as a table in
+ * `canonicalChannelName.test.ts`; the two normalisers have diverged once
+ * already, over exactly this.
  */
 export function canonicalChannelName(name: string): string {
   return canonicalise(name, /^#+/);
@@ -155,9 +158,24 @@ export function canonicalChannelHandle(handle: string): string {
   return canonicalise(handle, /^@+/);
 }
 
-/** One rule, two sigils, so a name and a handle cannot drift apart. */
+/**
+ * One rule, two sigils, so a name and a handle cannot drift apart.
+ *
+ * Trim, strip leading sigils, trim again, and repeat until nothing changes,
+ * then lowercase. The repeat is what makes "# #seniors" reach "seniors": a
+ * single pass leaves "#seniors", which then canonicalises to something else
+ * again, so a stored name would not match itself. Each pass strictly shortens
+ * the string or ends the loop, so it terminates.
+ */
 function canonicalise(value: string, sigil: RegExp): string {
-  return value.trim().replace(sigil, "").trim().toLowerCase();
+  let current = value.trim();
+  for (;;) {
+    const next = current.replace(sigil, "").trim();
+    if (next === current) {
+      return current.toLowerCase();
+    }
+    current = next;
+  }
 }
 
 /**
@@ -240,6 +258,29 @@ export function requireChannel(input: {
     invariantError(
       input.command.type,
       `Channel '${input.channelId}' does not exist for command '${input.command.type}'.`,
+    ),
+  );
+}
+
+/**
+ * A post needs a live channel. Archived channels stay READABLE and stop being
+ * postable.
+ *
+ * Archiving is how a channel is retired, and a retired channel that still
+ * accepts posts wakes its members from something nobody is watching. Reading
+ * stays open because the history is the point of keeping the channel at all.
+ */
+export function requireChannelNotArchived(input: {
+  readonly command: OrchestrationCommand;
+  readonly channel: OrchestrationChannel;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  if (input.channel.archivedAt === null) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `Channel '${input.channel.id}' is archived and cannot accept new posts.`,
     ),
   );
 }

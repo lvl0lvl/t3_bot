@@ -43,6 +43,12 @@ const TABLE: ReadonlyArray<readonly [input: string, canonical: string]> = [
   // slip breaks: `replace(/#+/g, "")` passes every other row in this table.
   ["#-#", "-#"],
   ["a#b", "a#b"],
+  // A sigil hiding behind a space. A single strip-and-trim leaves "#seniors",
+  // which canonicalises again to something else — so without the fixpoint a
+  // stored name does not match itself and the idempotence test below is false
+  // for inputs the table never asked about.
+  ["# #seniors", "seniors"],
+  ["#  #  x", "x"],
 ];
 
 /** Rows as "input -> result", so a failure names the input that moved. */
