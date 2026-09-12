@@ -90,10 +90,8 @@ describe("judge", () => {
   it("names the tests that went from passing to failing", () => {
     const baseline = run(["f.ts > flaky"], 10);
     const verdict = judge(baseline, run(["f.ts > flaky", "g.ts > real", "h.ts > also"], 10));
-    expect(verdict).toEqual({
-      _tag: "killed",
-      by: ["g.ts > also", "h.ts > also"].slice(0, 0).concat(["g.ts > real", "h.ts > also"].sort()),
-    });
+    // Sorted, so the report's order does not depend on Set iteration order.
+    expect(verdict).toEqual({ _tag: "killed", by: ["g.ts > real", "h.ts > also"] });
   });
 
   it("does not treat a baseline failure that went away as a kill", () => {
