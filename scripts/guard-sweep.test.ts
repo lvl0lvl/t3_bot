@@ -393,7 +393,7 @@ describe("confirm", () => {
     // a fixture with matching runs measures nothing about this function.
     const baseline = run([], 10);
     const first = judge(baseline, run(["g.ts > real", "flaky.ts > unstable"], 10));
-    const verdict = confirm(first, run(["g.ts > real"], 10), baseline);
+    const verdict = confirm(first, { second: run(["g.ts > real"], 10), baseline });
     expect(verdict).toEqual({ _tag: "killed", by: ["g.ts > real"], confirmed: true });
   });
 
@@ -402,7 +402,7 @@ describe("confirm", () => {
     // than a mutation quietly credited with a kill it did not earn.
     const baseline = run([], 10);
     const first = judge(baseline, run(["flaky.ts > unstable"], 10));
-    expect(confirm(first, run([], 10), baseline)).toEqual({
+    expect(confirm(first, { second: run([], 10), baseline })).toEqual({
       _tag: "survived",
       // CARRYING WHAT IT LOST, so the report can say this row reddened once and not again
       // rather than filing it with the rows nothing ever depended on.
@@ -413,7 +413,7 @@ describe("confirm", () => {
   it("keeps a kill whose reds both reproduced", () => {
     const baseline = run([], 10);
     const first = judge(baseline, run(["g.ts > real", "h.ts > also"], 10));
-    expect(confirm(first, run(["g.ts > real", "h.ts > also"], 10), baseline)).toEqual({
+    expect(confirm(first, { second: run(["g.ts > real", "h.ts > also"], 10), baseline })).toEqual({
       _tag: "killed",
       by: ["g.ts > real", "h.ts > also"],
       // THE ONLY CASE THAT EARNS `true`: both reds appeared in two runs with the same
@@ -431,12 +431,12 @@ describe("confirm", () => {
     const first = judge(baseline, run(["g.ts > real"], 10));
     // UNCONFIRMED rather than confirmed: the verdict stands because an uncollected run is
     // no evidence either way, and the report has to be able to say nobody looked.
-    expect(confirm(first, run([], 0), baseline)).toEqual({
+    expect(confirm(first, { second: run([], 0), baseline })).toEqual({
       _tag: "killed",
       by: ["g.ts > real"],
       confirmed: false,
     });
-    expect(confirm(first, run([], 4), baseline)).toEqual({
+    expect(confirm(first, { second: run([], 4), baseline })).toEqual({
       _tag: "killed",
       by: ["g.ts > real"],
       confirmed: false,
@@ -448,11 +448,11 @@ describe("confirm", () => {
     // kill and never the reverse. Nothing calls this with a second run for the others,
     // and if something did it must not invent a verdict for them.
     const baseline = run([], 10);
-    expect(confirm({ _tag: "survived" }, run(["g.ts > real"], 10), baseline)).toEqual({
+    expect(confirm({ _tag: "survived" }, { second: run(["g.ts > real"], 10), baseline })).toEqual({
       _tag: "survived",
     });
     const notRun = { _tag: "not-run", reason: "anchor absent" } as const;
-    expect(confirm(notRun, run(["g.ts > real"], 10), baseline)).toEqual(notRun);
+    expect(confirm(notRun, { second: run(["g.ts > real"], 10), baseline })).toEqual(notRun);
   });
 });
 

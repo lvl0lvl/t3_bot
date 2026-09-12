@@ -303,9 +303,13 @@ export const judge = (baseline: RunResult, mutant: RunResult): Verdict => {
  */
 export const confirm = (
   verdict: Verdict,
-  second: RunResult | undefined,
-  baseline: RunResult,
+  // ONE OBJECT, because the two are both `RunResult` and this is the function whose job
+  // is comparing them: `confirm(v, baseline, second)` typechecks and would compare the
+  // baseline's failures against themselves, demoting real kills in silence. A named field
+  // cannot be transposed (api17).
+  runs: { readonly second: RunResult | undefined; readonly baseline: RunResult },
 ): Verdict => {
+  const { second, baseline } = runs;
   if (verdict._tag !== "killed" || second === undefined) {
     return verdict;
   }
@@ -772,11 +776,14 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
         mutation,
         verdict: {
           _tag: "not-run",
-          reason: `git does not track ${mutation.file}, so it could not be restored`,
+          reason:
+            `git does not track ${mutation.file} — the path may be misspelled, or the ` +
+            "file may be gitignored — so it could not be restored",
         },
       });
       yield* Console.log(
-        `${mutation.id}: NOT RUN — git does not track ${mutation.file}, so it could not be restored`,
+        `${mutation.id}: NOT RUN — git does not track ${mutation.file} — the path may be ` +
+          "misspelled, or the file may be gitignored — so it could not be restored",
       );
       continue;
     }
@@ -878,7 +885,7 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
               _tag: "not-run",
               reason: `the mutated suite ran ${result.total} tests against the baseline's ${baseline.total}, so something did not collect`,
             } as const)
-          : confirm(judge(baseline, result), runs.second, baseline);
+          : confirm(judge(baseline, result), { second: runs.second, baseline });
     swept.push({ mutation, verdict });
     yield* Console.log(
       `${mutation.id}: ${
