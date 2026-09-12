@@ -1840,9 +1840,35 @@ export const ChannelMemberAddedPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+/**
+ * WHO LEFT, and it carries the member ref as well as the handle because the
+ * websocket has to decide "was that me" from the EVENT.
+ *
+ * THE HANDLE STAYS AND REMAINS THE PROJECTOR'S KEY. `requireChannelHandlesUnique`
+ * makes a handle unique WITHIN a channel; `memberId` is NOT unique — a thread
+ * member and a human member can share one (`t3_bot-46h`), and that collision is
+ * reachable through the aggregate today. Re-keying the projector on the ref
+ * would be a regression dressed as a cleanup. The client also renders the
+ * handle.
+ *
+ * THE REF IS OPTIONAL, AND ABSENT MEANS "WRITTEN BEFORE THIS LANDED". Events
+ * already in the log carry no ref and are replayed through here forever. The
+ * alternative considered and rejected was looking the handle up in the roster at
+ * projection time: by then the member is gone from the row, which is the whole
+ * difficulty (`t3_bot-7br`). A versioned event was also rejected — it would cost
+ * every consumer a second case forever to distinguish states differing in one
+ * field the projector never reads.
+ *
+ * TWO FLAT FIELDS, NOT THE NOMINAL `ChannelMemberRef`. That type is a class with
+ * a private field precisely so it cannot be built from a payload, and an event
+ * payload is decoded from rows — the one place it must not appear. The class is
+ * the comparison type at the seam; this is what the seam compares against.
+ */
 export const ChannelMemberRemovedPayload = Schema.Struct({
   channelId: ChannelId,
   handle: ChannelMemberHandle,
+  memberKind: Schema.optional(Schema.Literals(["thread", "human"])),
+  memberId: Schema.optional(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
 });
 

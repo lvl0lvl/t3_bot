@@ -814,17 +814,27 @@ const makeWsRpcLayer = (
             });
       };
 
-      // Shell updates refetch the aggregate. Message and tool bodies are not needed.
-      const toShellEvent = ({
-        type,
-        aggregateKind,
-        aggregateId,
-        sequence,
-      }: OrchestrationEvent) => ({
-        type,
-        aggregateKind,
-        aggregateId,
-        sequence,
+      /**
+       * Shell updates refetch the aggregate. Message and tool bodies are not
+       * needed.
+       *
+       * ONE PAYLOAD FIELD IS AN EXCEPTION, and it is here because the refetch
+       * cannot answer it: after `channel.member-removed` is applied, the member
+       * is GONE from the projection, so "were you the one removed" and "were you
+       * never in it" read identically from the row. That conflation is the whole
+       * of `t3_bot-7br`. The event is the only thing that still knows.
+       */
+      const toShellEvent = (event: OrchestrationEvent) => ({
+        type: event.type,
+        aggregateKind: event.aggregateKind,
+        aggregateId: event.aggregateId,
+        sequence: event.sequence,
+        removedMember:
+          event.type === "channel.member-removed" &&
+          event.payload.memberKind !== undefined &&
+          event.payload.memberId !== undefined
+            ? { memberKind: event.payload.memberKind, memberId: event.payload.memberId }
+            : undefined,
       });
       type ShellEvent = ReturnType<typeof toShellEvent>;
 
@@ -856,7 +866,7 @@ const makeWsRpcLayer = (
             return threadUpsertOrRemove(ThreadId.make(event.aggregateId), event.sequence);
           default:
             if (event.aggregateKind === "channel") {
-              return channelUpsertOrRemove(event.aggregateId, event.sequence);
+              return channelUpsertOrRemove(event.aggregateId, event.sequence, event.removedMember);
             }
             if (event.aggregateKind !== "thread") {
               return Effect.succeed(Option.none());
@@ -985,6 +995,9 @@ const makeWsRpcLayer = (
       const channelUpsertOrRemove = (
         aggregateId: string,
         sequence: number,
+        removedMember:
+          | { readonly memberKind: "thread" | "human"; readonly memberId: string }
+          | undefined,
       ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
         Effect.gen(function* () {
           // DECODED, NOT `.make`. `ChannelId.make` THROWS on a refused id, and
@@ -1003,7 +1016,7 @@ const makeWsRpcLayer = (
             });
             return Option.none<OrchestrationShellStreamEvent>();
           }
-          return yield* channelShellFor(decoded.value, sequence);
+          return yield* channelShellFor(decoded.value, sequence, removedMember);
         });
 
       /**
@@ -1043,6 +1056,9 @@ const makeWsRpcLayer = (
       const channelShellFor = (
         channelId: ChannelId,
         sequence: number,
+        removedMember:
+          | { readonly memberKind: "thread" | "human"; readonly memberId: string }
+          | undefined,
       ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
         retryShellProjectionRead(
           "channel",
@@ -1052,6 +1068,13 @@ const makeWsRpcLayer = (
           Effect.map(
             Option.flatMap((channel) =>
               Option.match(channel, {
+                // THE CHANNEL IS GONE, and this branch CANNOT be gated the way
+                // the non-member one below is: there is no row and no removed
+                // member to compare, so a bare `channelId` still reaches every
+                // connection. Channels are archived rather than deleted in this
+                // system, so the only way here today is a projection read that
+                // failed every retry — but "unreachable today" is a claim that
+                // decays, and this is the one path `t3_bot-7br` does not close.
                 onNone: () =>
                   Option.some<OrchestrationShellStreamEvent>({
                     kind: "channel-removed" as const,
@@ -1059,22 +1082,47 @@ const makeWsRpcLayer = (
                     channelId,
                   }),
                 onSome: (row) =>
-                  Option.some<OrchestrationShellStreamEvent>(
-                    // `toChannelShell` is the SAME conversion the snapshot uses.
-                    // Two copies of it is how one of them comes to drop
-                    // `latestPostAt` — which would overwrite the snapshot's real
-                    // value on every live update, reorder the sidebar to the
-                    // bottom, and show "No posts yet" over a channel that had
-                    // just received a post, with the post event deleted on the
-                    // grounds that this field carries the fact.
-                    rowHasMember(row, connectionMember)
-                      ? {
-                          kind: "channel-upserted" as const,
+                  // `toChannelShell` is the SAME conversion the snapshot uses.
+                  // Two copies of it is how one of them comes to drop
+                  // `latestPostAt` — which would overwrite the snapshot's real
+                  // value on every live update, reorder the sidebar to the
+                  // bottom, and show "No posts yet" over a channel that had
+                  // just received a post, with the post event deleted on the
+                  // grounds that this field carries the fact.
+                  rowHasMember(row, connectionMember)
+                    ? Option.some<OrchestrationShellStreamEvent>({
+                        kind: "channel-upserted" as const,
+                        sequence,
+                        channel: toChannelShell(row),
+                      })
+                    : // NOT A MEMBER. Two different situations reach here and
+                      // they must not get the same answer: this connection was
+                      // just removed from a channel it holds, or it was never in
+                      // this channel and is watching someone else's roster
+                      // change. Emitting a bare `channelId` for the second is
+                      // how every connected client learned that a channel with
+                      // that id exists (`t3_bot-7br`).
+                      //
+                      // SILENT ONLY WHEN THE EVENT PROVES IT WAS SOMEONE ELSE.
+                      // Absent ref means the event predates this field, or the
+                      // event was coalesced away within a batch — and in both
+                      // cases we cannot tell, so we EMIT. That asymmetry is
+                      // deliberate and it is the lesson of the two fixes this
+                      // one replaces: suppressing on "I don't know" loses a real
+                      // removal, and an operator removed while disconnected is
+                      // never told to drop the channel. A disclosure with no
+                      // live victim is the cheaper failure.
+                      removedMember !== undefined &&
+                        !(
+                          removedMember.memberKind === connectionMember.memberKind &&
+                          removedMember.memberId === connectionMember.memberId
+                        )
+                      ? Option.none<OrchestrationShellStreamEvent>()
+                      : Option.some<OrchestrationShellStreamEvent>({
+                          kind: "channel-removed" as const,
                           sequence,
-                          channel: toChannelShell(row),
-                        }
-                      : { kind: "channel-removed" as const, sequence, channelId },
-                  ),
+                          channelId,
+                        }),
               }),
             ),
           ),
