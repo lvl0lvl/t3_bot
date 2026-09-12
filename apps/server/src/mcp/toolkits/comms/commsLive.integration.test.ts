@@ -117,8 +117,11 @@ const dispatchFailsWith = (error: OrchestrationDispatchError) =>
  * The ONE way a test may forge a member ref, named so it cannot pass for the
  * real thing.
  *
- * `ChannelMemberRef` is branded with a non-exported symbol precisely so a
- * handler cannot build one from a request payload. Tests that exercise refs no
+ * `ChannelMemberRef` is a class with a private field precisely so a handler
+ * cannot build one from a request payload. Not a unique-symbol brand, which was
+ * the first attempt and is the wrong tool: a symbol stops an object LITERAL and
+ * does not stop a spread of an existing ref with one field replaced, which is
+ * the exact forgery this has to refuse. Tests that exercise refs no
  * legitimate source can produce - a colliding roster, a member kind the caller
  * is not - need a way in, and this is it: in a test file, with a name a
  * reviewer cannot read as production code. `makeRef` would not say that.
@@ -762,6 +765,7 @@ describe("the comms toolkit on the live gateway", () => {
           "not-a-cursor",
           `${CHANNEL_ID}:abc`,
           `${CHANNEL_ID}:-1`,
+          `${CHANNEL_ID}:1.5`,
           `${CHANNEL_ID}:9007199254740993`,
           "3",
           // THE TWO THAT SEPARATE AN EXACT COMPARISON FROM A LAZY ONE, and
@@ -839,7 +843,80 @@ describe("the comms toolkit on the live gateway", () => {
   );
 
   it.effect(
-    "reads as the CREDENTIAL's member, on a channel the caller is NOT in",
+    "refuses every sequence `Number()` would have invented a number for",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const gateway = yield* ChannelGateway;
+
+        // THIS PROPERTY WAS LOST IN A SPLIT, which is the fourth time work of
+        // mine has removed a test on this branch and the first time it happened
+        // without a line being deleted. The base test asserted four things;
+        // three became their own tests and this one did not, and its own
+        // comment had predicted exactly that - "without it the guard is inert".
+        //
+        // The digit pre-check in `decodeCursor` is what these measure, and
+        // nothing else in the suite reaches it. Every malformed cursor
+        // elsewhere is caught by a DIFFERENT clause: `:abc` by
+        // `Number.isSafeInteger(NaN)`, `:-1` by `sequence < 0`, `:1.5` and the
+        // 16-digit one by `isSafeInteger`. Delete the pre-check and all of
+        // those still refuse - which is how a guard I added on this branch sat
+        // in the tree with no test that could tell whether it was there.
+        //
+        // Every value here carries THIS channel's id, so the provenance clause
+        // passes and the digit check is the only thing left that can refuse
+        // them. `Number()` reads each one as a perfectly good non-negative safe
+        // integer - 0, 2, 3, 100, 4, 3 - so without the pre-check the read
+        // answers with a page starting at a sequence the caller never asked
+        // for, which is the silent wrong answer this bead exists to end.
+        for (const coercible of [
+          `${CHANNEL_ID}:`,
+          `${CHANNEL_ID}:0x2`,
+          `${CHANNEL_ID}: 3 `,
+          `${CHANNEL_ID}:1e2`,
+          `${CHANNEL_ID}:+4`,
+          `${CHANNEL_ID}:0b11`,
+        ]) {
+          // A typed failure, so `flip` rather than `exit`: a defect would
+          // propagate and fail the test instead of being yielded, which is the
+          // distinction these cursors are about.
+          const refused = yield* gateway
+            .readPosts({
+              channelId: CHANNEL_ID,
+              limit: 10,
+              cursor: coercible,
+              direction: "forward",
+            })
+            .pipe(Effect.flip);
+          expect(refused._tag).toBe("ChannelCursorUnusable");
+          expect(refused).toMatchObject({ cursor: coercible, channelId: CHANNEL_ID });
+        }
+
+        // And a plain digit cursor still pages, so the loop above is about what
+        // `Number()` accepts rather than about the guard refusing everything -
+        // a refusal of every sequence satisfies all six and breaks reading.
+        for (const body of ["first", "second"]) {
+          yield* call("comms_post", { channel: "seniors", body }, BOSS1);
+        }
+        const page = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 1,
+          cursor: undefined,
+          direction: "forward",
+        });
+        const next = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 1,
+          cursor: page.nextCursor!,
+          direction: "forward",
+        });
+        expect(next.posts.map((post) => post.body)).toEqual(["second"]);
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "gives a read no member field to carry, and refuses a channel the caller is not in",
     () =>
       Effect.gen(function* () {
         yield* seed();
@@ -852,9 +929,10 @@ describe("the comms toolkit on the live gateway", () => {
         // proved a member-smuggling handler survives the whole suite against
         // it.
         //
-        // The property needs a channel where the two answers DIFFER: reading as
-        // the credential must refuse, and reading as the smuggled member would
-        // succeed.
+        // The property needs a channel where the two answers WOULD differ:
+        // reading as the credential must refuse, and reading as a smuggled
+        // member would succeed. That much was right. What was still missing is
+        // below, and it is that there is no smuggling channel at all.
         const privateId = ChannelId.make("channel-boss1-only");
         yield* engine.dispatch(
           {
@@ -870,13 +948,33 @@ describe("the comms toolkit on the live gateway", () => {
           { issuer: ADMIN },
         );
 
-        // BOSS1 is a member and BOSS3 is not. The call carries BOSS1's id in
-        // its ARGUMENTS and BOSS3's in its credential.
-        const refused = yield* call(
-          "comms_read_channel",
-          { channel: "boss1-only", memberId: BOSS1, memberKind: "thread" },
-          BOSS3,
-        ).pipe(Effect.flip);
+        // WHERE THE SECOND VERSION OF THIS TEST WAS STILL WRONG, and a blind
+        // verifier proved it rather than argued it: passing `memberId` and
+        // `memberKind` in the arguments smuggles NOTHING, because the tool's
+        // param schema does not declare them and the toolkit strips them during
+        // decode. The handler's input is `{ channel: "boss1-only" }`. The
+        // verifier built the impersonating handler this was supposed to catch -
+        // `requireChannel` threaded with `input.memberId` - and it passed 61/61.
+        // The refusal below is satisfied by BOSS3 simply not being a member,
+        // with or without the credential rule.
+        //
+        // So the ARGUMENTS ARE GONE and what is asserted instead is the control
+        // that actually holds: there is no member field on the wire for a
+        // handler to read. Add one to `ReadChannelTool`'s parameters and this
+        // reds; that is a property of the schema, which is where the defence
+        // lives, rather than of a call that could never have carried anything.
+        const readParams = Object.keys(
+          (
+            CommsToolkit.tools.comms_read_channel.parametersSchema as unknown as {
+              fields: Record<string, unknown>;
+            }
+          ).fields,
+        );
+        expect(readParams.sort()).toEqual(["channel", "cursor", "limit"]);
+
+        const refused = yield* call("comms_read_channel", { channel: "boss1-only" }, BOSS3).pipe(
+          Effect.flip,
+        );
         expect((refused as { _tag: string })._tag).toBe("CommsChannelNotFoundError");
 
         // And BOSS1 reading its own channel succeeds, so the refusal above is

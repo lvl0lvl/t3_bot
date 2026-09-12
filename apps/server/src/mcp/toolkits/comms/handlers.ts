@@ -138,6 +138,11 @@ export function resolveMentions(
 const make = Effect.gen(function* () {
   const channels = yield* ChannelGateway.ChannelGateway;
 
+  const storeUnavailableAsRead = {
+    ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
+      Effect.fail(new CommsReadFailedError({ detail: error.detail })),
+  } as const;
+
   /**
    * Maps the gateway's declared failures onto tool errors, one tag at a time.
    * Naming each tag is what makes a later widening of the gateway's error
@@ -145,6 +150,11 @@ const make = Effect.gen(function* () {
    */
   // EXTENDS the store mapping rather than restating it, so the two cannot drift
   // into disagreeing about what a store failure means.
+  //
+  // BELOW what it spreads, which it was not. It read `storeUnavailableAsRead`
+  // from above its declaration and was correct only because the arrow runs at
+  // request time; hoisting either one into a module-level value would have been
+  // a TDZ crash, and nothing here would have caught it.
   const readFailures = (channelName: string) =>
     ({
       ...storeUnavailableAsRead,
@@ -155,11 +165,6 @@ const make = Effect.gen(function* () {
       ChannelCursorUnusable: () =>
         Effect.fail(new CommsCursorUnusableError({ channel: channelName })),
     }) as const;
-
-  const storeUnavailableAsRead = {
-    ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
-      Effect.fail(new CommsReadFailedError({ detail: error.detail })),
-  } as const;
 
   const storeUnavailableAsWrite = {
     ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
@@ -344,11 +349,14 @@ const make = Effect.gen(function* () {
             // FORWARD, unchanged. `comms_read_channel` documents "oldest
             // first, the first page is the oldest posts", and an agent catching
             // up on a conversation wants it in the order it happened. The
-            // backward read exists for a UI opening a channel on its newest
-            // page, which reaches the gateway through the RPC rather than
-            // through this tool - changing the agent default here would be a
-            // silent change to what "catch up" means, smuggled in with a bug
-            // fix about cursors.
+            // backward read has NO production caller today - it was built
+            // for a UI opening a channel on its newest page, and that UI does
+            // not exist yet. Said as a fact rather than as a wiring diagram,
+            // because the version of this comment that described the RPC it
+            // "reaches the gateway through" was describing something nobody had
+            // written. Changing the agent default here would be a silent change
+            // to what "catch up" means, smuggled in with a bug fix about
+            // cursors.
             direction: "forward",
           })
           .pipe(Effect.catchTags(readFailures(channel.name)), Effect.catchCause(readDefect));

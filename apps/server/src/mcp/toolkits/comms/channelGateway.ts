@@ -270,11 +270,15 @@ export interface ChannelPage {
    * Null means there is nothing further IN THAT DIRECTION — the newest post
    * going forward, the beginning of history going backward.
    *
-   * IT DOES NOT RECORD THE DIRECTION THAT ISSUED IT. A backward cursor is a
-   * well-formed forward cursor and vice versa, so handing one to the other
-   * direction silently reads a window the caller did not ask for. Keep a cursor
-   * with the direction you obtained it from; `t3_bot-e60` carries encoding the
-   * direction into the value so the mismatch becomes a refusal.
+   * IT DOES NOT RECORD THE DIRECTION THAT ISSUED IT, and that is the same lie
+   * this cursor's channel half was introduced to end, one axis over: a forward
+   * cursor read backward answers with the oldest page and `nextCursor: null`,
+   * which is byte for byte "you are caught up" while everything after it is
+   * unread. Measured, not reasoned about - the numbers are on `t3_bot-2oh`,
+   * which carries encoding the direction into the value so the mismatch becomes
+   * a refusal. Until then, keep a cursor with the direction you obtained it
+   * from. Unreachable from production today only because the sole caller
+   * hardcodes forward.
    */
   readonly nextCursor: string | null;
 }
