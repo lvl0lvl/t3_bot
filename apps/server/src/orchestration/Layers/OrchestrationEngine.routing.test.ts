@@ -1,9 +1,11 @@
 import {
+  ChannelId,
   CommandId,
   OrchestrationCommand,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  type OrchestrationAggregateKind,
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -17,6 +19,20 @@ const { commandToAggregateRef } = __testing;
 
 const PROJECT_ID = ProjectId.make("project-under-test");
 const THREAD_ID = ThreadId.make("thread-under-test");
+const CHANNEL_ID = ChannelId.make("channel-under-test");
+
+/**
+ * The id a correctly-routed command of each kind must carry. Keyed on the
+ * contract's own aggregate-kind union rather than a pair of literals, so a
+ * fourth aggregate cannot be added without this failing to compile, and a
+ * command of a kind this file has not considered cannot be silently compared
+ * against the wrong id.
+ */
+const ID_FOR_KIND: Readonly<Record<OrchestrationAggregateKind, string>> = {
+  project: PROJECT_ID,
+  thread: THREAD_ID,
+  channel: CHANNEL_ID,
+};
 const NOW = "2026-01-01T00:00:00.000Z";
 
 /**
@@ -36,7 +52,7 @@ const NOW = "2026-01-01T00:00:00.000Z";
  * `thread.pull-request.sync` into the project group compiles clean and leaves
  * the engine suite green. This table is the assertion the compiler cannot make.
  */
-const EXPECTED_AGGREGATE: Readonly<Record<string, "project" | "thread">> = {
+const EXPECTED_AGGREGATE: Readonly<Record<string, OrchestrationAggregateKind>> = {
   "project.create": "project",
   "project.meta.update": "project",
   "project.delete": "project",
@@ -108,9 +124,11 @@ const declaredCommandTypes = (): ReadonlyArray<string> => {
 };
 
 /**
- * Both ids on every probe, deliberately. A command carrying only the id its own
- * branch reads would be routed correctly by either branch, so the probe has to
- * make the wrong branch *succeed* at producing the wrong answer.
+ * Every id kind on every probe, deliberately. A command carrying only the id
+ * its own branch reads would be routed correctly by any branch, so the probe
+ * has to make the wrong branch *succeed* at producing the wrong answer. Add a
+ * new id here whenever an aggregate kind is added, or that kind's commands
+ * route to `undefined` and the assertion passes for the wrong reason.
  */
 const probe = (type: string): OrchestrationCommand =>
   ({
@@ -118,6 +136,7 @@ const probe = (type: string): OrchestrationCommand =>
     commandId: CommandId.make(`cmd-${type}`),
     projectId: PROJECT_ID,
     threadId: THREAD_ID,
+    channelId: CHANNEL_ID,
   }) as unknown as OrchestrationCommand;
 
 const readModel = (): OrchestrationReadModel => ({
@@ -177,13 +196,16 @@ it("routes every declared command to the aggregate that owns its receipt", () =>
   for (const type of declaredCommandTypes()) {
     const expected = EXPECTED_AGGREGATE[type];
     expect(expected, `${type} is not in the expected-routing table — add it`).toBeDefined();
+    // Unreachable: the assertion above throws. Present so the id lookup below
+    // is indexed by a known kind rather than `string | undefined`.
+    if (expected === undefined) continue;
     const ref = commandToAggregateRef(probe(type));
     expect(ref, `${type} has no branch in commandToAggregateRef`).not.toBeNull();
     expect(ref?.aggregateKind, `${type} routed to the wrong aggregate kind`).toBe(expected);
     // The id matters as much as the kind: a misroute stamps a real aggregate,
     // just the wrong one, and that is what corrupts the receipt.
     expect(ref?.aggregateId, `${type} routed to the wrong aggregate id`).toBe(
-      expected === "project" ? PROJECT_ID : THREAD_ID,
+      ID_FOR_KIND[expected],
     );
   }
 });
