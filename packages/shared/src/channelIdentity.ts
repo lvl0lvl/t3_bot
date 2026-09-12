@@ -60,12 +60,21 @@ export const FORBIDDEN_IN_CANONICAL_IDENTITY =
  * makes this function idempotent, which is what "canonical" has to mean — a
  * stored value must canonicalise to itself.
  *
- * Whitespace is COLLAPSED and variation selectors are STRIPPED, rather than
- * either being refused: a no-break space and a plain space are one identity
- * instead of two that render alike, "my  channel" reaches "my channel", and
- * "boss1" + U+FE0F reaches "boss1" so it collides with the real member instead
- * of storing beside it. Refusing them rejected legitimate input — emoji handles
- * — to fix a spoofing problem that normalising solves outright.
+ * STRIP DECORATION, REFUSE STRUCTURE. That is the rule for anything invisible.
+ * A variation selector or an exotic space is decoration: it changes how the value
+ * renders and not what it is, so it is normalised away, and "boss1" + U+FE0F
+ * collides with the real "boss1" rather than storing beside it. A zero-width
+ * JOINER is structure: it changes which grapheme is produced, so stripping it
+ * would rewrite the name — it is refused instead. Refusing decoration rejected
+ * legitimate input (emoji handles) to fix a spoofing problem that normalising
+ * solves outright.
+ *
+ * This output is an IDENTITY KEY, not a display name, which is what licenses it
+ * to alter what a user typed: lowercasing "Seniors" already does, on the same
+ * principle, and two names differing only by which space they used have to be one
+ * identity. A CJK name's ideographic space becoming a plain one follows from that
+ * rather than being an exception to it. If a display name is ever needed it is a
+ * separate field.
  *
  * It does NOT fold compatibility characters or confusables — NFKC would rewrite
  * them wholesale — so two identities can still render alike. That is bounded
