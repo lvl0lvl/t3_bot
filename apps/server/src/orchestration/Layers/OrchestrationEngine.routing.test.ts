@@ -47,10 +47,16 @@ const NOW = "2026-01-01T00:00:00.000Z";
  * neither can be corrupted by a misplaced case here.
  *
  * `command satisfies never` in that function proves every command has SOME
- * branch. It cannot prove a command sits in the RIGHT one: a payload carrying
- * both a `projectId` and a `threadId` type-checks in either, so moving
- * `thread.pull-request.sync` into the project group compiles clean and leaves
- * the engine suite green. This table is the assertion the compiler cannot make.
+ * branch, and for most commands the compiler already blocks the wrong one: a
+ * payload carrying only a `threadId` does not type-check in the project group,
+ * which rejects 35 of the 40 commands outright.
+ *
+ * The hazard is the commands carrying BOTH ids, because those type-check in
+ * either group. Today that is exactly two — `thread.create` and
+ * `thread.pull-request.sync` — and moving either into the project group
+ * compiles clean and leaves the engine suite green. This table covers them, and
+ * keeps that set honest as payloads gain ids: a command that grows a second id
+ * silently joins the hazardous set without any other signal.
  */
 const EXPECTED_AGGREGATE: Readonly<Record<string, OrchestrationAggregateKind>> = {
   "project.create": "project",
