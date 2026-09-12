@@ -1,10 +1,13 @@
 /**
  * The canonical form of a channel name and of a member handle.
  *
- * ONE implementation, imported by both sides of the comms seam: the decider,
- * which decides what is STORED, and the MCP toolkit, which decides what a
- * lookup SEARCHES for. It lives here rather than next to either because a
- * second copy is the actual defect — the two diverged three times in one
+ * The one place this rule is allowed to live. The decider imports it today. The
+ * MCP toolkit does NOT yet — it still carries its own copy, and replacing that
+ * copy with this import is `t3_bot-iin`. Until then this module is the single
+ * source for one of the two sides, which is half of the point.
+ *
+ * It lives here rather than next to either side because a second copy is the
+ * actual defect — the two diverged three times in one
  * evening (a single sigil versus a run of them, case folding, then NFC), and
  * every time both sides' tests stayed green, because a copy agrees with itself.
  *
@@ -24,34 +27,53 @@
  * CLI output — a stored name carrying a screen-clear sequence is a terminal
  * write, not a label.
  *
- * `\p{C}` covers control, format, surrogate, private-use and unassigned. The
- * separators and U+034F are listed because they fall outside it; U+034F is a
- * combining mark. Confusables are deliberately absent: Cyrillic "о" is a real
- * letter, and rejecting it would refuse legitimate names.
+ * `\p{C}` covers control, format, surrogate, private-use and unassigned, and
+ * `Default_Ignorable_Code_Point` covers the invisibles outside it — variation
+ * selectors U+FE00-FE0F and U+E0100-E01EF, the Hangul and halfwidth fillers, the
+ * Khmer inherent vowels. U+034F is listed separately (a combining mark) and so is
+ * U+2800, BRAILLE PATTERN BLANK, an ordinary symbol that renders as nothing.
+ *
+ * `\p{C}` alone was not enough: a handle of "boss1" plus one variation selector
+ * stored as a second member rendering identically to the first.
+ *
+ * Confusables are deliberately absent: Cyrillic "о" is a real letter, and
+ * rejecting it would refuse legitimate names. Exotic SPACES are not here either —
+ * they are collapsed rather than refused, see canonicalise.
  */
-export const FORBIDDEN_IN_CANONICAL_IDENTITY = /[\p{C}\p{Zl}\p{Zp}͏]/u;
+export const FORBIDDEN_IN_CANONICAL_IDENTITY =
+  /[\p{C}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u034F\u2800]/u;
 
 /**
- * NFC, then trim, strip leading sigils, trim again, repeat to a fixpoint, then
- * lowercase.
+ * Collapse whitespace runs to one plain space, strip leading sigils to a
+ * fixpoint, lowercase, and normalise to NFC LAST.
  *
- * The repeat is what carries "# #seniors" to "seniors": one pass leaves
- * "#seniors", which canonicalises again to something else, so a stored name
- * would not match itself. Each pass strictly shortens the value or ends the
- * loop, so it terminates.
+ * The fixpoint carries "# #seniors" to "seniors": one pass leaves "#seniors",
+ * which canonicalises again to something else, so a stored name would not match
+ * itself. Each pass strictly shortens the value or ends the loop.
  *
- * NFC is not defensive, it is what makes the output a canonical FORM: composed
- * "é" and decomposed "e" + U+0301 are the same text and must be one identity.
- * It does NOT fold compatibility characters — NFKC would rewrite them wholesale
- * — so two identities can still render alike. That is bounded elsewhere, by
- * membership changes requiring a human or system issuer.
+ * NFC IS THE FINAL STEP, and the order is the whole point. Lowercasing can
+ * produce a newly composable sequence, so normalising first and folding second
+ * leaves output that is NOT in NFC: "H" + U+0331 folded to "h" + U+0331 while a
+ * roster held the precomposed U+1E96, and the two stored as separate members
+ * rendering identically. Normalising after the fold makes them one identity and
+ * makes this function idempotent, which is what "canonical" has to mean — a
+ * stored value must canonicalise to itself.
+ *
+ * Whitespace is COLLAPSED rather than refused, so a no-break space and a plain
+ * space are one identity instead of two that render alike, and "my  channel"
+ * reaches "my channel". Refusing exotic spaces would have rejected legitimate
+ * names to fix a spoofing problem that normalising solves outright.
+ *
+ * It does NOT fold compatibility characters or confusables — NFKC would rewrite
+ * them wholesale — so two identities can still render alike. That is bounded
+ * elsewhere, by membership changes requiring a human or system issuer.
  */
 function canonicalise(value: string, sigil: RegExp): string {
-  let current = value.normalize("NFC").trim();
+  let current = value.replace(/\s+/gu, " ").trim();
   for (;;) {
     const next = current.replace(sigil, "").trim();
     if (next === current) {
-      return current.toLowerCase();
+      return current.toLowerCase().normalize("NFC");
     }
     current = next;
   }

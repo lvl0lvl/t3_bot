@@ -54,6 +54,17 @@ export const CANONICAL_IDENTITY_TABLE: ReadonlyArray<readonly [input: string, ca
     // without NFC it is a second channel nobody can tell from the first.
     ["caf\u0065\u0301", "caf\u00e9"],
     ["#CAF\u0045\u0301", "caf\u00e9"],
+    // Lowercasing can make a sequence NEWLY composable, so NFC has to run AFTER
+    // the fold. Normalising first left "H"+U+0331 as "h"+U+0331 while a roster
+    // held the precomposed U+1E96 — two members rendering identically. These are
+    // the rows that tell the two orders apart; no row above can.
+    ["H\u0331", "\u1e96"],
+    ["\u1e96", "\u1e96"],
+    ["J\u030C", "\u01f0"],
+    // Exotic spaces are collapsed, not refused: a no-break space and a plain
+    // space must be one identity rather than two that render alike.
+    ["a\u00A0b", "a b"],
+    ["my  channel", "my channel"],
   ];
 
 /**
@@ -91,8 +102,13 @@ it("keeps every row of the table reachable by the loops below", () => {
   // The tripwire. Each count is the number of rows some loop depends on, so a
   // trimmed table fails here rather than quietly emptying a filter and leaving
   // a loop that asserts nothing.
+  // ABSOLUTE counts. `NAMED_ROWS.length === TABLE.length - 3` held for ANY table
+  // with three empty rows: trimming this table from 17 rows to 9 — losing both
+  // NFC rows, both fixpoint rows and the non-leading-sigil rows — left it green.
+  // A tripwire derived from the thing it guards is not a tripwire.
+  expect(CANONICAL_IDENTITY_TABLE.length, "a row was removed; each one guards a rule").toBe(22);
   expect(EMPTY_ROWS.length, "the empty rows are the only coverage the refusals have").toBe(3);
-  expect(NAMED_ROWS.length).toBe(CANONICAL_IDENTITY_TABLE.length - 3);
+  expect(NAMED_ROWS.length).toBe(19);
   expect(
     HANDLE_EMPTY_ROWS.length,
     "the handle loop derives its own rows and needs its own count",

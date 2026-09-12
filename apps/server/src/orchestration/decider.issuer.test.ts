@@ -3,6 +3,7 @@ import {
   ChannelMemberHandle,
   ChannelPostId,
   CommandId,
+  CommandIssuer as CommandIssuerSchema,
   OrchestrationCommand,
   type CommandIssuer,
   type OrchestrationReadModel,
@@ -126,6 +127,16 @@ function channelCommandTypes(): ReadonlyArray<string> {
 }
 
 it.layer(NodeServices.layer)("command issuer authorization", (it) => {
+  it("pins the issuer kinds, so adding one cannot silently gain access", () => {
+    // Both guards are allow-lists naming "human", "thread" and "system". A kind
+    // added to CommandIssuer is refused by default rather than granted, but only
+    // as long as somebody notices it needs a decision — this is that notice.
+    const kinds = (
+      CommandIssuerSchema.fields.memberKind as { readonly literals: ReadonlyArray<string> }
+    ).literals;
+    expect([...kinds].sort()).toEqual(["human", "system", "thread"]);
+  });
+
   it("finds every channel command in the union", () => {
     // If this drops to zero the traversal broke and every test below turns
     // vacuous while still passing.
@@ -318,13 +329,18 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       // "Non-empty after trim" admitted these: String.trim removes no control or
       // format character, so a handle of one zero-width space was storable, and
       // an invisible-prefixed "boss1" rendered exactly like the real member.
-      const invisible: ReadonlyArray<readonly [label: string, handle: string]> = [
-        ["U+200B alone", "\u200B"],
-        ["trailing U+200B", "boss1\u200B"],
-        ["leading U+200B", "\u200Bboss1"],
-        ["trailing NUL", "boss1\u0000"],
+      const invisible: ReadonlyArray<
+        readonly [label: string, handle: string, expectedCodePoint: string]
+      > = [
+        ["trailing U+200B", "boss1\u200B", "U+200B"],
+        ["leading U+200B", "\u200Bboss1", "U+200B"],
+        ["trailing NUL", "boss1\u0000", "U+0000"],
+        // \p{C} alone missed these: a variation selector is invisible and made a
+        // second member render identically to the first.
+        ["trailing variation selector", "boss1\uFE0F", "U+FE0F"],
+        ["hangul filler", "boss1\u3164", "U+3164"],
       ];
-      for (const [label, handle] of invisible) {
+      for (const [label, handle, expectedCodePoint] of invisible) {
         const error = yield* decideOrchestrationCommand({
           command: {
             type: "channel.member.add",
@@ -337,7 +353,13 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
         }).pipe(Effect.flip);
         expect(error._tag, label).toBe("OrchestrationCommandInvariantError");
         if (error._tag === "OrchestrationCommandInvariantError") {
-          expect(error.detail, label).toMatch(/no canonical form|cannot appear in a stored handle/);
+          // NOT a disjunction. Every one of these rows takes the invisible-character
+          // branch, so `/no canonical form|cannot appear.../` had a dead half and
+          // could not tell the two handle guards apart: collapsing both into one
+          // message passed the whole suite. The code point is asserted here too,
+          // because it was only ever pinned on the NAME path.
+          expect(error.detail, label).toContain("cannot appear in a stored handle");
+          expect(error.detail, label).toContain(expectedCodePoint);
         }
       }
     }),

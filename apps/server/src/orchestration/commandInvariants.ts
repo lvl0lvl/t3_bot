@@ -89,18 +89,21 @@ export function requireIssuerCanAuthor(input: {
   readonly command: OrchestrationCommand;
   readonly issuer: CommandIssuer;
 }): Effect.Effect<ChannelAuthorRef, OrchestrationCommandInvariantError> {
-  if (input.issuer.memberKind === "system") {
-    return Effect.fail(
-      invariantError(
-        input.command.type,
-        "A system issuer has no handle and cannot author a channel post.",
-      ),
-    );
+  // An ALLOW-list, named kind by kind. Written as `!== "system"` this granted
+  // authorship to any kind added to CommandIssuer later — one contract edit
+  // away from the fail-open bug this whole change exists to close.
+  if (input.issuer.memberKind === "human" || input.issuer.memberKind === "thread") {
+    return Effect.succeed({
+      memberKind: input.issuer.memberKind,
+      memberId: input.issuer.memberId,
+    });
   }
-  return Effect.succeed({
-    memberKind: input.issuer.memberKind,
-    memberId: input.issuer.memberId,
-  });
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `A '${input.issuer.memberKind}' issuer has no handle and cannot author a channel post.`,
+    ),
+  );
 }
 
 /**
@@ -116,13 +119,15 @@ export function requireIssuerCanAdminister(input: {
   readonly command: OrchestrationCommand;
   readonly issuer: CommandIssuer;
 }): Effect.Effect<void, OrchestrationCommandInvariantError> {
-  if (input.issuer.memberKind !== "thread") {
+  // An ALLOW-list for the same reason as above: `!== "thread"` granted channel
+  // administration to every kind that did not exist yet.
+  if (input.issuer.memberKind === "human" || input.issuer.memberKind === "system") {
     return Effect.void;
   }
   return Effect.fail(
     invariantError(
       input.command.type,
-      `A thread issuer cannot administer a channel: '${input.command.type}' requires a human or system issuer.`,
+      `A '${input.issuer.memberKind}' issuer cannot administer a channel: '${input.command.type}' requires a human or system issuer.`,
     ),
   );
 }
