@@ -190,6 +190,43 @@ const channelMissing = Layer.effect(
 );
 
 /**
+ * The real channel repository, reporting the mentioned member as a HUMAN that
+ * carries a thread's id.
+ *
+ * This used to be built by dispatching `channel.member.add`. It cannot be any
+ * more: `t3_bot-8i2` added `requireChannelMemberShape`, and the decider now
+ * refuses that command outright — the setup is rejected long before the reactor
+ * is reached.
+ *
+ * The ROW is still reachable, which is why the reactor's `memberKind` filter is
+ * not dead code and this test is not theatre. That invariant runs on COMMANDS;
+ * projections are built from EVENTS, and a `channel.member-added` accepted
+ * before 8i2 landed replays into the projection untouched. So this is the exact
+ * state a database upgraded across 8i2 holds, and on that database the reactor
+ * is the only thing between an impostor row and a woken thread.
+ */
+const mentionedMemberAsHuman = Layer.effect(
+  ProjectionChannelRepository,
+  Effect.gen(function* () {
+    const real = yield* ProjectionChannelRepository;
+    return {
+      ...real,
+      getChannelById: (channelId) =>
+        real.getChannelById(channelId).pipe(
+          Effect.map(
+            Option.map((channel) => ({
+              ...channel,
+              members: channel.members.map((member) =>
+                member.handle === MENTION ? { ...member, memberKind: "human" as const } : member,
+              ),
+            })),
+          ),
+        ),
+    } satisfies ProjectionChannelRepositoryShape;
+  }),
+);
+
+/**
  * The real engine, with every dispatched command recorded.
  *
  * A TAP rather than a stand-in: the reactor also takes `latestSequence` and
@@ -838,33 +875,17 @@ describe("MentionWakeReactor", () => {
 
   it("does not wake a thread because a HUMAN member carries its id", async () => {
     const { directory, databasePath } = await makeDatabasePath();
-    const system = await makeSystem(databasePath);
+    // The membership the decider would refuse today, which a database written
+    // before `t3_bot-8i2` still holds. See `mentionedMemberAsHuman`.
+    const system = await makeSystem(databasePath, { channels: mentionedMemberAsHuman });
     try {
       await seedChannel(system);
-      // memberId is a TrimmedNonEmptyString on both member kinds, so nothing
-      // stops a human member being added with a thread's id. Mentioning that
-      // human must not wake the thread: memberKind is what separates them, and
-      // the thread lookup alone does not - it happily finds a real thread.
-      await system.run(
-        system.engine.dispatch(
-          {
-            type: "channel.member.add",
-            commandId: CommandId.make("cmd-member-impostor"),
-            channelId: CHANNEL_ID,
-            member: {
-              handle: ChannelMemberHandle.make("impostor"),
-              memberKind: "human",
-              memberId: WOKEN,
-            },
-          },
-          { issuer: WALT },
-        ),
-      );
       await system.startReactor();
-      await post(system, {
-        id: "post-impostor",
-        mentions: [ChannelMemberHandle.make("impostor")],
-      });
+      // memberId is a TrimmedNonEmptyString on both member kinds, so the row
+      // carries a real thread's id and the thread lookup alone does not tell
+      // them apart — it happily finds a live thread. `memberKind` is the only
+      // thing that does.
+      await post(system, { id: "post-impostor", mentions: [MENTION] });
       await system.run(
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );

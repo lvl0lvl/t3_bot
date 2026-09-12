@@ -295,6 +295,17 @@ const make = Effect.gen(function* () {
         channel.value.members
           .filter(
             (member) =>
+              // `t3_bot-8i2` closed this at the decider: `channel.member.add`
+              // now refuses a human member carrying a thread's id, so no
+              // command can build the row this rejects. The check stays, and
+              // not merely as defence in depth.
+              //
+              // That invariant runs on COMMANDS. Projections are built from
+              // EVENTS, and a `channel.member-added` accepted before 8i2 landed
+              // replays into the projection untouched — so on any database that
+              // existed first, this line is the only thing between an impostor
+              // row and a woken thread. A decider regression would be the
+              // second way back here, not the first.
               member.memberKind === "thread" &&
               mentioned.has(member.handle) &&
               // Never the author. An agent does not need telling about its own

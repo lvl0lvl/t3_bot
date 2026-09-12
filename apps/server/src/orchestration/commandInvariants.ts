@@ -325,6 +325,62 @@ export function requireCanonicalChannelHandle(input: {
   return Effect.succeed(canonical as ChannelMemberHandle);
 }
 
+/**
+ * A member's `memberId` must be the shape its `memberKind` claims.
+ *
+ * `memberKind` decides what a member IS — a thread that can be woken, or a human
+ * who cannot. Nothing checked that the id matched the claim, so a `human` member
+ * could carry a real thread's id, and a `thread` member could carry an id no
+ * thread has. The first is an impersonation route: the human member appears in
+ * the roster alongside the thread it names, and anything that resolves a member
+ * to a thread by id reaches the real one.
+ *
+ * A `thread` member must resolve to a LIVE thread. Deletion is soft, and a member
+ * pointing at a deleted thread is a member no mention can ever wake — accepting
+ * it stores a roster entry that looks like a participant and is not one.
+ *
+ * The toolkit checks this too, for an agent-readable error. This is the guarantee:
+ * its check and this write are not atomic, and every future caller inherits
+ * whatever the aggregate accepts.
+ */
+export function requireChannelMemberShape(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly member: ChannelMember;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  const namedThread = input.readModel.threads.find(
+    (thread) => (thread.id as string) === (input.member.memberId as string),
+  );
+  if (input.member.memberKind === "thread") {
+    if (namedThread === undefined) {
+      return Effect.fail(
+        invariantError(
+          input.command.type,
+          `Member '${input.member.handle}' claims memberKind 'thread' but '${input.member.memberId}' is not a thread.`,
+        ),
+      );
+    }
+    if (namedThread.deletedAt !== null) {
+      return Effect.fail(
+        invariantError(
+          input.command.type,
+          `Member '${input.member.handle}' names deleted thread '${input.member.memberId}', which can never be woken.`,
+        ),
+      );
+    }
+    return Effect.void;
+  }
+  if (namedThread !== undefined) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        `Member '${input.member.handle}' claims memberKind 'human' but '${input.member.memberId}' is a thread id.`,
+      ),
+    );
+  }
+  return Effect.void;
+}
+
 /** A member with its handle canonicalised, refusing one with no canonical form. */
 export function requireCanonicalChannelMember(input: {
   readonly command: OrchestrationCommand;

@@ -2194,8 +2194,39 @@ describe("OrchestrationEngine", () => {
     let system = await createOrchestrationSystem(databasePath);
     const channelId = ChannelId.make("channel-seniors");
     const boss1 = ChannelMemberHandle.make("boss1");
+    const memberProjectId = asProjectId("project-channel-restart");
+    const memberThreadId = ThreadId.make("thread-boss1");
 
     try {
+      // The channel's member claims memberKind "thread", so the thread has to
+      // exist: the decider refuses a member naming a thread it cannot resolve,
+      // because that member can never be woken. Creating it here is what makes
+      // this fixture a real read model rather than a plausible-looking one.
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-channel-restart-project"),
+          projectId: memberProjectId,
+          title: "Channel restart",
+          workspaceRoot: "/tmp/channel-restart",
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-channel-restart-thread"),
+          threadId: memberThreadId,
+          projectId: memberProjectId,
+          title: "Channel restart",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
       await system.run(
         system.engine.dispatch(
           {

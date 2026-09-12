@@ -46,6 +46,7 @@ import {
   requireChannelAbsent,
   requireChannelAuthorIsMember,
   requireChannelHandlesUnique,
+  requireChannelMemberShape,
   requireChannelMentionsResolve,
   requireChannelArchived,
   requireChannelNameAvailable,
@@ -2053,6 +2054,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const members = yield* Effect.forEach(command.members, (member) =>
         requireCanonicalChannelMember({ command, member }),
       );
+      yield* Effect.forEach(members, (member) =>
+        requireChannelMemberShape({ readModel, command, member }),
+      );
       yield* requireChannelHandlesUnique({ command, members });
       const name = yield* requireCanonicalChannelName({ command, name: command.name });
       yield* requireChannelNameAvailable({ readModel, command, name });
@@ -2176,6 +2180,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // are both changes with no effect anyone can observe.
       yield* requireChannelNotArchived({ command, channel });
       const member = yield* requireCanonicalChannelMember({ command, member: command.member });
+      yield* requireChannelMemberShape({ readModel, command, member });
       yield* requireChannelHandlesUnique({
         command,
         members: [...channel.members, member],
