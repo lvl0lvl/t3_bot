@@ -68,14 +68,6 @@
       "replace": "  if (directionBoundary !== -1) {"
     },
     {
-      "id": "first-colon-not-required",
-      "guard": "decodeChannelCursor/segments",
-      "axis": "inert",
-      "file": "apps/server/src/orchestration/channelCursor.ts",
-      "find": "  if (boundary === -1) {",
-      "replace": "  if (false as boolean) {"
-    },
-    {
       "id": "digits-admit-what-Number-coerces",
       "guard": "decodeChannelCursor/digits",
       "axis": "inert",

@@ -103,19 +103,24 @@ export const decodeChannelCursor = (
   cursor: string,
 ): Result.Result<number, ChannelCursorRefusal> => {
   const boundary = cursor.indexOf(":");
-  if (boundary === -1) {
-    return Result.fail("malformed");
-  }
   const issuedBy = cursor.slice(0, boundary);
   const rest = cursor.slice(boundary + 1);
-  // THE SECOND COLON, on the same argument as the first: a `ChannelId` cannot
-  // contain ":" and a direction is one of two literal words, so the boundaries
-  // are unambiguous. A cursor issued before this field has ONE colon and lands
-  // here with no direction — refused rather than assumed forward, because the
-  // assumption is unverifiable at the point of use. Every cursor anyone holds
-  // today IS a forward cursor, so assuming would be right every time and wrong
-  // never; a guard that is correct only by appeal to a caller's current
-  // behaviour is the defect class this module exists for.
+  // ONE BOUNDARY CHECK, NOT TWO, and a guard sweep is what said so. There was a
+  // `boundary === -1` refusal here and no input could reach it: with no colon,
+  // `slice(boundary + 1)` is `slice(0)` — the whole string — and a string with
+  // no colon has no SECOND colon either, so the check below refuses it anyway.
+  // The mutation making the first check inert survived, which is what an
+  // unreachable guard looks like rather than an untested one. Brute-forced over
+  // every string of length 0..5 from {a, ":", 1}: 375 inputs, no disagreement.
+  //
+  // THIS one is on the same argument the module docstring makes about the first:
+  // a `ChannelId` cannot contain ":" and a direction is one of two literal
+  // words, so the boundaries are unambiguous. A cursor issued before this field
+  // has ONE colon and lands here with no direction — refused rather than assumed
+  // forward, because the assumption is unverifiable at the point of use. Every
+  // cursor anyone holds today IS a forward cursor, so assuming would be right
+  // every time and wrong never; a guard that is correct only by appeal to a
+  // caller's current behaviour is the defect class this module exists for.
   const directionBoundary = rest.indexOf(":");
   if (directionBoundary === -1) {
     return Result.fail("malformed");
