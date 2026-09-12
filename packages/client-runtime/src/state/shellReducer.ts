@@ -40,6 +40,31 @@ export function applyShellStreamEvent(
         threads: Arr.filter(snapshot.threads, (t) => t.id !== event.threadId),
         snapshotSequence: event.sequence,
       };
+    case "channel-upserted": {
+      // `channels` is optional on the wire so a snapshot cached from a server
+      // without channels still decodes. An upsert is the point at which this
+      // client learns the server HAS them, so materialising the field here is
+      // reporting what arrived rather than inventing it.
+      const existing = snapshot.channels ?? [];
+      const channels = existing.some((c) => c.id === event.channel.id)
+        ? Arr.map(existing, (c) => (c.id === event.channel.id ? event.channel : c))
+        : Arr.append(existing, event.channel);
+      return { ...snapshot, channels, snapshotSequence: event.sequence };
+    }
+    case "channel-removed":
+      // ABSENT AND EMPTY ARE DIFFERENT, and a removal must not convert one into
+      // the other. `undefined` means "this server never told us about channels";
+      // `[]` means "you are in none". Writing `[]` here on a snapshot that has
+      // no field would claim the second on the strength of the first, and the
+      // sidebar renders those two states differently — "no channels yet" versus
+      // nothing at all.
+      return snapshot.channels === undefined
+        ? { ...snapshot, snapshotSequence: event.sequence }
+        : {
+            ...snapshot,
+            channels: Arr.filter(snapshot.channels, (c) => c.id !== event.channelId),
+            snapshotSequence: event.sequence,
+          };
     default:
       return snapshot;
   }
