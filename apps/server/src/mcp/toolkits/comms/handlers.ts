@@ -20,15 +20,57 @@ import {
 } from "./tools.ts";
 
 /**
- * Agents write "#seniors" and "seniors" interchangeably, and the sigil can hide
- * whitespace, so the trim runs on both sides of the strip. A name that is only
- * sigils and spaces normalizes to empty and must be rejected rather than looked
- * up.
+ * Trim, strip leading sigils, trim again, and repeat until nothing more comes
+ * off. One pass is not enough: a sigil can hide behind whitespace that a
+ * previous strip exposed, so `"# #seniors"` loses one `#`, then the space, and
+ * would keep the second `#` forever.
+ *
+ * Shared by both canonicalizers because the stripping rule is genuinely the
+ * same; whether the result is then case-folded is not, and that difference
+ * stays at each caller where a reader can see it.
  */
-export const normalizeChannelName = (name: string): string => name.trim().replace(/^#+/, "").trim();
+const stripLeadingSigils = (value: string, sigil: RegExp): string => {
+  // NFC first, because the decider canonicalizes to it and matching downstream
+  // is byte-exact. Without it a composed and a decomposed spelling of the same
+  // text are two different keys: an agent that types "café" decomposed misses a
+  // channel stored composed, and is told no such channel exists. This is what
+  // makes the result a canonical FORM rather than a tidied string — not a guard
+  // against bad input.
+  let current = value.normalize("NFC").trim();
+  for (;;) {
+    const next = current.replace(sigil, "").trim();
+    if (next === current) return current;
+    current = next;
+  }
+};
 
-/** Same for "@boss1" and "boss1". */
-const normalizeHandle = (handle: string): string => handle.trim().replace(/^@+/, "").trim();
+/**
+ * Trim, strip leading "#" to fixpoint, lowercase. A name of only sigils and
+ * whitespace canonicalizes to empty and must be rejected rather than looked up.
+ *
+ * The lowercasing is not the toolkit's rule to make: the decider canonicalizes
+ * on the way in, so the projection only ever holds lowercase and an exact
+ * lookup cannot match anything else.
+ */
+export const canonicalChannelName = (name: string): string =>
+  stripLeadingSigils(name, /^#+/).toLowerCase();
+
+/**
+ * The same stripping rule as a channel name, WITHOUT the case fold — and that
+ * omission is deliberate rather than an oversight.
+ *
+ * The aggregate keys handles byte-exactly: `ChannelMemberHandle` is a branded
+ * `TrimmedNonEmptyString` with no case rule, `canonicalChannelName` is applied
+ * only to a channel's name, `requireChannelMentionsResolve` tests membership
+ * with an exact Set, and `projection_channel_members` is keyed
+ * `(channel_id, handle)` with no collation. So a member stored as "Boss1" is
+ * mentioned as "Boss1"; emitting "boss1" gets the whole post rejected as an
+ * unresolvable mention.
+ *
+ * Canonical handles are the intended end state (t3_bot-iin), and they have to
+ * land in the aggregate first. Do not fold here until they have.
+ */
+const canonicalHandle = (handle: string): string => stripLeadingSigils(handle, /^@+/);
 
 /**
  * Mentions the agent asked for, resolved against the channel's membership, with
@@ -39,30 +81,68 @@ const normalizeHandle = (handle: string): string => handle.trim().replace(/^@+/,
  * way to tell that from a delivered one. It reports every bad handle at once so
  * a retry does not discover them one at a time.
  *
- * Both sides of the comparison are normalized, and the NORMALIZED handle is
- * what is emitted — keying on one form and emitting another lets two members
- * whose handles differ only by a sigil collapse into one entry and resolve a
- * mention to the wrong member.
+ * Matching is forgiving, DELIVERY IS NOT. Both sides of the lookup are
+ * normalized so an agent can write "@Boss1", "boss1" or "  @boss1  " and reach
+ * the same member — but a RESOLVED handle goes out as the member's own stored
+ * bytes, because the aggregate resolves a mention against its membership with
+ * an exact comparison. Emitting the normalized key instead makes a member
+ * stored as "@@PM" unmentionable: every spelling an agent would type collapses
+ * to "PM", and "PM" resolves to nobody, so the whole post is rejected.
+ *
+ * An UNRESOLVED handle is different and deliberately so: it goes out in
+ * canonical form, in the error. Nothing matches against it, and showing the
+ * agent the form the lookup actually used is the only diagnostic that error
+ * can carry. The rule is not "canonical output never leaves this function" —
+ * it does — but that it never leaves as a value something else will compare.
+ *
+ * That is the same defect as folding case, one axis over, and emitting the
+ * stored handle closes both at once — it is correct for whatever the aggregate
+ * holds rather than correct only while the toolkit and the aggregate agree.
+ *
+ * AN EXACT MATCH WINS. Members can share a canonical key — "boss1" and
+ * "@boss1" both key on "boss1" — and the forgiving map keeps whichever came
+ * last, so an agent naming one member byte-for-byte could wake the other and
+ * be told it succeeded. Trying the raw handle first removes that: the only
+ * cases left to insertion order are the ones where the agent's spelling
+ * genuinely matches neither member exactly, where there is nothing to choose
+ * between them.
  */
 export function resolveMentions(
   requested: ReadonlyArray<string>,
   members: ReadonlyArray<ChannelGateway.ChannelMember>,
 ): { readonly handles: ReadonlyArray<string> } | { readonly unknown: ReadonlyArray<string> } {
+  const byExactHandle = new Map(members.map((member) => [member.handle, member] as const));
+  // Empty keys are kept out deliberately. A member whose handle canonicalizes
+  // to nothing — "@" — would otherwise be reachable through this map by any
+  // spelling that also canonicalizes to nothing, so a stray space or a bare
+  // "@@" from the agent would wake a real member on a post addressed to
+  // nobody. Such a member is still reachable by its exact handle above.
   const byHandle = new Map(
-    members.map((member) => [normalizeHandle(member.handle), member] as const),
+    members
+      .map((member) => [canonicalHandle(member.handle), member] as const)
+      .filter(([key]) => key.length > 0),
   );
   const handles: Array<string> = [];
   const unknown: Array<string> = [];
   const seenHandles = new Set<string>();
   const seenUnknown = new Set<string>();
   for (const entry of requested) {
-    const handle = normalizeHandle(entry);
-    if (handle.length === 0) continue;
-    if (byHandle.has(handle)) {
-      if (!seenHandles.has(handle)) {
-        seenHandles.add(handle);
-        handles.push(handle);
+    const handle = canonicalHandle(entry);
+    const member = byExactHandle.get(entry.trim()) ?? byHandle.get(handle);
+    // Keyed on the member rather than on the spelling: two members CAN be named
+    // in one post now that an exact match wins, and keying on the canonical
+    // form would silently drop the second of them.
+    if (member !== undefined) {
+      if (!seenHandles.has(member.handle)) {
+        seenHandles.add(member.handle);
+        handles.push(member.handle);
       }
+    } else if (handle.length === 0) {
+      // Noise an agent's formatting produced — "@" on its own, a stray space.
+      // Deliberately ignored rather than failing the post, and reachable only
+      // when no member is spelled that way, since an exact match is tried
+      // first and wins.
+      continue;
     } else if (!seenUnknown.has(handle)) {
       seenUnknown.add(handle);
       unknown.push(handle);
@@ -130,7 +210,7 @@ const make = Effect.gen(function* () {
     isWrite: boolean,
   ) {
     const scope = yield* McpInvocationContext.requireMcpCapability("comms");
-    const normalized = normalizeChannelName(name);
+    const normalized = canonicalChannelName(name);
     if (normalized.length === 0) {
       return yield* new CommsChannelNotFoundError({ channel: normalized });
     }
@@ -230,9 +310,12 @@ const make = Effect.gen(function* () {
           .pipe(Effect.catchTags(storeUnavailableAsRead), Effect.catchCause(readDefect));
         return {
           channel: channel.name,
-          // The canonical form, matching what a mention resolves against; the
-          // seam documents handles as sigil-free but does not yet enforce it.
-          members: channel.members.map((member) => normalizeHandle(member.handle)),
+          // The members' own stored handles, byte for byte. The aggregate
+          // matches a mention against its membership exactly, so any tidying
+          // here — folding case, stripping a sigil — hands the agent a string
+          // guaranteed to resolve to nobody, and the post it is used in is
+          // rejected whole.
+          members: channel.members.map((member) => member.handle),
           posts: page.posts.map((post) => ({
             postId: post.postId,
             author: post.authorHandle,

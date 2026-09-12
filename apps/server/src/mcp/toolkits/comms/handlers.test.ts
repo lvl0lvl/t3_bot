@@ -9,7 +9,7 @@ import type { Tool } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ChannelGateway from "./channelGateway.ts";
-import { CommsToolkitHandlersLive, normalizeChannelName, resolveMentions } from "./handlers.ts";
+import { CommsToolkitHandlersLive, canonicalChannelName, resolveMentions } from "./handlers.ts";
 import { CommsToolkit } from "./tools.ts";
 
 const THREAD_ID = ThreadId.make("thread-boss3");
@@ -69,6 +69,8 @@ interface HarnessOptions {
   }>;
   readonly posts?: ReadonlyArray<ChannelGateway.ChannelPostRecord>;
   readonly failures?: GatewayFailures;
+  /** Overridden only where a handle's exact bytes are the thing under test. */
+  readonly members?: ReadonlyArray<ChannelGateway.ChannelMember>;
 }
 
 const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: HarnessOptions = {}) {
@@ -77,6 +79,7 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
   ];
   const allPosts = options.posts ?? [];
   const fail = options.failures ?? {};
+  const members = options.members ?? MEMBERS;
   const created = yield* Ref.make<ReadonlyArray<ChannelGateway.CreatePostInput>>([]);
   const reads = yield* Ref.make<ReadonlyArray<ChannelGateway.ReadPostsInput>>([]);
   const postLookups = yield* Ref.make<ReadonlyArray<readonly [string, string]>>([]);
@@ -103,7 +106,7 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
               Option.map((channel): ChannelGateway.Channel => ({
                 channelId: CHANNEL_ID,
                 name: channel.name,
-                members: MEMBERS,
+                members,
               })),
             ),
           ),
@@ -192,7 +195,11 @@ describe("comms toolkit handlers", () => {
         capability: "comms",
         threadId: THREAD_ID,
       });
-      // The refusal must happen before the write, not after it.
+      // Before the LOOKUP, not merely before the write. A credential without
+      // the comms capability that still reaches the channel store has probed
+      // it — asserting only on `created` passes whether the check runs first
+      // or last, because a refused call writes nothing either way.
+      expect(yield* Ref.get(harness.channelLookups)).toEqual([]);
       expect(yield* Ref.get(harness.created)).toEqual([]);
     }),
   );
@@ -253,6 +260,23 @@ describe("comms toolkit handlers", () => {
     }),
   );
 
+  it.effect("names the canonical form it looked for, not what the agent typed", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const error = yield* harness
+        .call("comms_post", { channel: "# #Cafe\u0301  ", body: "x" })
+        .pipe(Effect.flip);
+      // The one diagnostic this error can carry. It is deliberately the same
+      // answer a non-member gets, so the agent cannot be told WHY it missed —
+      // but it can be told WHAT was looked up, and an agent that sees a
+      // canonical form it did not type learns the rule from the failure.
+      expect(error).toMatchObject({
+        _tag: "CommsChannelNotFoundError",
+        channel: "caf\u00E9",
+      });
+    }),
+  );
+
   it.effect("rejects a channel name that is only sigils and whitespace", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
@@ -260,7 +284,11 @@ describe("comms toolkit handlers", () => {
         const error = yield* harness.call("comms_post", { channel, body: "x" }).pipe(Effect.flip);
         expect(error).toMatchObject({ _tag: "CommsChannelNotFoundError", channel: "" });
       }
-      // An empty name must never reach the gateway as a lookup.
+      // The assertion the comment above always meant: no LOOKUP, not no write.
+      // `created` records posts; a gateway called with "" and answering None
+      // writes nothing either, so asserting on it passed whether the guard ran
+      // before the lookup or after it.
+      expect(yield* Ref.get(harness.channelLookups)).toEqual([]);
       expect(yield* Ref.get(harness.created)).toEqual([]);
     }),
   );
@@ -270,6 +298,96 @@ describe("comms toolkit handlers", () => {
       const harness = yield* makeHarness();
       const result = yield* harness.call("comms_post", { channel: "# seniors", body: "hi" });
       expect(result.channel).toEqual("seniors");
+    }),
+  );
+
+  /**
+   * THE SHARED CANONICAL TABLE. One rule, two implementations: this one and
+   * the decider's `canonicalChannelName`. They have already disagreed — the
+   * toolkit stripped every leading sigil and the decider stripped one, so
+   * `##seniors` reached two different channels depending on which you asked.
+   *
+   * The decider is meant to assert this same list; until it does, this table
+   * pins one side of a rule that spans two, and agreement is still checked by
+   * hand. Do not read a green here as the two sides agreeing.
+   *
+   * Rule (pm, 2026-09-11): trim, strip all leading sigils, trim, lowercase.
+   */
+  it("canonicalizes a channel name the way the aggregate stores it", () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ["seniors", "seniors"],
+      ["  seniors  ", "seniors"],
+      ["#seniors", "seniors"],
+      ["##seniors", "seniors"],
+      ["###a", "a"],
+      // Case alone, with and without a sigil: the reason this rule exists.
+      ["Seniors", "seniors"],
+      ["#SENIORS", "seniors"],
+      ["  ##SENIORS  ", "seniors"],
+      ["# seniors", "seniors"],
+      // A sigil hiding behind whitespace a previous strip exposed. One pass
+      // leaves the second "#" on forever, which is what makes this rule a
+      // fixpoint rather than a sequence of steps.
+      ["# #seniors", "seniors"],
+      ["#  #  x", "x"],
+      // Only sigils and whitespace: empty. The toolkit rejects these before any
+      // lookup; the decider rejects them rather than storing a nameless channel.
+      ["#", ""],
+      ["##", ""],
+      ["#   ", ""],
+      // A sigil that is not leading is part of the name, not decoration.
+      // Composed and decomposed spellings of one name are one channel. The
+      // decider normalizes to NFC on the way in, so a lookup that does not
+      // is a lookup that misses a channel that exists.
+      ["Caf\u00E9", "caf\u00E9"],
+      ["Cafe\u0301", "caf\u00E9"],
+      ["#-#", "-#"],
+      ["a#b", "a#b"],
+    ];
+    // Paired with the input so a failure names the row that moved, and paired
+    // rather than joined into one string because five of these rows expect an
+    // empty or whitespace-only result. Joined, a leaked space reads as
+    // `"# seniors ->  seniors"` and is invisible; paired, the quotes delimit it.
+    expect(cases.map(([input]) => [input, canonicalChannelName(input)])).toEqual(
+      cases.map(([input, want]) => [input, want]),
+    );
+  });
+
+  it.effect("finds a channel whatever case the agent types", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const result = yield* harness.call("comms_post", {
+        channel: "  ##SENIORS  ",
+        body: "case should not matter",
+      });
+      expect(result.channel).toEqual("seniors");
+      // The canonical form is what reaches the seam. Matching there is exact,
+      // so anything else reads as "no such channel" — which is deliberately the
+      // same answer a non-member gets, and therefore undiagnosable.
+      expect(yield* Ref.get(harness.channelLookups)).toEqual([["seniors", THREAD_ID]]);
+    }),
+  );
+
+  it.effect("passes a mention through with its case intact", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        // A handle the aggregate accepts and stores as typed: ChannelMemberHandle
+        // is a trimmed non-empty string with no case rule.
+        members: [{ handle: "Boss1", memberKind: "thread", memberId: OTHER_THREAD_ID }],
+      });
+      const result = yield* harness.call("comms_post", {
+        channel: "seniors",
+        body: "over to you",
+        mentions: ["@Boss1"],
+      });
+      // Byte-identical to the stored handle, because that is what the aggregate
+      // compares against. Folding case here makes the post fail as a whole:
+      // requireChannelMentionsResolve tests an exact Set, so "boss1" resolves to
+      // nobody and the agent is told the member it just named does not exist —
+      // under a name it never typed. Channel NAMES fold; handles do not, until
+      // the aggregate canonicalizes them (t3_bot-iin).
+      expect(result.mentioned).toEqual(["Boss1"]);
+      expect((yield* Ref.get(harness.created))[0]?.mentions).toEqual(["Boss1"]);
     }),
   );
 
@@ -310,11 +428,38 @@ describe("comms toolkit handlers", () => {
 
   it.effect("reports member handles in the same form a mention resolves against", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness();
+      // Deliberately NOT the default fixture. Those handles are already their
+      // own normalized form, so the assertion passed whether the read path
+      // normalized them, folded them, or did nothing at all — a guard with no
+      // sensitivity to the thing it guards.
+      //
+      // Each of these is legal: ChannelMemberHandle is a branded
+      // TrimmedNonEmptyString and imposes nothing else. Between them they pin
+      // that the read path strips LEADING sigils and changes NOTHING else —
+      // not case, not a trailing sigil, not internal spacing, and not Unicode
+      // form. Three of them cover Unicode, and it takes three: the fullwidth B
+      // catches NFKC and NFKD, the COMPOSED e catches NFD, and the DECOMPOSED
+      // e catches NFC — no single string catches both NFC and NFD, because a
+      // string is stable under one exactly when it moves under the other. NFC
+      // is the one that matters most: "normalize before comparing" is standard
+      // advice and NFC is what people reach for, so the axis most likely to be
+      // added is the axis a composed-only fixture cannot see. Every one of those is "one more normalization
+      // step, surely harmless" — the exact shape of the regression this echo
+      // already carried once.
+      const harness = yield* makeHarness({
+        members: [
+          { handle: "@@PM", memberKind: "thread", memberId: "thread-pm" },
+          { handle: "Big  \uFF22oss@", memberKind: "human", memberId: "human-big-boss" },
+          { handle: "Ren\u00E9e", memberKind: "human", memberId: "human-renee" },
+          { handle: "Rene\u0301a", memberKind: "human", memberId: "human-renea" },
+        ],
+      });
       const result = yield* harness.call("comms_read_channel", { channel: "seniors" });
-      // A handle echoed with a sigil would not match the normalized form the
-      // agent must send back as a mention.
-      expect(result.members.every((handle) => !handle.startsWith("@"))).toBe(true);
+      // The stored bytes, unchanged — including the sigils. A mention is
+      // matched against membership exactly, so a handle tidied on the way out
+      // is a handle that resolves to nobody. This echo is the last place that
+      // can be reintroduced silently, since nothing downstream reads it back.
+      expect(result.members).toEqual(["@@PM", "Big  \uFF22oss@", "Ren\u00E9e", "Rene\u0301a"]);
     }),
   );
 
@@ -541,39 +686,149 @@ describe("comms toolkit gateway failure mapping", () => {
 });
 
 describe("comms toolkit helpers", () => {
-  it("normalizes channel names written with or without #, and with a space after it", () => {
-    expect(normalizeChannelName("#seniors")).toEqual("seniors");
-    expect(normalizeChannelName("  seniors  ")).toEqual("seniors");
-    expect(normalizeChannelName("##seniors")).toEqual("seniors");
-    expect(normalizeChannelName("# seniors")).toEqual("seniors");
-    expect(normalizeChannelName("#")).toEqual("");
-    expect(normalizeChannelName("#   ")).toEqual("");
-  });
-
-  it("collapses duplicate mentions to one normalized handle", () => {
+  it("collapses duplicate spellings of one member to a single handle", () => {
     expect(resolveMentions(["@boss1", "boss1", "  @boss1  "], MEMBERS)).toEqual({
       handles: ["boss1"],
     });
   });
 
-  it("emits the normalized handle so sigil-differing members cannot collapse", () => {
-    // Keying on the normalized form and emitting the raw one would resolve this
-    // mention to whichever member happened to be last.
+  it("emits the member's stored handle, not the form the agent typed", () => {
+    // The agent types the convenient form; what goes out is what the channel
+    // holds. Emitting the lookup key instead is only harmless while every
+    // stored handle already equals its own key — for a member stored "@boss1"
+    // the key is "boss1", which the aggregate matches against nobody, and the
+    // post is rejected whole.
+    expect(
+      resolveMentions(["boss1"], [{ handle: "@boss1", memberKind: "human", memberId: "human-b" }]),
+    ).toEqual({ handles: ["@boss1"] });
+  });
+
+  it("gives an exactly-spelled handle to the member who owns it", () => {
+    // "boss1" and "@boss1" share a canonical key, and the forgiving map keeps
+    // whichever came last. Without exact-match precedence an agent naming the
+    // FIRST member byte-for-byte woke the second one and was told it worked —
+    // a different memberId, on a call returning success.
+    const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
+      { handle: "boss1", memberKind: "thread", memberId: "thread-a" },
+      { handle: "@boss1", memberKind: "human", memberId: "human-b" },
+    ];
+    expect(resolveMentions(["boss1"], members)).toEqual({ handles: ["boss1"] });
+    expect(resolveMentions(["@boss1"], members)).toEqual({ handles: ["@boss1"] });
+    // Both in one post: keying the dedupe on the canonical form would drop the
+    // second, which is the silent half of the same bug.
+    expect(resolveMentions(["boss1", "@boss1"], members)).toEqual({
+      handles: ["boss1", "@boss1"],
+    });
+  });
+
+  it("falls back to insertion order only when no spelling matches exactly", () => {
+    // The case where the key really does carry no distinction: "@@boss1"
+    // canonicalizes onto the shared key and is byte-identical to neither
+    // member, so there is nothing to choose between them and last-writer-wins
+    // is as good an answer as any. Asserted so that if it ever stops being
+    // arbitrary, someone has to say why. (Case is NOT a route here — handles
+    // are not folded, so "BOSS1" reaches nobody and reports unknown.)
     expect(
       resolveMentions(
-        ["boss1"],
+        ["@@boss1"],
         [
           { handle: "boss1", memberKind: "thread", memberId: "thread-a" },
           { handle: "@boss1", memberKind: "human", memberId: "human-b" },
         ],
       ),
-    ).toEqual({ handles: ["boss1"] });
+    ).toEqual({ handles: ["@boss1"] });
   });
 
   it("reports unknown handles once each, in the order they appeared", () => {
     expect(resolveMentions(["@ghost", "boss1", "ghost", "@other"], MEMBERS)).toEqual({
       unknown: ["ghost", "other"],
     });
+  });
+
+  it("treats an invisible twin as a separate member, which is the open gap", () => {
+    // KNOWN GAP, asserted so it is visible where someone would meet it rather
+    // than only in a bead. String.trim removes 25 code points and NOT ONE
+    // control or format character, so a zero-width space survives every step
+    // of canonicalisation: "\u200Bboss1" is a distinct key that RENDERS as
+    // "boss1" in the member list comms_read_channel hands the agent.
+    //
+    // Exact-match precedence makes this as much this file's problem as the
+    // aggregate's: the two spellings reach different members,
+    // deterministically, while an agent choosing between them is reading
+    // identical text. The fix is a forbidden-character rule where identities
+    // are created, which belongs in the shared identity module (t3_bot-iin),
+    // not in a second copy here. When it lands, this test flips.
+    const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
+      { handle: "\u200Bboss1", memberKind: "human", memberId: "human-twin" },
+      { handle: "boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
+    ];
+    expect(resolveMentions(["boss1"], members)).toEqual({ handles: ["boss1"] });
+    expect(resolveMentions(["\u200Bboss1"], members)).toEqual({
+      handles: ["\u200Bboss1"],
+    });
+  });
+
+  it("does not fold case on a handle, so a member stored Boss1 needs Boss1", () => {
+    // The axis this branch got wrong once and then stopped watching. Folding
+    // here is HARMLESS now that delivery uses stored bytes - the regression is
+    // gone - but it is still a live behaviour change, and nothing said which
+    // behaviour we want. This is the one we have: handles match byte-exactly
+    // apart from sigils and Unicode form, because the aggregate stores them
+    // byte-exactly.
+    //
+    // When t3_bot-iin lands the aggregate canonicalises handles and this
+    // flips: the fold goes back in and this test asserts the opposite. It
+    // failing at that point is the point - it is what makes the change
+    // deliberate rather than incidental.
+    const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
+      { handle: "Boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
+    ];
+    expect(resolveMentions(["Boss1"], members)).toEqual({ handles: ["Boss1"] });
+    expect(resolveMentions(["boss1"], members)).toEqual({ unknown: ["boss1"] });
+  });
+
+  it("reports an unresolved handle in canonical form, not as typed", () => {
+    // The other half of the delivery rule, asserted because the docstring now
+    // claims it: a RESOLVED handle goes out as stored bytes, an UNRESOLVED one
+    // goes out canonical. Nothing compares against the latter, and it is the
+    // only diagnostic the error can carry. Visually the two forms are
+    // identical, which is why this needs an assertion rather than a reading.
+    expect(resolveMentions(["@Rene\u0301x"], MEMBERS)).toEqual({
+      unknown: ["Ren\u00E9x"],
+    });
+  });
+
+  it("reaches a member across Unicode composition, and emits what is stored", () => {
+    // The decider normalizes to NFC, so a member is stored composed. An agent
+    // typing the decomposed spelling - what a macOS paste produces - must
+    // still reach them. Matching normalizes; the emitted handle does not, so
+    // what goes out is the composed bytes the aggregate will match against.
+    const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
+      { handle: "caf\u00E9", memberKind: "human", memberId: "human-cafe" },
+    ];
+    expect(resolveMentions(["@cafe\u0301"], members)).toEqual({
+      handles: ["caf\u00E9"],
+    });
+  });
+
+  it("reaches a member whose handle has no canonical form, by its exact handle", () => {
+    // "@" canonicalizes to nothing, so no forgiving spelling can reach it and
+    // every attempt was silently dropped — while comms_read_channel offered it
+    // as mentionable. Exact matching is what makes it addressable at all.
+    expect(
+      resolveMentions(["@"], [{ handle: "@", memberKind: "human", memberId: "human-sigil" }]),
+    ).toEqual({ handles: ["@"] });
+  });
+
+  it("does not wake that member with formatting noise", () => {
+    // The mirror of the test above, and the reason the canonical map refuses an
+    // empty key: "   " and "@@" also canonicalize to nothing, so a member
+    // stored "@" would be woken by a stray space on a post addressed to nobody.
+    const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
+      { handle: "@", memberKind: "human", memberId: "human-sigil" },
+    ];
+    expect(resolveMentions(["   "], members)).toEqual({ handles: [] });
+    expect(resolveMentions(["@@"], members)).toEqual({ handles: [] });
   });
 
   it("ignores an empty mention rather than failing the post", () => {

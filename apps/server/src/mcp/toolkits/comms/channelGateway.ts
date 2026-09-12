@@ -59,7 +59,15 @@ export class ChannelMentionUnresolvable extends Schema.TaggedError<ChannelMentio
  * `channel.*` payload routes the command to the wrong aggregate, silently.
  */
 export interface ChannelMember {
-  /** What the agent types to mention this member, without the leading "@". */
+  /**
+   * What the agent types to mention this member, without the leading "@".
+   *
+   * Trimmed and non-empty, and nothing more: unlike a channel name this is NOT
+   * case-folded, because the aggregate matches it byte-exactly. Canonical
+   * handles are the intended end state (t3_bot-iin); until the aggregate
+   * canonicalizes them, a caller that folds a handle produces one that resolves
+   * to no member.
+   */
   readonly handle: string;
   readonly memberKind: "thread" | "human";
   readonly memberId: string;
@@ -67,7 +75,12 @@ export interface ChannelMember {
 
 export interface Channel {
   readonly channelId: string;
-  /** Canonical name, without the leading "#". */
+  /**
+   * Canonical name: lowercase, no leading "#", no surrounding whitespace.
+   *
+   * The decider canonicalizes on the way in, so this is the only form the
+   * projection holds and the only form a lookup can match.
+   */
   readonly name: string;
   readonly members: ReadonlyArray<ChannelMember>;
 }
@@ -124,6 +137,10 @@ export interface ChannelGatewayShape {
    * The channel by name, but only if `threadId` is a member of it. A
    * non-member and a non-existent channel are the same answer: an agent must
    * not be able to probe for channels it is not in.
+   *
+   * `name` must already be canonical. Matching is exact, so a caller that
+   * passes what the agent typed rather than the canonical form gets `None` —
+   * indistinguishable, by the rule above, from being excluded.
    */
   readonly getChannelForMember: (
     name: string,
