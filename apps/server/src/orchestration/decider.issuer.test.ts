@@ -403,6 +403,97 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
     }),
   );
 
+  it.effect("tells a thread member and a human member with the same id apart", () =>
+    Effect.gen(function* () {
+      // THE FIXTURE IS THE WORK, and it is the one no author writes by accident.
+      //
+      // `requireChannelAuthorIsMember` compares memberKind AND memberId.
+      // Dropping the kind half left all 639 tests in src/orchestration green,
+      // because every channel fixture in this repo gives its members ids that
+      // differ in BOTH fields — {thread, "thread-boss1"} beside
+      // {human, "human-owner"} — and against data like that `memberId === x`
+      // and `memberKind === k && memberId === x` answer identically for every
+      // input any test supplies. The comparison was not under-tested, it was
+      // untestable with the data the repository had. boss3 filed that cause as
+      // `t3_bot-46h`.
+      //
+      // The separating input is one channel holding two members that SHARE a
+      // memberId and differ in memberKind. Then the two are told apart only by
+      // the half that was missing.
+      //
+      // REACHABILITY, stated rather than left open: this roster cannot be built
+      // through the aggregate today — `requireChannelMemberShape` refuses a
+      // `human` member carrying a thread's id, and a `thread` member whose id
+      // is not a live thread. It arrives the way the reactor's twin of this bug
+      // arrives: an event written before that invariant existed, replayed into
+      // the read model, which the decider then decides against. So the guard is
+      // load-bearing for history rather than for new input, which is exactly
+      // what `requireChannelMemberShape` cannot cover.
+      const collidingId = "thread-boss1";
+      const colliding: OrchestrationReadModel = {
+        ...readModel(),
+        channels: [
+          {
+            id: CHANNEL,
+            name: "seniors",
+            members: [
+              { handle: BOSS1, memberKind: "thread", memberId: collidingId },
+              // Same id, different kind. A row no command can create now.
+              {
+                handle: ChannelMemberHandle.make("ghost"),
+                memberKind: "human",
+                memberId: collidingId,
+              },
+            ],
+            archivedAt: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      };
+
+      // The THREAD issuer must resolve to the thread member, not to the human
+      // one that happens to share its id.
+      const asThread = yield* decideOrchestrationCommand({
+        command: channelProbe("channel.post.create") as never,
+        readModel: colliding,
+        issuer: { memberKind: "thread", memberId: collidingId },
+      });
+      const threadEvents = Array.isArray(asThread) ? asThread : [asThread];
+      if (threadEvents[0]?.type !== "channel.post-created") {
+        throw new Error("the thread member was not admitted");
+      }
+      // THE HANDLE IS THE ASSERTION, not that the post succeeded. Success is
+      // what both implementations produce; only the handle says WHICH row the
+      // lookup returned, and the handle is what the wake message shows a reader.
+      expect(threadEvents[0].payload.authorHandle).toBe(BOSS1);
+      expect(threadEvents[0].payload.authorRef).toEqual({
+        memberKind: "thread",
+        memberId: collidingId,
+      });
+
+      // And the HUMAN issuer with the same id must resolve to the human member.
+      const asHuman = yield* decideOrchestrationCommand({
+        command: channelProbe("channel.post.create") as never,
+        readModel: colliding,
+        issuer: { memberKind: "human", memberId: collidingId },
+      });
+      const humanEvents = Array.isArray(asHuman) ? asHuman : [asHuman];
+      if (humanEvents[0]?.type !== "channel.post-created") {
+        throw new Error("the human member was not admitted");
+      }
+      expect(humanEvents[0].payload.authorHandle).toBe("ghost");
+      expect(humanEvents[0].payload.authorRef).toEqual({
+        memberKind: "human",
+        memberId: collidingId,
+      });
+
+      // The two must not be the same member. Asserted directly, because the
+      // whole defect is that they were.
+      expect(threadEvents[0].payload.authorHandle).not.toBe(humanEvents[0].payload.authorHandle);
+    }),
+  );
+
   it.effect("refuses a system issuer as a post author", () =>
     Effect.gen(function* () {
       // A reactor has no handle, so it has nothing to appear as in a channel.
