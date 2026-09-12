@@ -933,10 +933,44 @@ export const OrchestrationThreadShell = Schema.Struct({
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 
+/**
+ * A channel as the sidebar needs it: enough to list and open, and no posts.
+ *
+ * POSTS ARE NOT HERE, and that is the shape rather than an omission. A channel's
+ * history is unbounded and this snapshot is what a reconnecting client refetches
+ * whole, so posts come from a paged read instead. `latestPostAt` is the one thing
+ * the sidebar needs from the history — order by recency, and say "nothing yet"
+ * about an empty channel — and it is the last POST's time rather than the
+ * channel's `updatedAt`, because a membership edit is not activity.
+ */
+export const OrchestrationChannelShell = Schema.Struct({
+  id: ChannelId,
+  name: TrimmedNonEmptyString,
+  members: Schema.Array(ChannelMember),
+  archivedAt: Schema.NullOr(IsoDateTime),
+  latestPostAt: Schema.NullOr(IsoDateTime),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationChannelShell = typeof OrchestrationChannelShell.Type;
+
 export const OrchestrationShellSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   projects: Schema.Array(OrchestrationProjectShell),
   threads: Schema.Array(OrchestrationThreadShell),
+  /**
+   * ONLY the channels this client's member is in.
+   *
+   * Filtered at the source rather than in the UI. A client that received every
+   * channel would know the names of channels it cannot read, and "the sidebar
+   * does not render them" is a decision in the wrong place — it is one careless
+   * component away from being untrue, and it puts the membership rule in a file
+   * that cannot enforce it.
+   *
+   * Optional on the wire so a cached snapshot from a server without channels
+   * still decodes.
+   */
+  channels: Schema.optional(Schema.Array(OrchestrationChannelShell)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationShellSnapshot = typeof OrchestrationShellSnapshot.Type;
@@ -961,6 +995,34 @@ export const OrchestrationShellStreamEvent = Schema.Union([
     kind: Schema.Literal("thread-removed"),
     sequence: NonNegativeInt,
     threadId: ThreadId,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("channel-upserted"),
+    sequence: NonNegativeInt,
+    channel: OrchestrationChannelShell,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("channel-removed"),
+    sequence: NonNegativeInt,
+    channelId: ChannelId,
+  }),
+  /**
+   * A post landed. Deliberately carries no body.
+   *
+   * It is an invalidation signal, not the post: the body comes from the paged
+   * read, which is then the only path post content travels. Two paths for the
+   * same content is where the two disagree, and this stream reaches every
+   * connected client while a channel's posts reach only the one reading it.
+   *
+   * `postId` is here so a client can tell its own post's echo from someone
+   * else's arrival without diffing a page.
+   */
+  Schema.Struct({
+    kind: Schema.Literal("channel-post-appended"),
+    sequence: NonNegativeInt,
+    channelId: ChannelId,
+    postId: ChannelPostId,
+    createdAt: IsoDateTime,
   }),
 ]);
 export type OrchestrationShellStreamEvent = typeof OrchestrationShellStreamEvent.Type;
