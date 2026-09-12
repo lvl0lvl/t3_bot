@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
+import { readChannelPostPage } from "./channelPosts.ts";
 import { withMemberChannels } from "./channelShell.ts";
 import { cleanupFailedUploadedAttachments, normalizeDispatchCommand } from "./Normalizer.ts";
 import {
@@ -95,6 +96,45 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
             return yield* failEnvironmentNotFound("thread_not_found");
           }
           return projectThreadDetailSnapshot(snapshot.value);
+        }),
+      )
+      .handle(
+        "channelPosts",
+        Effect.fn("environment.orchestration.channelPosts")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          // DECODE, CALL, TRANSLATE. Membership, the cursor's channel half, the
+          // over-fetch and which end the extra row comes off are all in
+          // `readChannelPostPage`, shared with the socket RPC — so the two doors cannot
+          // come to answer differently, which is the #19 divergence. This door exists at
+          // all because of #20: a browser bootstraps over HTTP before resuming the
+          // socket, so a read wired only to the socket is a read a user cannot reach.
+          return yield* readChannelPostPage({
+            request: {
+              channelId: args.params.channelId,
+              direction: args.payload.direction,
+              limit: args.payload.limit,
+              ...(args.payload.cursor === undefined ? {} : { cursor: args.payload.cursor }),
+            },
+            member: refFromOperatorSession(),
+          }).pipe(
+            // ONE TOTAL MAPPING, not a chain ending in a catch-all. A trailing
+            // `Effect.catch` here caught the 404 this handler had just produced
+            // and reported it as a 500, so every membership refusal on this door
+            // was an internal error — the door test is what said so. Listing the
+            // tags makes a new error in the shared handler a type error here
+            // instead of a silent 500.
+            Effect.catchTags({
+              ChannelPostsUnreadable: () => failEnvironmentNotFound("channel_not_found"),
+              // A FOREIGN CURSOR IS A BAD REQUEST, not an empty page — which is
+              // the answer for "you are caught up" (`decodeChannelCursor`).
+              ChannelCursorRejected: () => failEnvironmentInvalidRequest("invalid_cursor"),
+              PersistenceDecodeError: (cause) =>
+                failEnvironmentInternal("orchestration_snapshot_failed", cause),
+              PersistenceSqlError: (cause) =>
+                failEnvironmentInternal("orchestration_snapshot_failed", cause),
+            }),
+          );
         }),
       )
       .handle(

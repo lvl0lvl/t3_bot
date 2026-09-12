@@ -41,6 +41,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
+  readChannelPosts: "orchestration.readChannelPosts",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
@@ -983,6 +984,146 @@ export const OrchestrationShellSnapshot = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 export type OrchestrationShellSnapshot = typeof OrchestrationShellSnapshot.Type;
+
+/**
+ * A page-size ceiling the SERVER owns, because a client asking for a million
+ * posts is a client that gets them.
+ *
+ * REFUSED BY THE SCHEMA, not clamped inside the handler. A silent clamp answers a
+ * different question than the one asked, and the caller cannot tell a clamped
+ * page from the end of the channel — the same confusion between "no more" and
+ * "not allowed" that the cursor's channel half exists to end.
+ *
+ * The floor is 1 rather than 0. Zero is a request for nothing, which no caller
+ * means and which would arrive as an empty page indistinguishable from an empty
+ * channel.
+ */
+export const CHANNEL_POST_PAGE_LIMIT_MAX = 200;
+export const ChannelPostPageLimit = PositiveInt.check(
+  Schema.isLessThanOrEqualTo(CHANNEL_POST_PAGE_LIMIT_MAX),
+);
+export type ChannelPostPageLimit = typeof ChannelPostPageLimit.Type;
+
+/**
+ * Which WINDOW of a channel's history to read. Never which order it arrives in.
+ *
+ * "backward" is the newest page and then upward, which is what opening a channel
+ * needs. "forward" is oldest-first from a cursor, which is what a client catching
+ * up on a channel it already has needs. Both return ASCENDING rows — see
+ * `OrchestrationChannelPostPage`.
+ */
+export const ChannelPostReadDirection = Schema.Literals(["forward", "backward"]);
+export type ChannelPostReadDirection = typeof ChannelPostReadDirection.Type;
+
+/**
+ * One post as a reader needs it.
+ *
+ * IT CARRIES ITS SEQUENCE, and an earlier version of this type did not. The
+ * argument for withholding it was that "a client holding both halves can build a
+ * cursor for any channel" — which was false three ways, and two review lanes
+ * proved each part. `nextCursor` is plaintext `${channelId}:${sequence}`, so a
+ * client holds both halves after ONE read; `decodeChannelCursor` never refused
+ * construction, only use against a different channel; and membership, checked
+ * before the cursor is examined, is what actually gates access.
+ *
+ * WITHHOLDING IT COST THE PAGE ITS OWN PROMISE. `OrchestrationChannelPostPage`
+ * says ascending order is the wire's job and not the caller's, and with no field
+ * expressing the order a client had to re-derive it from `createdAt` — which is
+ * millisecond resolution, so two agents replying at once tie it, and the tie-break
+ * fell to the post id. Measured: server order 1..10 rendered as 1, 10, 2, 3, …
+ * and a reply appeared above the question it answered.
+ *
+ * `authorHandle` rather than a member ref: a reader renders a handle, and who the
+ * author IS belongs to the write path.
+ */
+export const OrchestrationChannelPost = Schema.Struct({
+  id: ChannelPostId,
+  channelId: ChannelId,
+  /**
+   * Orders a channel's posts, and is the half of the cursor that moves.
+   *
+   * Unique within a channel and monotonic, so it is a total order — unlike
+   * `createdAt`, which ties.
+   */
+  sequence: NonNegativeInt,
+  authorHandle: ChannelMemberHandle,
+  body: Schema.String,
+  mentions: Schema.Array(ChannelMemberHandle),
+  parentPostId: Schema.NullOr(ChannelPostId),
+  createdAt: IsoDateTime,
+});
+export type OrchestrationChannelPost = typeof OrchestrationChannelPost.Type;
+
+/**
+ * One page of a channel's posts, ALWAYS ascending by sequence in both
+ * directions.
+ *
+ * ASCENDING IS THE WIRE'S PROMISE, not the caller's job. `direction` chooses the
+ * window and which way `nextCursor` points; it never chooses the order. Every
+ * consumer renders oldest-at-top, so returning a backward page newest-first would
+ * put a `.reverse()` in each of them — a step that is correct until someone
+ * forgets it, and a page nobody reversed reads as though time runs backwards,
+ * which gets diagnosed as a data bug rather than a rendering one.
+ * `listPostsBackward` reverses once, where a real-database test holds it.
+ *
+ * `nextCursor` IS OPAQUE. Hand it back verbatim; never construct or parse one.
+ * `null` means there is nothing further IN THAT DIRECTION — the newest post going
+ * forward, the beginning of history going backward. It does NOT record the
+ * direction that issued it, so keep a cursor with the direction you obtained it
+ * with.
+ *
+ * A cursor from ANOTHER channel is refused rather than answered with an empty
+ * page. The empty page is byte for byte what "you are caught up" looks like, and
+ * answering with one is the defect `t3_bot-e60` was filed for.
+ */
+export const OrchestrationChannelPostPage = Schema.Struct({
+  channelId: ChannelId,
+  posts: Schema.Array(OrchestrationChannelPost),
+  nextCursor: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type OrchestrationChannelPostPage = typeof OrchestrationChannelPostPage.Type;
+
+/**
+ * What a client asks for.
+ *
+ * `cursor` omitted means the end of history in the requested direction: the
+ * newest page going backward, the oldest going forward. A client opening a
+ * channel therefore sends `direction: "backward"` and no cursor.
+ */
+export const OrchestrationChannelPostPageRequest = Schema.Struct({
+  channelId: ChannelId,
+  direction: ChannelPostReadDirection,
+  limit: ChannelPostPageLimit,
+  cursor: Schema.optional(TrimmedNonEmptyString),
+});
+export type OrchestrationChannelPostPageRequest = typeof OrchestrationChannelPostPageRequest.Type;
+
+/**
+ * The caller asked for a channel it is not in, or one that does not exist.
+ *
+ * ONE ANSWER FOR BOTH, deliberately. Two tags would let a caller enumerate the
+ * channels it cannot read by asking for each and reading which refusal came
+ * back — the same disclosure `listChannelsForMember` keeps inside its query
+ * rather than leaving to a caller's discretion.
+ */
+export class OrchestrationChannelPostsUnreadableError extends Schema.TaggedError<OrchestrationChannelPostsUnreadableError>()(
+  "OrchestrationChannelPostsUnreadableError",
+  { channelId: ChannelId },
+) {}
+
+/**
+ * The cursor was not issued by this channel.
+ *
+ * A REFUSAL, NEVER AN EMPTY PAGE, and it is on the wire for that reason. An
+ * empty page is byte for byte what "you are caught up" looks like, so a door
+ * that answered with one would reintroduce `t3_bot-e60`: a cursor earned in one
+ * channel reported a second channel holding unread posts as read, and nothing
+ * in the reply said otherwise.
+ */
+export class OrchestrationChannelCursorRejectedError extends Schema.TaggedError<OrchestrationChannelCursorRejectedError>()(
+  "OrchestrationChannelCursorRejectedError",
+  { channelId: ChannelId, cursor: Schema.String },
+) {}
 
 export const OrchestrationShellStreamEvent = Schema.Union([
   Schema.Struct({
@@ -2647,6 +2788,10 @@ export const OrchestrationRpcSchemas = {
     input: OrchestrationSubscribeShellInput,
     output: OrchestrationShellStreamItem,
   },
+  readChannelPosts: {
+    input: OrchestrationChannelPostPageRequest,
+    output: OrchestrationChannelPostPage,
+  },
 } as const;
 
 export class OrchestrationGetSnapshotError extends Schema.TaggedError<OrchestrationGetSnapshotError>()(
@@ -2684,6 +2829,23 @@ export class OrchestrationGetFullThreadDiffError extends Schema.TaggedError<Orch
 
 export class OrchestrationSearchThreadsError extends Schema.TaggedError<OrchestrationSearchThreadsError>()(
   "OrchestrationSearchThreadsError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+/**
+ * The post store could not answer.
+ *
+ * DISTINCT FROM THE TWO REFUSALS. `OrchestrationChannelPostsUnreadableError` and
+ * `OrchestrationChannelCursorRejectedError` are answers — the caller asked for something it
+ * may not have, or handed back a cursor from elsewhere. This one means the
+ * server does not know, and a caller must not retry it as though the page were
+ * empty.
+ */
+export class OrchestrationReadChannelPostsError extends Schema.TaggedError<OrchestrationReadChannelPostsError>()(
+  "OrchestrationReadChannelPostsError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),

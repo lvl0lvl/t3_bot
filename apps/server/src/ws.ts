@@ -28,6 +28,9 @@ import {
   ClientWebDeployment,
   CommandId,
   type DiscoveredLocalServerList,
+  OrchestrationChannelCursorRejectedError,
+  OrchestrationChannelPostsUnreadableError,
+  OrchestrationReadChannelPostsError,
   EventId,
   operatorCommandIssuer,
   refFromOperatorSession,
@@ -98,6 +101,7 @@ import {
 } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
+import { readChannelPostPage } from "./orchestration/channelPosts.ts";
 import { rowHasMember, toChannelShell, withMemberChannels } from "./orchestration/channelShell.ts";
 
 /**
@@ -1808,6 +1812,78 @@ const makeWsRpcLayer = (
                     cause,
                   }),
               ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        // THE SECOND DOOR ONTO `readChannelPostPage`, added with the HTTP twin
+        // rather than after it. Both call the shared handler and neither decides
+        // anything: membership, the cursor's channel half and the paging
+        // arithmetic all live there, so the two cannot drift into answering
+        // differently — the #19 divergence, where a guard was wired at two call sites
+        // and present at one. (NOT #20: neither of its snapshot doors carried channels.
+        // What #20 says about doors is that fixing the socket alone fixes nothing a
+        // user can see, because the browser bootstraps over HTTP.)
+        //
+        // `connectionMember` rather than a fresh `refFromOperatorSession()`: it
+        // is already this connection's read identity, the same value the shell
+        // stream filters by, and one connection has one of those.
+        [ORCHESTRATION_WS_METHODS.readChannelPosts]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.readChannelPosts,
+            readChannelPostPage({ request: input, member: connectionMember }).pipe(
+              // ONE TOTAL MAPPING, so a new error in the handler is a type error
+              // here rather than a leak. A STORE FAILURE IS NOT AN ANSWER and
+              // gets its own tag: a caller told "unreadable" would stop asking,
+              // and one told "bad cursor" would discard a cursor that was fine.
+              Effect.catchTags({
+                ChannelPostsUnreadable: (cause) =>
+                  Effect.fail(
+                    new OrchestrationChannelPostsUnreadableError({ channelId: cause.channelId }),
+                  ),
+                ChannelCursorRejected: (cause) =>
+                  Effect.fail(
+                    new OrchestrationChannelCursorRejectedError({
+                      channelId: cause.channelId,
+                      cursor: cause.cursor,
+                    }),
+                  ),
+                // THE CAUSE IS LOGGED, NOT SENT. `cause` is `Schema.Defect()` on that
+                // contract, so attaching it serialises the whole chain: the repository
+                // method, the driver's message, and in the measured case the path
+                // `/Users/…/.t3/userdata/state.sqlite`. The recipient is any client
+                // holding `AuthOrchestrationReadScope`, which on this product can be a
+                // remote browser or the mobile app over T3 Connect.
+                //
+                // The HTTP twin already does it this way — `failEnvironmentInternal` logs
+                // server-side and answers `{code, reason, traceId}` — and this handler's
+                // docstring claims the two doors differ only in error vocabulary. They
+                // differed in what they disclose. Nothing is lost by logging: the cause is
+                // still where an operator debugging it looks.
+                //
+                // About twenty sibling errors in this file still attach `cause`, so this
+                // is a divergence from an established pattern rather than a fix to it;
+                // `t3_bot-bic` carries the file-wide decision.
+                PersistenceDecodeError: (cause) =>
+                  Effect.logError("Failed to read the channel's posts", cause).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new OrchestrationReadChannelPostsError({
+                          message: "Failed to read the channel's posts",
+                        }),
+                      ),
+                    ),
+                  ),
+                PersistenceSqlError: (cause) =>
+                  Effect.logError("Failed to read the channel's posts", cause).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new OrchestrationReadChannelPostsError({
+                          message: "Failed to read the channel's posts",
+                        }),
+                      ),
+                    ),
+                  ),
+              }),
             ),
             { "rpc.aggregate": "orchestration" },
           ),

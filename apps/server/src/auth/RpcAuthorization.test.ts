@@ -3,6 +3,7 @@ import {
   AuthOrchestrationReadScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
+  ORCHESTRATION_WS_METHODS,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -60,6 +61,27 @@ describe("RPC authorization scopes", () => {
     );
     expect(requiredScopeForRpcMethod(WS_METHODS.pullRequestsRequestReviewers)).toBe(
       requiredScopeForRpcMethod(WS_METHODS.pullRequestsComment),
+    );
+  });
+
+  it("reads a channel's posts under the same scope as the shell that lists them", () => {
+    // `TEST-25-06`. Declaring this under `AuthRelayReadScope` survived the suite,
+    // because the only test touching it compares the KEY SET of the scope table to the
+    // RPC group's and passes for any value.
+    //
+    // Against `subscribeShell` rather than against the scope's name: the two are one
+    // read from a client's point of view — the shell says which channels exist and this
+    // says what is in one — so a credential that can list them can read them. The
+    // source's claim is that the socket and its HTTP twin admit the same scope, and a
+    // door admitting a lesser scope than the other is the privilege gap.
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_WS_METHODS.readChannelPosts)).toBe(
+      requiredScopeForRpcMethod(ORCHESTRATION_WS_METHODS.subscribeShell),
+    );
+    // And it is a READ scope, not an operate one: nothing about answering this changes
+    // any state. Stated separately because the parity above holds just as well if both
+    // are widened together.
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_WS_METHODS.readChannelPosts)).toBe(
+      AuthOrchestrationReadScope,
     );
   });
 

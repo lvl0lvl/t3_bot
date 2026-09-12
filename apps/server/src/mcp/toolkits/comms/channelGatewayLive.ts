@@ -16,6 +16,16 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+// ONE IMPLEMENTATION of the cursor format, in `orchestration/channelCursor.ts`.
+// It used to live in this file; the browser's paged read is a second door onto
+// the same format, and a format whose refusal looks like an empty page cannot
+// afford two decoders — nor two copies of the paging arithmetic that decides what
+// a cursor points at, which is why `resolveChannelPostPage` comes from there too.
+import {
+  channelPostOverFetch,
+  decodeChannelCursor as decodeCursor,
+  resolveChannelPostPage,
+} from "../../../orchestration/channelCursor.ts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -169,58 +179,6 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  /**
-   * A cursor names the channel it came from, and one from elsewhere is REFUSED.
-   *
-   * It used to be the bare event sequence. That sequence is GLOBAL, so a cursor
-   * earned in another channel was well-formed digits that matched no row here,
-   * and the read returned an empty page with `nextCursor: null` - byte for byte
-   * the answer for "you are caught up". Measured before the fix: a second
-   * channel holding three unread posts reported itself caught up to a caller
-   * holding the first channel's cursor, and nothing in the reply said otherwise
-   * (`t3_bot-e60`).
-   *
-   * Split on the FIRST colon, which is correct only BECAUSE `t3_bot-2d2`
-   * forbids ":" inside a `ChannelId` - so today the first and last colon are
-   * the same one and the choice does not matter. It is not extra robustness: if
-   * that charset ever widened, `indexOf` would take a channel id's own colon as
-   * the boundary and `lastIndexOf` would take the sequence's. Neither is right
-   * without re-deciding the format, and `CURSOR_PATTERN` in `tools.ts` is where
-   * the assumption is checkable.
-   */
-  const decodeCursor = (channelId: string, cursor: string) => {
-    const boundary = cursor.indexOf(":");
-    if (boundary === -1) {
-      return Option.none<number>();
-    }
-    const issuedBy = cursor.slice(0, boundary);
-    const digits = cursor.slice(boundary + 1);
-    // DIGITS BEFORE `Number()`, because `Number()` is laxer than the schema
-    // that feeds this and this function is also the door a DIRECT caller uses.
-    // `Number("")` is 0, `Number("0x2")` is 2, `Number(" 3 ")` is 3,
-    // `Number("1e2")` is 100 - so `"<channel>:"` decoded to sequence 0 and the
-    // read answered it with the FIRST PAGE. An empty-looking page that is
-    // really "here is the start again" is the same class of lie this whole
-    // change exists to remove, reachable at the seam rather than through the
-    // tool.
-    if (!/^[0-9]+$/.test(digits)) {
-      return Option.none<number>();
-    }
-    const sequence = Number(digits);
-    // BOTH halves, and the channel half first: a cursor for another channel is
-    // the defect this exists for, and a caller that gets the right refusal for
-    // the wrong reason has learned nothing. Compared EXACTLY - a length or
-    // prefix comparison passes every obvious test fixture and pages the wrong
-    // channel on a seeded install, where two channel ids share a prefix and a
-    // length.
-    if (issuedBy !== channelId || !Number.isSafeInteger(sequence) || sequence < 0) {
-      return Option.none<number>();
-    }
-    return Option.some(sequence);
-  };
-
-  const encodeCursor = (channelId: string, sequence: number) => `${channelId}:${sequence}`;
-
   const readPosts = (input: ReadPostsInput) =>
     Effect.suspend(() => {
       // REFUSED rather than answered. Returning an empty page here is the
@@ -239,33 +197,28 @@ const make = Effect.gen(function* () {
       }
       const at = decoded.value;
       const channelId = ChannelId.make(input.channelId);
-      // OVER-FETCH BY ONE. `nextCursor` has to say whether another post exists
-      // in that direction, and asking for one more than the caller wanted is
-      // how to know without a second query.
+      const overFetch = channelPostOverFetch(input.limit);
       const rows =
         input.direction === "forward"
-          ? channels.listPosts({ channelId, limit: input.limit + 1, afterSequence: at })
-          : channels.listPostsBackward({ channelId, limit: input.limit + 1, beforeSequence: at });
+          ? channels.listPosts({ channelId, limit: overFetch, afterSequence: at })
+          : channels.listPostsBackward({ channelId, limit: overFetch, beforeSequence: at });
       return rows.pipe(
         Effect.mapError(() => storeUnavailable("readPosts")),
         Effect.map((all) => {
-          // BACKWARD DROPS FROM THE FRONT. The rows arrive ascending either
-          // way, so the over-fetched row is the OLDEST one going backward and
-          // the NEWEST one going forward. Slicing the tail in both directions
-          // would silently discard the post the caller asked for and keep the
-          // probe.
-          const kept =
-            input.direction === "forward" ? all.slice(0, input.limit) : all.slice(-input.limit);
-          const more = all.length > input.limit;
-          // The cursor comes off the ROW, before the map: ChannelPostRecord
-          // drops `sequence`, so taking it afterwards is taking it from a shape
-          // that no longer carries it. Forward points AFTER the last row
-          // returned; backward points BEFORE the first.
-          const edge = input.direction === "forward" ? kept.at(-1) : kept.at(0);
+          // The page arithmetic is `resolveChannelPostPage`, beside the codec,
+          // because this door and the client door have to agree about it — they
+          // held two copies that were equal only while the store returned exactly
+          // what LIMIT asked for. The cursor comes off the ROW, before the map:
+          // `ChannelPostRecord` drops `sequence`.
+          const page = resolveChannelPostPage({
+            channelId: input.channelId,
+            direction: input.direction,
+            limit: input.limit,
+            rows: all,
+          });
           return {
-            posts: kept.map(toPost),
-            nextCursor:
-              more && edge !== undefined ? encodeCursor(input.channelId, edge.sequence) : null,
+            posts: page.rows.map(toPost),
+            nextCursor: page.nextCursor,
           } satisfies ChannelPage;
         }),
       );

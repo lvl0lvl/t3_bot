@@ -11,6 +11,8 @@ import {
   ClientOrchestrationCommand,
   ModelSelection,
   ChannelPostCreatedPayload,
+  CHANNEL_POST_PAGE_LIMIT_MAX,
+  ChannelPostPageLimit,
   OrchestrationAggregateId,
   OrchestrationAggregateKind,
   OrchestrationCommand,
@@ -1713,5 +1715,43 @@ it.effect("drops an issuer a client tries to supply", () =>
     });
     assert.strictEqual(command.type, "thread.archive");
     assert.isFalse(Object.keys(command).includes("issuer"));
+  }),
+);
+
+/**
+ * The page limit's ceiling and its floor, asserted as NUMBERS.
+ *
+ * `CHANNEL_POST_PAGE_LIMIT_MAX` was raised from 200 to 2,000,000 at its own
+ * definition and NOTHING WENT RED, because nothing anywhere compared the ceiling to a
+ * literal — every mention of it was the symbol, which moves with it (`TEST-25-03`). "Too much data over a websocket" is the regression this repository
+ * names first, and this limit is the only thing between a client and it.
+ *
+ * The same four numbers are asserted through the HTTP door in `server.test.ts`. That
+ * pairing is the point: the two doors decode the limit with different schemas — one
+ * from a string — so a shared constant is a compile-time argument and not a test.
+ * Either bound moved alone now reds a case that names the number.
+ */
+it.effect("refuses a page limit outside 1..200, by the number", () =>
+  Effect.gen(function* () {
+    const decodeLimit = Schema.decodeUnknownEffect(ChannelPostPageLimit);
+    // The ceiling is 200 and 201 is refused: a caller asking for more is told so
+    // rather than quietly handed 200, which it could not tell from the end of the
+    // channel. The floor is 1, because zero is a request for nothing that would
+    // arrive as an empty page — indistinguishable from an empty channel.
+    for (const accepted of [1, 2, 199, 200]) {
+      assert.strictEqual(yield* decodeLimit(accepted), accepted);
+    }
+    for (const refused of [0, -1, 201, 1_000, 2_000_000]) {
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(decodeLimit(refused))),
+        `limit ${refused} was accepted`,
+      );
+    }
+    // NOT AN INTEGER, refused. The HTTP door decodes this from a query string, where
+    // "2.5" parses to a finite number and reaches SQL as a float.
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(decodeLimit(2.5))));
+    // And the constant itself is the ceiling the cases above were written against, so
+    // moving it cannot leave them passing against a different number.
+    assert.strictEqual(CHANNEL_POST_PAGE_LIMIT_MAX, 200);
   }),
 );

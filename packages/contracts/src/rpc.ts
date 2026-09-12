@@ -80,6 +80,9 @@ import {
 } from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
+  OrchestrationChannelCursorRejectedError,
+  OrchestrationChannelPostsUnreadableError,
+  OrchestrationReadChannelPostsError,
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
   OrchestrationDispatchCommandError,
@@ -1181,6 +1184,33 @@ const WsOrchestrationGetFullThreadDiffRpc = Rpc.make(ORCHESTRATION_WS_METHODS.ge
   error: Schema.Union([OrchestrationGetFullThreadDiffError, EnvironmentAuthorizationError]),
 });
 
+/**
+ * The paged post read, over the socket.
+ *
+ * ITS TWIN IS `GET /api/orchestration/channels/:channelId/posts`, and they are
+ * added together on purpose. `#20` shipped the channel shell on `subscribeShell`
+ * alone while the browser bootstraps over HTTP, so the sidebar was permanently
+ * empty and every socket-side test passed. One door is not a feature.
+ *
+ * THE TWO DOORS DO NOT SHARE ERROR TAGS, and an earlier version of this comment
+ * claimed they did. The HTTP twin translates into `environmentHttp.ts`'s
+ * vocabulary, whose errors carry an `httpApiStatus` so a refusal is a 404 or a
+ * 400; these domain tags carry none, and giving them statuses would put
+ * transport concerns in the module the decider reads. What the doors share is
+ * the DECISION — one handler, `readChannelPostPage`, and neither transport
+ * chooses who may read what.
+ */
+const WsOrchestrationReadChannelPostsRpc = Rpc.make(ORCHESTRATION_WS_METHODS.readChannelPosts, {
+  payload: OrchestrationRpcSchemas.readChannelPosts.input,
+  success: OrchestrationRpcSchemas.readChannelPosts.output,
+  error: Schema.Union([
+    OrchestrationChannelPostsUnreadableError,
+    OrchestrationChannelCursorRejectedError,
+    OrchestrationReadChannelPostsError,
+    EnvironmentAuthorizationError,
+  ]),
+});
+
 const WsOrchestrationSearchThreadsRpc = Rpc.make(ORCHESTRATION_WS_METHODS.searchThreads, {
   payload: OrchestrationSearchThreadsInput,
   success: OrchestrationRpcSchemas.searchThreads.output,
@@ -1407,6 +1437,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetFullThreadDiffRpc,
   WsOrchestrationSearchThreadsRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,
+  WsOrchestrationReadChannelPostsRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
 );

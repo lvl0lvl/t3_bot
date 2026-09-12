@@ -129,3 +129,50 @@ export function canSendChannelPost(input: {
 }): boolean {
   return input.body.trim().length > 0 && !input.sending;
 }
+
+/**
+ * A channel's posts as the view holds them: ascending, no duplicates.
+ *
+ * THE VIEW ACCUMULATES AND THE SERVER PAGES, so something has to merge, and the
+ * merge is here rather than inside a component because it is the part with a
+ * wrong answer available. Paging upward prepends an older page, and a live
+ * re-read returns a newer one.
+ *
+ * DE-DUPLICATED BY ID, and the two overlaps that make it necessary are both in the
+ * code today: a refresh re-reads the page already on screen, so every post in it
+ * arrives a second time; and a page fetched upward can overlap the one below it,
+ * because the cursor names a boundary and a post can be re-read at it. A merge that
+ * kept both copies would show the same post twice. The INCOMING copy wins, because
+ * it is the one the server just sent.
+ *
+ * NOT AN OPTIMISTIC APPEND, which this used to claim as its reason. Nothing inserts a
+ * post before the server confirms it — the composer dispatches and waits — so the
+ * justification named a call site that does not exist and sent a reader looking for
+ * code nobody has written. The property is the same; the reason for it is not.
+ *
+ * ORDERED BY `sequence`, WHICH IS A TOTAL ORDER. It used to order by `createdAt`
+ * with the post id as a tie-break, and that was a correctness bug rather than a
+ * preference: `createdAt` is millisecond resolution, two agents replying at once
+ * tie it, and the id tie-break is lexicographic — so server order 1..10 rendered
+ * as 1, 10, 2, 3, … and a reply could appear above the question it answered.
+ *
+ * The test that was supposed to hold this asserted STABILITY across arrival
+ * order — merge two posts both ways, check they agree — which the wrong
+ * implementation also satisfies. It never asserted fidelity to the server's
+ * order. Choose the fixture from the property.
+ */
+export function mergeChannelPosts<
+  A extends { readonly id: string; readonly sequence: number },
+>(input: { readonly existing: ReadonlyArray<A>; readonly incoming: ReadonlyArray<A> }): Array<A> {
+  const byId = new Map<string, A>();
+  for (const post of input.existing) {
+    byId.set(post.id, post);
+  }
+  for (const post of input.incoming) {
+    byId.set(post.id, post);
+  }
+  // No tie-break, because there are no ties: `sequence` is unique within a
+  // channel. A tie-break here would be dead code hiding the fact that the old
+  // comparator needed one.
+  return [...byId.values()].sort((left, right) => left.sequence - right.sequence);
+}

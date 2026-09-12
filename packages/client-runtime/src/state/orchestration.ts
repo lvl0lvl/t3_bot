@@ -33,5 +33,23 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:archived-shell-snapshot",
       tag: ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
     }),
+    /**
+     * One page of a channel's posts, keyed by the whole request.
+     *
+     * CACHED LIKE EVERY OTHER FAMILY HERE, and an earlier version of this comment
+     * claimed the opposite. `createEnvironmentRpcQueryAtomFamily` gives all of
+     * them `Atom.swr` with a 30s stale time and a 5-minute idle TTL, and passing
+     * neither option leaves this byte-identical in configuration to `turnDiff`
+     * and `fullThreadDiff` — the very atoms the old comment said it differed
+     * from. Wrong in both halves, in the file where cache policy is declared.
+     *
+     * The staleness that matters is handled in the view instead: `ChannelView`
+     * refreshes this atom when the channel shell reports a newer `latestPostAt`,
+     * so a reply is not waiting on a stale window to expire.
+     */
+    channelPosts: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:channel-posts",
+      tag: ORCHESTRATION_WS_METHODS.readChannelPosts,
+    }),
   };
 }
