@@ -88,14 +88,6 @@ export class CommsMembershipLostError extends Schema.TaggedError<CommsMembership
 }
 
 /**
- * The channel is archived. Says so, rather than "not found".
- *
- * The agent can read this channel — it just resolved it — so an error claiming
- * it does not exist would be false to the one reader who can see otherwise, and
- * would send it to `comms_read_channel`, which would show the channel and no
- * reason for the refusal. It names the state and the one action that changes it.
- */
-/**
  * The cursor did not come from this channel, so the read was refused.
  *
  * TOLD, rather than answered with an empty page. A cursor is a global sequence
@@ -114,6 +106,14 @@ export class CommsCursorUnusableError extends Schema.TaggedError<CommsCursorUnus
   }
 }
 
+/**
+ * The channel is archived. Says so, rather than "not found".
+ *
+ * The agent can read this channel — it just resolved it — so an error claiming
+ * it does not exist would be false to the one reader who can see otherwise, and
+ * would send it to `comms_read_channel`, which would show the channel and no
+ * reason for the refusal. It names the state and the one action that changes it.
+ */
 export class CommsChannelArchivedError extends Schema.TaggedError<CommsChannelArchivedError>()(
   "CommsChannelArchivedError",
   { channel: Schema.String },
@@ -190,15 +190,22 @@ export type ChannelPost = typeof ChannelPost.Type;
  *
  * TWO BOUNDS, EACH LOAD-BEARING.
  *
- * The channel half repeats `t3_bot-2d2`'s id charset rather than accepting
- * anything up to a colon, because the split assumes no ":" inside a channel id
- * and this is where that assumption is checkable. If 2d2's rule ever widens,
- * this pattern is wrong and so is the split.
+ * The channel half repeats `OPAQUE_ID_PATTERN` from
+ * `packages/contracts/src/baseSchemas.ts` rather than accepting anything up to
+ * a colon, because the split assumes no ":" inside a channel id and this is
+ * where that assumption is checkable. IT IS A SECOND SPELLING OF ONE RULE,
+ * which this repo has been burned by four times - kept deliberately because a
+ * schema pattern cannot reference a brand's internal regex, and recorded here
+ * because the bead that introduced it (`t3_bot-2d2`) is CLOSED and is not where
+ * anyone will look. If that charset widens, this pattern is wrong and so is
+ * `decodeCursor`'s split.
  *
- * The sequence half stays at fifteen digits. `Number.MAX_SAFE_INTEGER` is
- * sixteen, and an unbounded `[0-9]+` admitted "9007199254740993" - numeric,
- * accepted here, and then a defect inside the gateway. Widening this reopens
- * that, and the gateway's own guard is the only thing behind it.
+ * The sequence half stays at fifteen digits. `Number.MAX_SAFE_INTEGER` has
+ * sixteen of them, so fifteen is the widest bound that cannot overflow. An
+ * unbounded `[0-9]+` admitted "9007199254740993", which is numeric and passes
+ * every other check; the gateway now REFUSES such a cursor rather than
+ * defecting on it, so widening this costs a typed refusal rather than a crash -
+ * but it still means handing an agent a cursor the server can never honour.
  */
 const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:[0-9]{1,15}$/;
 
@@ -222,7 +229,7 @@ export const ReadChannelResult = Schema.Struct({
   nextCursor: Schema.NullOr(
     Schema.String.annotate({
       description:
-        "Pass as cursor to read the posts after this page. Null when there are no newer posts.",
+        "Pass as cursor to read the posts after this page, IN THIS CHANNEL ONLY — a cursor used on a different channel is refused, not answered. Null when there are no newer posts.",
     }),
   ),
 });

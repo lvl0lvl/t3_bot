@@ -269,6 +269,12 @@ export interface ChannelPage {
    *
    * Null means there is nothing further IN THAT DIRECTION — the newest post
    * going forward, the beginning of history going backward.
+   *
+   * IT DOES NOT RECORD THE DIRECTION THAT ISSUED IT. A backward cursor is a
+   * well-formed forward cursor and vice versa, so handing one to the other
+   * direction silently reads a window the caller did not ask for. Keep a cursor
+   * with the direction you obtained it from; `t3_bot-e60` carries encoding the
+   * direction into the value so the mismatch becomes a refusal.
    */
   readonly nextCursor: string | null;
 }
@@ -332,9 +338,9 @@ export interface ReadPostsInput {
 
 export interface ChannelGatewayShape {
   /**
-   * The channel by name, but only if `threadId` is a member of it. A
-   * non-member and a non-existent channel are the same answer: an agent must
-   * not be able to probe for channels it is not in.
+   * The channel by name, but only if `member` belongs to it. A non-member and a
+   * non-existent channel are the same answer: an agent must not be able to
+   * probe for channels it is not in.
    *
    * `name` must already be canonical by `canonicalChannelName`. Matching is
    * exact, so a caller passing what the agent typed rather than the canonical
@@ -362,11 +368,21 @@ export interface ChannelGatewayShape {
   ) => Effect.Effect<Option.Option<ChannelPostRecord>, ChannelStoreUnavailable>;
 
   /**
-   * One page of posts, oldest first, ascending by sequence.
+   * One page of posts, ALWAYS ascending by sequence in both directions.
    *
-   * `cursor` is opaque and points AFTER the last post returned, so passing a
-   * page's `nextCursor` yields the posts newer than it. `nextCursor` is `null`
-   * when no newer posts exist. `limit` is a maximum, not an exact count.
+   * `direction` chooses the WINDOW and which way the cursor points, never the
+   * order the rows arrive in:
+   *
+   *   "forward"  - oldest first from the cursor; `nextCursor` points AFTER the
+   *                last post returned, and is null when no NEWER post exists.
+   *   "backward" - the newest page, then upward; `nextCursor` points BEFORE the
+   *                first post returned, and is null at the START of history.
+   *
+   * `cursor` is opaque, belongs to THIS channel, and one from another is
+   * refused with `ChannelCursorUnusable` rather than answered with an empty
+   * page - the empty page is indistinguishable from "you are caught up", which
+   * is the defect this contract exists to prevent. `limit` is a maximum, not an
+   * exact count.
    */
   readonly readPosts: (
     input: ReadPostsInput,

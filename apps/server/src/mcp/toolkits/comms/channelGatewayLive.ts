@@ -117,7 +117,7 @@ const make = Effect.gen(function* () {
       // BOTH FIELDS, and the kind was a literal until this change. Comparing
       // only `memberId` is a mutation that has survived a full suite three
       // times in this repository - the decider's author lookup, the shell
-      // stream's membership test, and this reactor's own wake filter - because
+      // stream's membership test, and the mention-wake reactor's filter - because
       // every channel fixture gives its members ids that differ in BOTH
       // fields, so the two implementations are indistinguishable against any
       // data we had (`t3_bot-46h`). The colliding roster that tells them apart
@@ -170,23 +170,6 @@ const make = Effect.gen(function* () {
     );
 
   /**
-   * A cursor this layer did not issue is a DEFECT, not an empty page.
-   *
-   * The toolkit's schema admits only 1-15 digits, so a cursor arriving here
-   * that is not a safe non-negative integer is a caller bug. Dying says so;
-   * coercing with `Number()` answered it with the wire shape of "you are caught
-   * up", which is the one wrong answer an agent cannot detect - it stops
-   * reading.
-   *
-   * THE DIGIT BOUND IS WHAT MAKES THIS UNREACHABLE, and it was not there at
-   * first: `^[0-9]+$` admitted "9007199254740993", which is numeric, reached
-   * this function, and threw while the argument to `listPosts` was being built
-   * - before `Effect.catchCause(readDefect)` had anything to attach to. Agent
-   * input became a server defect. If the bound in `tools.ts` is ever widened,
-   * this throw becomes agent-reachable again and has to become a typed refusal
-   * instead.
-   */
-  /**
    * A cursor names the channel it came from, and one from elsewhere is REFUSED.
    *
    * It used to be the bare event sequence. That sequence is GLOBAL, so a cursor
@@ -197,10 +180,13 @@ const make = Effect.gen(function* () {
    * holding the first channel's cursor, and nothing in the reply said otherwise
    * (`t3_bot-e60`).
    *
-   * Split on the FIRST colon. `t3_bot-2d2` forbids ":" inside a `ChannelId`, so
-   * today the first and last colon are the same one - but the wake key already
-   * paid once for assuming a delimiter could not appear in an id, and taking
-   * the first is correct whether or not that rule survives.
+   * Split on the FIRST colon, which is correct only BECAUSE `t3_bot-2d2`
+   * forbids ":" inside a `ChannelId` - so today the first and last colon are
+   * the same one and the choice does not matter. It is not extra robustness: if
+   * that charset ever widened, `indexOf` would take a channel id's own colon as
+   * the boundary and `lastIndexOf` would take the sequence's. Neither is right
+   * without re-deciding the format, and `CURSOR_PATTERN` in `tools.ts` is where
+   * the assumption is checkable.
    */
   const decodeCursor = (channelId: string, cursor: string) => {
     const boundary = cursor.indexOf(":");
