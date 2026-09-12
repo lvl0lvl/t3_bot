@@ -66,6 +66,7 @@ const removeDirectory = (directory: string) =>
 const PROJECT_ID = ProjectId.make("project-comms");
 const WOKEN = ThreadId.make("thread-woken");
 const CHANNEL_ID = ChannelId.make("channel-seniors");
+const MENTION = ChannelMemberHandle.make("woken");
 const NOW = "2026-01-01T00:00:00.000Z";
 
 const makeLayer = (databasePath: string) =>
@@ -200,7 +201,7 @@ describe("MentionWakeReactor", () => {
       await system.dispose();
 
       system = await makeSystem(databasePath);
-      await post(system, { id: "post-1", mentions: [ChannelMemberHandle.make("woken")] });
+      await post(system, { id: "post-1", mentions: [MENTION] });
       await system.dispose();
 
       system = await makeSystem(databasePath);
@@ -263,6 +264,85 @@ describe("MentionWakeReactor", () => {
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
       expect(await wakeMessages(system)).toHaveLength(0);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("wakes nobody on its first activation, however much history it finds", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    let system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      // Posts that predate the reactor's existence entirely. On an upgraded
+      // database this is every mention ever made, and starting from zero would
+      // wake every agent for all of them at once, on first boot after the
+      // deploy - the one failure whose blast radius is the whole install.
+      await post(system, { id: "post-old-1", mentions: [MENTION] });
+      await post(system, { id: "post-old-2", mentions: [MENTION] });
+      await system.dispose();
+
+      system = await makeSystem(databasePath);
+      await system.startReactor();
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      expect(await wakeMessages(system)).toHaveLength(0);
+
+      // And it is at the head afterwards, not at zero: the NEXT post wakes.
+      await post(system, { id: "post-new", mentions: [MENTION] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      const messages = await wakeMessages(system);
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("post post-new");
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("adds no second turn when the cursor write never happened", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    let system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      // Captured BEFORE the post. Rewinding by one from the head afterwards
+      // does not reach it - the wake appends its own events, so the head has
+      // moved well past the post and a one-step rewind replays nothing.
+      const beforeThePost = await system.run(system.engine.latestSequence);
+      await post(system, { id: "post-crash", mentions: [MENTION] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      expect(await wakeMessages(system)).toHaveLength(1);
+
+      // The crash window, reproduced exactly rather than approximated: the
+      // dispatch committed and the cursor write did not. Rewinding the cursor
+      // to before the post IS that state - there is no other difference between
+      // "crashed between the two" and "cursor is behind the dispatch".
+      await system.run(
+        system.cursors.upsert({
+          projector: MENTION_WAKE_CURSOR,
+          lastAppliedSequence: beforeThePost,
+          updatedAt: NOW,
+        }),
+      );
+      await system.dispose();
+
+      system = await makeSystem(databasePath);
+      await system.startReactor();
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // The post replays and the turn does not. The commandId is derived from
+      // (postId, threadId), so the engine's receipt check absorbs it - which is
+      // the whole reason the cursor is allowed to lag the dispatch at all.
+      expect(await wakeMessages(system)).toHaveLength(1);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
