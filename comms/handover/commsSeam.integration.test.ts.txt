@@ -1,0 +1,314 @@
+/**
+ * The toolkit against the REAL aggregate invariants.
+ *
+ * Every other comms test fakes the gateway and asserts what the toolkit sends.
+ * This one imports the decider's actual `commandInvariants` and runs the
+ * toolkit's output through them, because the two halves have diverged twice —
+ * once on how many leading sigils a name loses, once on whether a handle is
+ * case-folded — and both times every test on both sides stayed green.
+ *
+ * Drop this in when the channel aggregate lands (t3_bot-iin). Until then it
+ * needs the decider branch present; the three imports below are the contract.
+ *
+ * WHAT IT PINS
+ *   1. A name canonicalised by the toolkit is a name the decider stores.
+ *   2. A handle emitted by comms_read_channel is a handle the decider resolves.
+ *   3. Distinct members stay distinct end to end — no two of them collapse into
+ *      one mention key.
+ *   4. A non-member and a non-existent channel are one answer, byte for byte.
+ */
+import { ChannelId, EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { describe, expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
+import type { Tool } from "effect/unstable/ai";
+
+// The real decider-side rules. If these move, this file must fail.
+import {
+  canonicalChannelName,
+  requireChannelHandlesUnique,
+  requireChannelMentionsResolve,
+} from "../../../orchestration/commandInvariants.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as ChannelGateway from "./channelGateway.ts";
+import { CommsToolkitHandlersLive, normalizeChannelName, resolveMentions } from "./handlers.ts";
+import { CommsToolkit } from "./tools.ts";
+
+const THREAD_ID = ThreadId.make("thread-boss3");
+const OTHER_THREAD_ID = ThreadId.make("thread-boss1");
+const CHANNEL_ID = "channel-seniors";
+
+const invocation = (threadId: ThreadId): McpInvocationContext.McpInvocationScope => ({
+  environmentId: EnvironmentId.make("environment-1"),
+  threadId,
+  providerSessionId: "provider-session-1",
+  providerInstanceId: ProviderInstanceId.make("claude"),
+  capabilities: new Set<McpInvocationContext.McpCapability>(["comms"]),
+  issuedAt: 1,
+});
+
+/**
+ * A gateway wired the way the live one will be: name lookup against the
+ * decider's canonical form with a byte comparison, and createPost forwarded to
+ * the decider's own mention-resolution invariant. A fake that reimplements
+ * either rule cannot see the two halves disagree, which is the whole point.
+ */
+const makeSeam = Effect.fn("commsSeam")(function* (opts: {
+  readonly channelName: string;
+  readonly members: ReadonlyArray<ChannelGateway.ChannelMember>;
+  readonly memberThreadIds: ReadonlyArray<string>;
+}) {
+  const created = yield* Ref.make<ReadonlyArray<ChannelGateway.CreatePostInput>>([]);
+  const channelLookups = yield* Ref.make<ReadonlyArray<readonly [string, string]>>([]);
+  const deciderRejections = yield* Ref.make<ReadonlyArray<string>>([]);
+
+  const gateway = Layer.succeed(
+    ChannelGateway.ChannelGateway,
+    ChannelGateway.ChannelGateway.of({
+      getChannelForMember: (name, threadId) =>
+        Ref.update(channelLookups, (seen) => [...seen, [name, threadId] as const]).pipe(
+          Effect.as(
+            name === canonicalChannelName(opts.channelName) &&
+              opts.memberThreadIds.includes(threadId)
+              ? Option.some<ChannelGateway.Channel>({
+                  channelId: CHANNEL_ID,
+                  name: canonicalChannelName(opts.channelName),
+                  members: opts.members,
+                })
+              : Option.none(),
+          ),
+        ),
+      getPost: () => Effect.succeed(Option.none()),
+      readPosts: () => Effect.succeed({ posts: [], nextCursor: null }),
+      createPost: (input) =>
+        Effect.gen(function* () {
+          yield* Ref.update(created, (r) => [...r, input]);
+          const verdict = yield* requireChannelMentionsResolve({
+            command: { type: "channel.post.create" } as never,
+            channel: { id: ChannelId.make(CHANNEL_ID), members: opts.members } as never,
+            mentions: input.mentions as never,
+          }).pipe(Effect.result);
+          if (verdict._tag === "Failure") {
+            yield* Ref.update(deciderRejections, (r) => [
+              ...r,
+              String((verdict as { failure: { detail: string } }).failure.detail),
+            ]);
+            return yield* Effect.fail(
+              new ChannelGateway.ChannelMentionUnresolvable({ handles: input.mentions }),
+            );
+          }
+          return { postId: "post-new", createdAt: "2026-09-11T18:05:00.000Z" };
+        }),
+    }),
+  );
+
+  const toolkit = yield* CommsToolkit.pipe(
+    Effect.provide(CommsToolkitHandlersLive.pipe(Layer.provide(gateway))),
+  );
+
+  const call = <Name extends keyof typeof CommsToolkit.tools>(
+    name: Name,
+    params: Parameters<typeof toolkit.handle<Name>>[1],
+    threadId: ThreadId = THREAD_ID,
+  ) =>
+    toolkit.handle(name, params).pipe(
+      Stream.unwrap,
+      Stream.runCollect,
+      Effect.map((chunk) => chunk.at(-1)!.result as Tool.Success<(typeof CommsToolkit.tools)[Name]>),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(threadId)),
+      Effect.provide(gateway),
+    );
+
+  return { call, created, channelLookups, deciderRejections };
+});
+
+/** A capitalised handle, because that is the shape that broke it. */
+const MEMBERS: ReadonlyArray<ChannelGateway.ChannelMember> = [
+  { handle: "Boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
+  { handle: "boss3", memberKind: "thread", memberId: THREAD_ID },
+];
+
+describe("comms toolkit against the real aggregate invariants", () => {
+  it.effect("a handle comms_read_channel shows is a handle the decider resolves", () =>
+    Effect.gen(function* () {
+      // The aggregate admits this membership, so the toolkit has to survive it.
+      expect(
+        (yield* requireChannelHandlesUnique({
+          command: { type: "channel.create" } as never,
+          members: MEMBERS as never,
+        }).pipe(Effect.result))._tag,
+      ).toBe("Success");
+
+      const seam = yield* makeSeam({
+        channelName: "seniors",
+        members: MEMBERS,
+        memberThreadIds: [THREAD_ID, OTHER_THREAD_ID],
+      });
+
+      // What the agent is told it may mention...
+      const read = yield* seam.call("comms_read_channel", { channel: "seniors" });
+      expect(read.members).toEqual(["Boss1", "boss3"]);
+
+      // ...is accepted verbatim, and reaches the aggregate unchanged.
+      for (const mention of read.members) {
+        const result = yield* seam.call("comms_post", {
+          channel: "seniors",
+          body: "please review",
+          mentions: [mention],
+        });
+        expect(result.mentioned).toEqual([mention]);
+      }
+      expect((yield* Ref.get(seam.created)).map((c) => c.mentions)).toEqual([["Boss1"], ["boss3"]]);
+      expect(yield* Ref.get(seam.deciderRejections)).toEqual([]);
+    }),
+  );
+
+  it.effect("a mention the toolkit accepts is never one the aggregate rejects", () =>
+    Effect.gen(function* () {
+      const seam = yield* makeSeam({
+        channelName: "seniors",
+        members: MEMBERS,
+        memberThreadIds: [THREAD_ID, OTHER_THREAD_ID],
+      });
+      // Sigil and whitespace are the agent's to get wrong; case is not.
+      const result = yield* seam.call("comms_post", {
+        channel: "seniors",
+        body: "over to you",
+        mentions: ["@Boss1", " boss3 "],
+      });
+      expect(result.mentioned).toEqual(["Boss1", "boss3"]);
+      expect(yield* Ref.get(seam.deciderRejections)).toEqual([]);
+
+      // A case-shifted mention is refused BY THE TOOLKIT, with the bad handle
+      // named, rather than accepted here and refused whole by the aggregate.
+      const error = yield* seam
+        .call("comms_post", { channel: "seniors", body: "x", mentions: ["boss1"] })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "CommsMemberNotFoundError", handles: ["boss1"] });
+      expect(yield* Ref.get(seam.deciderRejections)).toEqual([]);
+    }),
+  );
+
+  it.effect("distinct members never collapse into one mention key", () =>
+    Effect.gen(function* () {
+      // Handles the aggregate keeps apart: ASCII case, and U+212A KELVIN SIGN,
+      // which toLowerCase() folds onto plain "k".
+      const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
+        { handle: "Walt", memberKind: "human", memberId: "human-walt" },
+        { handle: "walt", memberKind: "thread", memberId: "thread-walt-bot" },
+        { handle: "kai", memberKind: "human", memberId: "human-kai" },
+        { handle: "Kai", memberKind: "thread", memberId: "thread-kai-bot" },
+        { handle: "boss3", memberKind: "thread", memberId: THREAD_ID },
+      ];
+      expect(
+        (yield* requireChannelHandlesUnique({
+          command: { type: "channel.create" } as never,
+          members: members as never,
+        }).pipe(Effect.result))._tag,
+      ).toBe("Success");
+
+      const seam = yield* makeSeam({
+        channelName: "seniors",
+        members,
+        memberThreadIds: [THREAD_ID],
+      });
+      const read = yield* seam.call("comms_read_channel", { channel: "seniors" });
+      // Five members, five distinguishable handles. A fold here shows up as a
+      // duplicate, which is the failure that makes a mention ambiguous.
+      expect(read.members).toEqual(["Walt", "walt", "kai", "Kai", "boss3"]);
+      expect(new Set(read.members).size).toBe(members.length);
+
+      // Each one routes to itself.
+      for (const member of members) {
+        expect(resolveMentions([member.handle], members)).toEqual({ handles: [member.handle] });
+      }
+    }),
+  );
+
+  it("the toolkit's name rule and the decider's agree, input for input", () => {
+    const cases = [
+      "seniors",
+      "#seniors",
+      "Seniors",
+      "#SENIORS",
+      "  ##SENIORS  ",
+      "# seniors",
+      "###ops",
+      "# #ops",
+      "a#b",
+    ];
+    expect(cases.map((raw) => [raw, normalizeChannelName(raw)])).toEqual(
+      cases.map((raw) => [raw, canonicalChannelName(raw)]),
+    );
+  });
+
+  it.effect("a non-member and a non-existent channel are one answer, byte for byte", () =>
+    Effect.gen(function* () {
+      // The channel exists; THREAD_ID is not in it.
+      const seam = yield* makeSeam({
+        channelName: "Private-Ops",
+        members: [{ handle: "Boss1", memberKind: "thread", memberId: OTHER_THREAD_ID }],
+        memberThreadIds: [OTHER_THREAD_ID],
+      });
+
+      const answer = (probe: string) =>
+        seam
+          .call("comms_post", { channel: probe, body: "let me in", mentions: ["Boss1", "ghost"] })
+          .pipe(
+            Effect.flip,
+            Effect.map((error) => ({
+              tag: (error as { _tag: string })._tag,
+              echoed: (error as { channel?: string }).channel,
+              message: (error as { message: string }).message,
+            })),
+          );
+
+      // Three spellings of a channel that exists and excludes the caller...
+      const excluded = yield* Effect.all(
+        ["Private-Ops", "private-ops", "#PRIVATE-OPS"].map(answer),
+      );
+      // ...and two of one that does not exist at all.
+      const missing = yield* Effect.all(["Private-Opz", "PRIVATE-OPZ"].map(answer));
+
+      // Identical but for the name the caller itself supplied.
+      for (const seen of excluded) {
+        expect(seen).toEqual({
+          tag: "CommsChannelNotFoundError",
+          echoed: "private-ops",
+          message: "No channel named 'private-ops' that you are a member of.",
+        });
+      }
+      for (const seen of missing) {
+        expect(seen).toEqual({
+          tag: "CommsChannelNotFoundError",
+          echoed: "private-opz",
+          message: "No channel named 'private-opz' that you are a member of.",
+        });
+      }
+
+      // Mentions are never evaluated for a channel the caller is not in, so no
+      // membership fact escapes; membership is a parameter of the lookup, not a
+      // separate guard that could be reordered away from it.
+      expect(yield* Ref.get(seam.created)).toEqual([]);
+      expect((yield* Ref.get(seam.channelLookups)).map(([name]) => name)).toEqual([
+        "private-ops",
+        "private-ops",
+        "private-ops",
+        "private-opz",
+        "private-opz",
+      ]);
+    }),
+  );
+
+  it("what an error echoes is a function of the caller's own input, never of what is stored", () => {
+    // Every echoed value in the two error paths is derived from the argument
+    // alone, so an error cannot confirm a name or a handle the caller guessed.
+    expect(normalizeChannelName("#SECRET-PROJECT")).toBe("secret-project");
+    expect(resolveMentions(["@GHOST", "Nobody", "@Boss1"], MEMBERS)).toEqual({
+      unknown: ["GHOST", "Nobody"],
+    });
+  });
+});
