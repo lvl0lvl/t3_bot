@@ -190,6 +190,18 @@ export interface ChannelPostRecord {
  * The toolkit passes `{ memberKind: "thread", memberId: <the credential's
  * thread> }`. An RPC passes the authenticated session's member. Neither reads
  * it off the wire.
+ *
+ * THERE IS ONE DOOR TODAY AND THERE WILL BE TWO. That is the condition, not the
+ * safeguard: `ClientOrchestrationCommand` had two doors into one union and an
+ * issuer stamped at one of them, which shipped, because the sweep that proved
+ * the stamp was pointed only at the door its author was standing in. Each
+ * caller here builds this value inline, so the second one can build it
+ * differently — a human read as `"thread"`, or a memberId taken from the
+ * payload rather than the session — and nothing in a type would say so.
+ *
+ * A caller adding itself: assert the KIND you pass, not only the id. The
+ * toolkit's lookup tests do, which is what makes "derived from the credential"
+ * checkable rather than a sentence in a docstring.
  */
 export interface ChannelMemberRef {
   readonly memberKind: "thread" | "human";
