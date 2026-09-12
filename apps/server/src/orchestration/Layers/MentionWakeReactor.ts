@@ -133,17 +133,6 @@ const make = Effect.gen(function* () {
     if (channelName === null || threadIds.length === 0) {
       return;
     }
-    // Random per wake, from the platform's crypto rather than anything the
-    // author can see or derive. A guessable fence is a fence the body can close.
-    const nonce = (yield* crypto.randomUUIDv4).replace(/-/g, "").slice(0, 16);
-    const text = wakeMessageText({
-      channelName,
-      authorHandle: event.payload.authorHandle,
-      postId: event.payload.postId,
-      parentPostId: event.payload.parentPostId,
-      body: event.payload.body,
-      nonce,
-    });
     for (const threadId of threadIds) {
       // The woken turn runs in the thread's OWN modes, read now rather than
       // defaulted. A channel mention must not be a way to raise a thread's
@@ -154,6 +143,19 @@ const make = Effect.gen(function* () {
       if (Option.isNone(thread)) {
         continue;
       }
+      // PER WAKE, not per post. From the platform's crypto rather than
+      // anything the author can see or derive: a guessable fence is a fence
+      // the body can close, and a fence derived from the postId is guessable
+      // by the one person who chose the postId.
+      const nonce = (yield* crypto.randomUUIDv4).replace(/-/g, "").slice(0, 16);
+      const text = wakeMessageText({
+        channelName,
+        authorHandle: event.payload.authorHandle,
+        postId: event.payload.postId,
+        parentPostId: event.payload.parentPostId,
+        body: event.payload.body,
+        nonce,
+      });
       const key = wakeKey(event.payload.channelId, event.payload.postId, threadId);
       yield* engine.dispatch({
         type: "thread.turn.start",

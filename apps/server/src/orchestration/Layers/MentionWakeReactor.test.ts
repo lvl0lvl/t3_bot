@@ -600,7 +600,6 @@ describe("MentionWakeReactor", () => {
       // - their fake end marker, their fake operator block - is between the two
       // real ones, where the header has already said it is untrusted.
       expect(nonce).toMatch(/^[0-9a-f]{16}$/);
-      expect(nonce).not.toEqual("0000000000000000");
       const end = lines.lastIndexOf(`---- end post ${nonce} ----`);
       expect(end).toBeGreaterThan(begin);
       for (const forged of [
@@ -611,10 +610,13 @@ describe("MentionWakeReactor", () => {
         expect(at).toBeGreaterThan(begin);
         expect(at).toBeLessThan(end);
       }
-      // And the trust statement is ahead of the body, not trailing it.
-      expect(lines.findIndex((line) => line.includes("untrusted channel content"))).toBeLessThan(
-        begin,
-      );
+      // The trust statement EXISTS, and only then that it is ahead of the body.
+      // findIndex returns -1 when the line is absent, and -1 is less than any
+      // index - so asserting only the position is SATISFIED BY THE STATEMENT
+      // BEING GONE, which is the one outcome it exists to prevent.
+      const trust = lines.findIndex((line) => line.includes("untrusted channel content"));
+      expect(trust).toBeGreaterThanOrEqual(0);
+      expect(trust).toBeLessThan(begin);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
@@ -651,6 +653,44 @@ describe("MentionWakeReactor", () => {
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
       expect(await wakeMessages(system)).toHaveLength(0);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("uses a different fence marker for every wake", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      // One post, two mentioned threads, so two wakes of the SAME post. The
+      // markers must still differ.
+      //
+      // This is what "unpredictable" can actually be asserted as. Checking the
+      // shape (16 hex) or excluding one particular constant only rules out the
+      // mutant you happened to write: a fixed "0123456789abcdef" passes both,
+      // and so does a nonce derived from the postId - which is worse than a
+      // constant, because the author knows the postId.
+      await post(system, {
+        id: "post-two-targets",
+        mentions: [MENTION, ChannelMemberHandle.make("bystander")],
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      const markerOf = (text: string) =>
+        text
+          .split("\n")
+          .find((line) => line.startsWith("---- begin post "))
+          ?.slice("---- begin post ".length, -" ----".length);
+
+      const [woken] = await wakeMessages(system);
+      const [bystander] = await wakeMessages(system, BYSTANDER);
+      expect(woken).toBeDefined();
+      expect(bystander).toBeDefined();
+      expect(markerOf(woken ?? "")).not.toEqual(markerOf(bystander ?? ""));
     } finally {
       await system.dispose();
       await removeDirectory(directory);
