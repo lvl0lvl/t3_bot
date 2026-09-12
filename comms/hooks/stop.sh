@@ -6,7 +6,7 @@
 set -u
 input=$(cat)
 sid=$(printf '%s' "$input" | sed -n 's/.*"session_id": *"\([^"]*\)".*/\1/p' | head -1)
-active=$(printf '%s' "$input" | sed -n 's/.*"stop_hook_active": *\(true\|false\).*/\1/p' | head -1)
+active=false; printf '%s' "$input" | /usr/bin/grep -q '"stop_hook_active": *true' && active=true
 . "$(dirname "$0")/../lib.sh"
 track=$(cat "$STATE/$sid.track" 2>/dev/null || true)
 [ -n "$track" ] || exit 0
