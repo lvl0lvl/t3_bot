@@ -661,6 +661,20 @@ describe("the comms toolkit on the live gateway", () => {
           `${CHANNEL_ID}:-1`,
           `${CHANNEL_ID}:9007199254740993`,
           "3",
+          // THE TWO THAT SEPARATE AN EXACT COMPARISON FROM A LAZY ONE, and
+          // without them the other six do not. Every value above differs from
+          // this channel in LENGTH and in PREFIX, so `from !== channelId`,
+          // `from.length !== channelId.length` and `!channelId.startsWith(from)`
+          // are the same function against them - two of those were run as
+          // mutants and survived every test in this file.
+          //
+          // It is not hypothetical arithmetic: `HierarchySeeder` mints
+          // `channel-project` and `channel-seniors`, both fifteen characters
+          // and both starting "channel-". Under a length comparison a real
+          // cursor from one pages the other on a seeded install, which is the
+          // defect this whole test exists to close.
+          `${CHANNEL_ID.slice(0, -1)}:3`,
+          `${CHANNEL_ID.replace("seniors", "project")}:3`,
         ]) {
           const refused = yield* gateway
             .readPosts({ channelId: CHANNEL_ID, limit: 10, cursor: foreign, direction: "forward" })
