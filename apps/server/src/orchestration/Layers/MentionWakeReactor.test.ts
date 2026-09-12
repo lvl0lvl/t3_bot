@@ -1764,7 +1764,7 @@ describe("MentionWakeReactor", () => {
     }
   }, 30_000);
 
-  it("leaves a post able to find its turn, with no id stored anywhere to link them", async () => {
+  it("stores the wake's derived key on the thread's pending turn start", async () => {
     const { directory, databasePath } = await makeDatabasePath();
     const system = await makeSystem(databasePath);
     try {
@@ -1776,11 +1776,18 @@ describe("MentionWakeReactor", () => {
       );
 
       // `t3_bot-75k` CRITERION 3 asks that a cancelled turn reach the post, and
-      // the first thing that needs is a way to get from one to the other. There
-      // is no join table and no column linking them, by design: the messageId
-      // is DERIVED, so the link is arithmetic a reader can do with the post in
-      // its hand. This asserts that the derivation actually lands where a
-      // reader would look for it.
+      // the first thing that needs is a way to get from one to the other.
+      //
+      // THERE IS NO COLUMN HOLDING THE POST ID, which is the true claim. An
+      // earlier title here said "no id stored anywhere to link them" and that
+      // was simply false: `projection_turns.pending_message_id` is a stored id
+      // and production already joins on it (`ProjectionSnapshotQuery.ts:1738`).
+      // What is derived is the VALUE — `wakeKey(channelId, postId, threadId)`.
+      // A reader computes it rather than being handed it, but THREE ARGUMENTS,
+      // not one: the channel and the post come off the post, the thread does
+      // not. An earlier title said "holding only the post", which this test
+      // itself disproves — it supplies `WOKEN` to both the lookup and the
+      // expectation. This asserts that the derivation lands in that column.
       //
       // The reactor's own tests assert what it DISPATCHED. That is a different
       // claim: a dispatched messageId that the projector dropped, renamed, or
@@ -1866,16 +1873,42 @@ describe("MentionWakeReactor", () => {
       );
 
       // DOCUMENTS A LIMIT RATHER THAN A GUARANTEE, and it is deliberate that it
-      // is written as a test: `replacePendingTurnStart` REPLACES, so the pending
-      // row holds only the most recent start. Two posts waking one thread inside
-      // a turn leave the first post with nothing to find - which is
-      // `t3_bot-j6o`'s hazard arriving one layer lower than j6o describes it,
-      // in the projection rather than in the adapter.
+      // is written as a test: `replacePendingTurnStart` REPLACES, so THIS row
+      // holds only the most recent start.
       //
-      // Whoever builds criterion 3's surfacing half will reach for this row. It
-      // answers for the LATEST wake only, and a reader that assumed otherwise
-      // would report the second post's failure against the first. Stated here
-      // so that assumption fails a test rather than a user.
+      // Scoped to this row deliberately. The sentence here used to read "leave
+      // the first post with nothing to find", flatly, and that is false — the
+      // first post's key is on the TURN row, which is the whole subject of the
+      // paragraph below. Two statements of opposite sign in one comment block
+      // is worse than either alone.
+      //
+      // FOR `t3_bot-j6o`, FOUR THINGS, AND THIS BLOCK DELIBERATELY SAYS NO MORE.
+      // Three versions of it were wrong in three different ways — pointing at
+      // the wrong row, then giving a right answer through a false cause, then
+      // asserting two things of opposite sign twenty lines apart. Each rewrite
+      // was longer than the last. What follows is only what a lane executed.
+      //
+      // 1. DO NOT READ THIS ROW FOR CORRELATION. It is a staging row.
+      // 2. IT IS EMPTIED WHEN A TURN STARTS — `deletePendingTurnStartByThreadId`
+      //    in `ProjectionPipeline.ts`'s `thread.session-set` case, on the
+      //    success path — and re-staged by any later post. So it answers for
+      //    whichever post most recently had no turn, which is not a correlation.
+      // 3. THE TURN ROW KEEPS THE POST THAT STARTED THE TURN, and that is
+      //    upstream's rule (the `??` in the same case, six months older than
+      //    this fork, read by the user-turn walk in `ProjectionSnapshotQuery`).
+      //    Do not "fix" it to last-wins; it decides turn attribution app-wide.
+      // 4. SO THE WAKE NEEDS ITS OWN POST-KEYED LINK. A post that arrives during
+      //    a running turn is staged, then erased by the next `session-set`, and
+      //    its key is then nowhere: not on the turn row, which holds the
+      //    starter, and not here. That is the hole criterion 3 has to fill, and
+      //    it is not only a cancellation path — an ordinary second `session-set`
+      //    loses it too.
+      //
+      // NOTHING IN THIS FILE DEMONSTRATES ANY OF THAT, including the two-post
+      // test below: it starts no turn, so there is no turn row in it at all. A
+      // verifier had to write that fixture to see the behaviour. It is writable
+      // here — `thread.session.set` is a real command on the engine and needs no
+      // provider layer — and it is the test criterion 3 most needs.
       const pending = await system.run(
         system.turns.getPendingTurnStartByThreadId({ threadId: WOKEN }),
       );
