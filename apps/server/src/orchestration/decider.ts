@@ -45,7 +45,7 @@ import {
   requireChannel,
   requireChannelAbsent,
   requireChannelAuthorIsMember,
-  requireChannelHandlesUnique,
+  requireChannelMembersUnique,
   requireChannelMemberShape,
   requireChannelMentionsResolve,
   requireChannelArchived,
@@ -2057,7 +2057,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       yield* Effect.forEach(members, (member) =>
         requireChannelMemberShape({ readModel, command, member }),
       );
-      yield* requireChannelHandlesUnique({ command, members });
+      yield* requireChannelMembersUnique({ command, members });
       const name = yield* requireCanonicalChannelName({ command, name: command.name });
       yield* requireChannelNameAvailable({ readModel, command, name });
       return {
@@ -2181,7 +2181,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       yield* requireChannelNotArchived({ command, channel });
       const member = yield* requireCanonicalChannelMember({ command, member: command.member });
       yield* requireChannelMemberShape({ readModel, command, member });
-      yield* requireChannelHandlesUnique({
+      yield* requireChannelMembersUnique({
         command,
         members: [...channel.members, member],
       });

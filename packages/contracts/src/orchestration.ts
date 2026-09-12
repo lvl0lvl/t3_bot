@@ -2065,7 +2065,7 @@ export const ChannelMemberAddedPayload = Schema.Struct({
  * WHO LEFT, and it carries the member ref as well as the handle because the
  * websocket has to decide "was that me" from the EVENT.
  *
- * THE HANDLE STAYS AND REMAINS THE PROJECTOR'S KEY. `requireChannelHandlesUnique`
+ * THE HANDLE STAYS AND REMAINS THE PROJECTOR'S KEY. `requireChannelMembersUnique`
  * makes a handle unique WITHIN a channel; `memberId` is NOT unique. Nothing
  * checks it at all, so two SAME-kind members can hold one id under two handles;
  * and a thread member and a human member can share one (`t3_bot-46h`) BY

@@ -393,20 +393,37 @@ export function requireCanonicalChannelMember(input: {
 }
 
 /**
- * A handle is the mention key, so it must be unique within its channel.
- * Duplicates would make a mention ambiguous and wake the wrong member.
+ * TWO KEYS, BOTH UNIQUE PER CHANNEL: the handle and the member ref.
  *
- * Run this on canonical handles: "Boss1" and "boss1" are two rows here and one
- * mention key everywhere else, so comparing raw handles admits exactly the
- * ambiguity this exists to prevent.
+ * A handle is the mention key, so duplicates would make a mention ambiguous and
+ * wake the wrong member. Run this on canonical handles: "Boss1" and "boss1" are
+ * two rows here and one mention key everywhere else, so comparing raw handles
+ * admits exactly the ambiguity this exists to prevent.
+ *
+ * `(memberKind, memberId)` is the AUTHORIZATION key — every decision in the
+ * system resolves a member by it, and `requireChannelAuthorIsMember` returns the
+ * FIRST row that matches. Two rows with one ref under two handles were legal, and
+ * then the handle a post is stored under, and the `@handle` a wake prompt carries,
+ * were decided by array position: `find` -> `findLast` changed the answer and no
+ * test could see it, and the position is not even stable, since the projector
+ * appends in memory and reloads `ORDER BY handle ASC`. Removing one of the two
+ * handles also reported success and evicted nobody, because the remove path keys
+ * by handle while access keys by the ref (`t3_bot-1ez`, `t3_bot-s4l`).
+ *
+ * ONE ID UNDER TWO KINDS STAYS LEGAL. That is a different collision, it is why
+ * the author lookup compares both fields, and whether a channel may hold it at
+ * all is `t3_bot-7iw`. Keying this on `memberId` alone would refuse it.
  */
-export function requireChannelHandlesUnique(input: {
+export function requireChannelMembersUnique(input: {
   readonly command: OrchestrationCommand;
   readonly members: ReadonlyArray<ChannelMember>;
 }): Effect.Effect<void, OrchestrationCommandInvariantError> {
-  const seen = new Set<string>();
+  const handles = new Set<string>();
+  // A tuple rather than `${kind}:${id}`, so a memberId containing the separator
+  // cannot make two different refs look like one.
+  const refs = new Set<string>();
   for (const member of input.members) {
-    if (seen.has(member.handle)) {
+    if (handles.has(member.handle)) {
       return Effect.fail(
         invariantError(
           input.command.type,
@@ -414,7 +431,20 @@ export function requireChannelHandlesUnique(input: {
         ),
       );
     }
-    seen.add(member.handle);
+    handles.add(member.handle);
+    const ref = JSON.stringify([member.memberKind, member.memberId]);
+    if (refs.has(ref)) {
+      return Effect.fail(
+        invariantError(
+          input.command.type,
+          `Member '${member.memberId}' of kind '${member.memberKind}' is on this channel ` +
+            `twice, under two handles. One member is one row: the author of a post and the ` +
+            `target of a mention are resolved by this pair, so a second handle for it makes ` +
+            `both depend on row order.`,
+        ),
+      );
+    }
+    refs.add(ref);
   }
   return Effect.void;
 }

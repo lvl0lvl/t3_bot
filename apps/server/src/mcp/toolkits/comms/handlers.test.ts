@@ -1123,7 +1123,7 @@ describe("comms toolkit helpers", () => {
     // forgiving map keeps whichever came last.
     //
     // NOT A FAKED STATE, which is the question worth asking of any fixture the
-    // aggregate would refuse. requireChannelHandlesUnique runs on canonical
+    // aggregate would refuse. requireChannelMembersUnique runs on canonical
     // handles now, so a channel cannot be CREATED this way - but this membership
     // comes from a read model, which can hold rows written under an older form
     // of the rule. That is the same population the legacy row above belongs to.

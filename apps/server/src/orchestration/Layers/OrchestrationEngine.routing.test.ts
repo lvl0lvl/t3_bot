@@ -223,12 +223,16 @@ const PROBE_EXTRAS: Readonly<Record<string, Readonly<Record<string, unknown>>>> 
   },
   // The live channel refuses this; the archived one is its only valid target.
   "channel.unarchive": { channelId: ARCHIVED_CHANNEL_ID },
-  // A handle the seeded channel does not already hold; the seeded one collides.
+  // A handle AND a `(memberKind, memberId)` the seeded channel does not already
+  // hold. A fresh handle used to be enough; `requireChannelMembersUnique` now
+  // also refuses a second row for one member ref (`t3_bot-1ez`), and this probe
+  // reused the seeded member's id. A human rather than a thread because a thread
+  // member must name a live thread and this fixture holds exactly one.
   "channel.member.add": {
     member: {
       handle: ChannelMemberHandle.make("added-by-probe"),
-      memberKind: "thread",
-      memberId: THREAD_ID,
+      memberKind: "human",
+      memberId: "human-added-by-probe",
     },
   },
   // The seeded handle, because removing one that is not a member is refused.

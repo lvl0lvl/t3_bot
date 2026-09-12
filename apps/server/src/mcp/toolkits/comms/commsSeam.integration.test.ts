@@ -50,7 +50,7 @@ import {
   canonicalChannelName,
   requireCanonicalChannelHandle,
   requireCanonicalChannelMember,
-  requireChannelHandlesUnique,
+  requireChannelMembersUnique,
   requireChannelMentionsResolve,
 } from "../../../orchestration/commandInvariants.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -220,7 +220,7 @@ describe("comms toolkit against the real aggregate invariants", () => {
       // it means nothing if the handles are not the ones that get stored.
       expect(yield* asStored(RAW_MEMBERS)).toEqual(MEMBERS);
       expect(
-        (yield* requireChannelHandlesUnique({
+        (yield* requireChannelMembersUnique({
           command: { type: "channel.create" } as never,
           members: MEMBERS as never,
         }).pipe(Effect.result))._tag,
@@ -295,7 +295,7 @@ describe("comms toolkit against the real aggregate invariants", () => {
           member: { handle, memberKind: "human", memberId: `human-${handle}` } as never,
         }),
       );
-      const verdict = yield* requireChannelHandlesUnique({
+      const verdict = yield* requireChannelMembersUnique({
         command: { type: "channel.create" } as never,
         members: members as never,
       }).pipe(Effect.result);
@@ -316,7 +316,7 @@ describe("comms toolkit against the real aggregate invariants", () => {
         { handle: "boss3", memberKind: "thread", memberId: THREAD_ID },
       ]);
       expect(
-        (yield* requireChannelHandlesUnique({
+        (yield* requireChannelMembersUnique({
           command: { type: "channel.create" } as never,
           members: members as never,
         }).pipe(Effect.result))._tag,
