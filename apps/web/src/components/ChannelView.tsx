@@ -197,6 +197,12 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
     }
   }, [channel.latestPostAt, cursor, refresh]);
 
+  // DEPENDS ON `arrived` BY REFERENCE, which is only safe because the atom
+  // memoises its value. A component test that handed back a fresh page object per
+  // render looped here until the worker ran out of memory: this effect calls
+  // `setPosts`, which re-renders, which would produce another new page. If this
+  // ever reads from something that rebuilds its value per render, compare by
+  // content or key on the ids.
   useEffect(() => {
     if (arrived === undefined) {
       return;
