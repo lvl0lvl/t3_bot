@@ -20,6 +20,8 @@ import {
   splitScope,
   workspacesToRun,
   reportFileName,
+  resolveBase,
+  describeBase,
   toSuite,
   type RunnerReport,
   type Suite,
@@ -353,6 +355,86 @@ describe("workspace enumeration", () => {
     }
   });
 
+  it("refuses a head that does not contain the base, before it measures anything", () => {
+    // THE FIXTURE THE REPO CANNOT SUPPLY. In CI HEAD always contains
+    // origin/main and locally it usually does, so a test over the real repo
+    // passes against a resolver that never checks. Two commits on main and a
+    // branch forked BEFORE the second is the input the two implementations
+    // disagree on.
+    //
+    // WHAT THIS REFUSES, measured twice on the tool's own PRs (`t3_bot-1tv`):
+    // #30 merged while a run was in flight, the base gained #30's new test, and
+    // the gate reported that test as LOST from a head that had never had it.
+    // Both refusals below are exit 2, so only the MESSAGE tells them apart —
+    // which is why the message is asserted and not just the throw.
+    const repo = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "count-gate-base-"));
+    try {
+      const git = (...args: ReadonlyArray<string>) =>
+        NodeChildProcess.execFileSync("git", [...args], { cwd: repo, encoding: "utf8" });
+      git("init", "--quiet", "--initial-branch=main");
+      git("config", "user.email", "gate@example.invalid");
+      git("config", "user.name", "count gate test");
+      NodeFS.writeFileSync(NodePath.join(repo, "a.txt"), "a\n");
+      git("add", "-A");
+      git("commit", "--quiet", "-m", "fork point");
+      const forkPoint = git("rev-parse", "HEAD").trim();
+
+      // The branch forks here...
+      git("checkout", "--quiet", "-b", "feature");
+      NodeFS.writeFileSync(NodePath.join(repo, "b.txt"), "b\n");
+      git("add", "-A");
+      git("commit", "--quiet", "-m", "feature work");
+
+      // ...and main moves on without it — the merge that lands mid-run.
+      git("checkout", "--quiet", "main");
+      NodeFS.writeFileSync(NodePath.join(repo, "c.txt"), "c\n");
+      git("add", "-A");
+      git("commit", "--quiet", "-m", "someone else's PR");
+      const movedMain = git("rev-parse", "HEAD").trim();
+      git("checkout", "--quiet", "feature");
+
+      // THE HEAD LACKS THE MOVED BASE: refused, with the reason and the fix.
+      expect(() => resolveBase(repo, "main")).toThrow(CannotMeasure);
+      expect(() => resolveBase(repo, "main")).toThrow(/does not contain main/);
+      expect(() => resolveBase(repo, "main")).toThrow(/[Rr]ebase first/);
+      expect(() => resolveBase(repo, "main")).toThrow(/LOST/);
+
+      // THE ADMIT SIDE, or the refusal is satisfied by a resolver that refuses
+      // everything: the fork point IS contained, and it resolves to its SHA.
+      expect(resolveBase(repo, forkPoint)).toBe(forkPoint);
+      // A ref resolves to the SHA it points at, not to itself.
+      git("branch", "--quiet", "at-fork", forkPoint);
+      expect(resolveBase(repo, "at-fork")).toBe(forkPoint);
+      expect(resolveBase(repo, "at-fork")).not.toBe(movedMain);
+
+      // AND A REF THAT DOES NOT EXIST is the OTHER exit-2 message — the shallow
+      // clone one — and must not be mistaken for rebase debt.
+      expect(() => resolveBase(repo, "no-such-ref-zzz")).toThrow(/could not resolve/);
+      expect(() => resolveBase(repo, "no-such-ref-zzz")).not.toThrow(/[Rr]ebase/);
+    } finally {
+      NodeFS.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("names the base as asked AND as resolved, so a stale ref is visible", () => {
+    // THE SHA IS THE HALF THAT GOES STALE. `origin/main` is what the author
+    // typed; the SHA is what the table is a statement about, and worktrees
+    // share one `.git`, so the ref moves whenever any session fetches. Printing
+    // both is what lets a reader see a run that measured a base three merges
+    // old — a case the containment check cannot catch, because the head DOES
+    // contain that older base.
+    expect(describeBase("origin/main", "5aa0804c18b1bef08bfae92e68f653560138f05c")).toBe(
+      "origin/main@5aa0804c1",
+    );
+    // A base given as a SHA prints once, not twice.
+    expect(
+      describeBase(
+        "5aa0804c18b1bef08bfae92e68f653560138f05c",
+        "5aa0804c18b1bef08bfae92e68f653560138f05c",
+      ),
+    ).toBe("5aa0804c18b1bef08bfae92e68f653560138f05c");
+  });
+
   it("does not refuse a PR that touches only workspaces it measures", () => {
     // THE ADMIT SIDE, and without it the refusal below is satisfied by a gate
     // that refuses every PR. A skip is acceptable scope while the PR did not
@@ -447,10 +529,16 @@ describe("the gate refuses rather than measuring nothing", () => {
     expect(run.stdout).not.toContain("no test lost");
   });
 
-  it("refuses a base ref it cannot diff", () => {
+  it("refuses a base ref that does not exist, before it diffs", () => {
+    // The refusal moved one step earlier with `t3_bot-1tv`: the base is
+    // resolved to a SHA before anything reads it, so a ref that is not there
+    // is refused by the resolver ("could not resolve") and never reaches the
+    // diff ("could not diff"). Same exit, earlier and with the shallow-clone
+    // hint attached — which is the message an author on CI needs.
     const run = runGate(["--base", "refs/heads/no-such-ref-zzz"]);
     expect(run.status).toBe(2);
-    expect(run.stderr).toContain("could not diff");
+    expect(run.stderr).toContain("could not resolve");
+    expect(run.stderr).toContain("shallow clone");
   });
 
   it("refuses an option it does not know", () => {
