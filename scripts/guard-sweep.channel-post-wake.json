@@ -114,6 +114,38 @@
       "file": "apps/server/src/persistence/Layers/ProjectionTurns.ts",
       "find": "              input.some((pair) => pair.threadId === row.threadId && pair.turnId === row.turnId),",
       "replace": "              input.some((pair) => pair.turnId === row.turnId),"
+    },
+    {
+      "id": "capture-links-every-pending-row",
+      "guard": "ProjectionPipeline/capture-at-delete",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/Layers/ProjectionPipeline.ts",
+      "find": "            if (Option.isSome(wake)) {\n              yield* channelPostWakeRepository.link({",
+      "replace": "            if (Option.isSome(wake) || true) {\n              yield* channelPostWakeRepository.link({"
+    },
+    {
+      "id": "join-last-wake-wins-per-post",
+      "guard": "channelPostWakes/one-to-many",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/channelPostWakes.ts",
+      "find": "      } else {\n        existing.push(wake);\n      }",
+      "replace": "      } else {\n        byPost.set(row.postId, [wake]);\n      }"
+    },
+    {
+      "id": "outcome-always-unknown",
+      "guard": "channelPostWakes/unknown",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/channelPostWakes.ts",
+      "find": "        outcome: state === undefined ? \"unknown\" : outcomeOf(state),",
+      "replace": "        outcome: \"unknown\","
+    },
+    {
+      "id": "turn-states-drop-everything",
+      "guard": "ProjectionTurns/listStatesByTurnIds",
+      "axis": "wider",
+      "file": "apps/server/src/persistence/Layers/ProjectionTurns.ts",
+      "find": "              input.some((pair) => pair.threadId === row.threadId && pair.turnId === row.turnId),",
+      "replace": "              false,"
     }
   ]
 }
