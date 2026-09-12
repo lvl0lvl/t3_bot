@@ -515,6 +515,19 @@ export function changedPaths(repoRoot: string, base: string): ReadonlyArray<stri
 }
 
 /**
+ * The workspaces `runSuite` will actually RUN, in order.
+ *
+ * THE PRINTED SCOPE AND THE EXECUTED SCOPE MUST BE THE SAME SET, and nothing
+ * said so: `splitScope` decides what the table claims and `runSuite`'s two
+ * `continue`s decide what runs, and a QA lane deleted either one with all
+ * twenty tests still green. The drift that matters is the quiet direction —
+ * `splitScope` reporting a workspace as measured while `runSuite` skips it, so
+ * the table claims coverage nobody ran.
+ */
+export const workspacesToRun = (workspaces: ReadonlyArray<Workspace>): ReadonlyArray<Workspace> =>
+  workspaces.filter((w) => w.testScript !== undefined && !isUnmeasurable(w.name));
+
+/**
  * Every selected workspace, merged.
  *
  * Keys are repo-root-relative on both sides, so two workspaces cannot collide
@@ -533,13 +546,12 @@ function runSuite(cwd: string): Suite {
   const reportDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-count-gate-reports-"));
   try {
     const merged: Suite = new Map();
-    for (const workspace of selected) {
-      // A WORKSPACE WITH NO `test` SCRIPT IS SKIPPED AND SAID. Skipping is
-      // scope, and unprinted scope is the thing this gate exists to stop.
-      if (workspace.testScript === undefined) continue;
-      // Declared unmeasurable in a cold tree. `main` has already refused if the
-      // diff touches it, so reaching here means the PR did not.
-      if (isUnmeasurable(workspace.name)) continue;
+    // ONE PREDICATE FOR WHAT RUNS, shared with what the scope line prints. A
+    // workspace with no `test` script, and one declared unmeasurable in a cold
+    // tree, are both skipped AND SAID — skipping is scope, and unprinted scope
+    // is the thing this gate exists to stop. `main` has already refused if the
+    // diff touches an unmeasurable one, so reaching here means the PR did not.
+    for (const workspace of workspacesToRun(selected)) {
       for (const [path, tests] of runWorkspace(repoRoot, workspace, reportDir)) {
         merged.set(path, tests);
       }

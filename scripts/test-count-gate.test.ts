@@ -18,6 +18,7 @@ import {
   selectsWorkspace,
   skippedWorkspacesTouched,
   splitScope,
+  workspacesToRun,
   toSuite,
   type RunnerReport,
   type Suite,
@@ -66,6 +67,26 @@ const workspace = (name: string, path: string, testScript?: string): Workspace =
 });
 
 describe("workspace enumeration", () => {
+  it("runs exactly the workspaces the scope line calls measured", () => {
+    // THE PRINTED SCOPE AND THE EXECUTED SCOPE ARE ONE SET. They were decided in
+    // two places — `splitScope` for the table, two `continue`s for the run — and
+    // a QA lane deleted either `continue` with all twenty tests green. The
+    // dangerous drift is the quiet one: the table claiming a workspace was
+    // measured that nothing ran.
+    const fixture = [
+      workspace("t3", "apps/server", "vp test run"),
+      workspace("@t3tools/marketing", "apps/marketing"),
+      workspace("@t3tools/desktop", "apps/desktop", "vp test run"),
+      workspace("@t3tools/web", "apps/web", "vp test run --project unit"),
+    ];
+    expect(workspacesToRun(fixture).map((entry) => entry.name)).toEqual(
+      splitScope(fixture).measured,
+    );
+    // And it is not vacuously equal because both are everything: the fixture
+    // carries one of each exclusion, and neither runs.
+    expect(splitScope(fixture).measured).toEqual(["t3", "@t3tools/web"]);
+  });
+
   it("finds the JSON array after a pnpm warning, not the bracket inside it", () => {
     // THE HEADLINE FIX OF THIS PR, AND NOTHING PINNED IT. pnpm prints
     // `[WARN] Unsupported engine: wanted: {"node":"^24.13.1"}` ahead of the
@@ -300,6 +321,60 @@ describe("workspace enumeration", () => {
     // refusal rather than an empty, green run.
     expect(selectsWorkspace("apps/nonexistent", server, REPO)).toBe(false);
     expect(selectsWorkspace("apps/nonexistent", web, REPO)).toBe(false);
+  });
+});
+
+describe("the gate refuses rather than measuring nothing", () => {
+  // EXECUTED, THROUGH THE REAL BINARY. A QA lane mutated five of the six
+  // refusals and nothing red, because every test in this file drives a pure
+  // helper. Four of them return in about two seconds and need no base worktree,
+  // so there was never a cost argument for leaving them unpinned — only the
+  // absence of a seam, and a child process is the seam.
+  const runGate = (args: ReadonlyArray<string>, target?: string) => {
+    const result = NodeChildProcess.spawnSync(
+      process.execPath,
+      ["--experimental-strip-types", NodePath.join(REPO, "scripts/test-count-gate.ts"), ...args],
+      {
+        cwd: REPO,
+        encoding: "utf8",
+        env:
+          target === undefined ? process.env : { ...process.env, TEST_COUNT_GATE_TARGET: target },
+      },
+    );
+    return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  };
+
+  it("refuses a target that selects no workspace at all", () => {
+    const run = runGate(["--base", "origin/main"], "no-such-workspace-zzz");
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain("matches");
+    // NOT a coverage verdict. Exit 2 and exit 1 mean opposite things to an
+    // author, and the file's contract is that they are never confused.
+    expect(run.stdout).not.toContain("no test lost");
+  });
+
+  it("refuses a selection in which every workspace is skipped", () => {
+    // THE FAIL-OPEN. Without this refusal both sides produce an empty suite,
+    // `compare` returns no rows, and the gate writes "no test lost by count or
+    // by name" over a measurement of nothing — which is the #26 Critical, one
+    // level up. `@t3tools/marketing` declares no `test` script, so selecting
+    // only it selects nothing runnable.
+    const run = runGate(["--base", "origin/main"], "marketing");
+    expect(run.status).toBe(2);
+    expect(run.stdout).not.toContain("no test lost");
+  });
+
+  it("refuses a base ref it cannot diff", () => {
+    const run = runGate(["--base", "refs/heads/no-such-ref-zzz"]);
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain("could not diff");
+  });
+
+  it("refuses an option it does not know", () => {
+    // A mistyped `--allow` means the author BELIEVES a decrease is explained.
+    const run = runGate(["--base", "origin/main", "--allowed", "x=y"]);
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain("unknown option");
   });
 });
 
