@@ -127,7 +127,11 @@ const makeProjectionChannelRepository = Effect.gen(function* () {
           ${row.parentPostId},
           ${row.createdAt}
         )
-        ON CONFLICT (post_id) DO NOTHING
+        -- Idempotent for replay: bootstrap re-projects the same event and must
+        -- not duplicate the row. A genuine collision within one channel is
+        -- still swallowed here; that is why post ids should be derived rather
+        -- than supplied (t3_bot-a44).
+        ON CONFLICT (channel_id, post_id) DO NOTHING
       `,
   });
 

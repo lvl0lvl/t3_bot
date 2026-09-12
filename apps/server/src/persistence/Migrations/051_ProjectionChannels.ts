@@ -49,14 +49,19 @@ export default Effect.gen(function* () {
 
   yield* sql`
     CREATE TABLE IF NOT EXISTS projection_channel_posts (
-      post_id TEXT PRIMARY KEY,
+      post_id TEXT NOT NULL,
       channel_id TEXT NOT NULL,
       sequence INTEGER NOT NULL,
       author_handle TEXT NOT NULL,
       body TEXT NOT NULL,
       mentions_json TEXT NOT NULL,
       parent_post_id TEXT,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      -- Keyed by channel too. A post id is supplied by the caller, so a global
+      -- key lets an id used in one channel silently drop a post in another:
+      -- the event still lands in the log, so the mention reactor wakes on a
+      -- post nothing can read back.
+      PRIMARY KEY (channel_id, post_id)
     )
   `;
 

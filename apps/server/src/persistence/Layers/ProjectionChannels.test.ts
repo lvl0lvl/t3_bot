@@ -187,6 +187,49 @@ layer("ProjectionChannelRepository", (it) => {
     }),
   );
 
+  it.effect("the same post id in two channels does not drop either post", () =>
+    Effect.gen(function* () {
+      // Post ids are caller-supplied. Under a global key the second insert
+      // reported success and wrote nothing, while the event still landed in
+      // the log — so the mention reactor would wake on a post no read can
+      // return. The row is keyed by channel for that reason.
+      const repo = yield* ProjectionChannelRepository;
+      const shared = ChannelPostId.make("post-shared-id");
+      const left = ChannelId.make("channel-dup-left");
+      const right = ChannelId.make("channel-dup-right");
+
+      yield* repo.insertPost({ ...post("ignored", left, 1), postId: shared, body: "in left" });
+      yield* repo.insertPost({ ...post("ignored", right, 1), postId: shared, body: "in right" });
+
+      const inLeft = yield* repo.getPost({ channelId: left, postId: shared });
+      const inRight = yield* repo.getPost({ channelId: right, postId: shared });
+      assert.isTrue(Option.isSome(inLeft));
+      assert.isTrue(Option.isSome(inRight));
+      if (Option.isSome(inLeft) && Option.isSome(inRight)) {
+        assert.strictEqual(inLeft.value.body, "in left");
+        assert.strictEqual(inRight.value.body, "in right");
+      }
+    }),
+  );
+
+  it.effect("re-inserting the same post is a no-op, so replay stays idempotent", () =>
+    Effect.gen(function* () {
+      // The conflict clause exists for bootstrap replay, which re-projects the
+      // same event. Removing it to fix the collision above would break that.
+      const repo = yield* ProjectionChannelRepository;
+      const replay = ChannelId.make("channel-replay");
+      yield* repo.insertPost(post("post-replay", replay, 1));
+      yield* repo.insertPost(post("post-replay", replay, 1));
+
+      const rows = yield* repo.listPosts({
+        channelId: replay,
+        limit: 50,
+        afterSequence: undefined,
+      });
+      assert.strictEqual(rows.length, 1);
+    }),
+  );
+
   it.effect("a body carrying sql metacharacters is stored verbatim", () =>
     Effect.gen(function* () {
       const repo = yield* ProjectionChannelRepository;
