@@ -1,0 +1,96 @@
+# Fork CI.
+#
+# `ci.yml` is upstream's and every job in it runs on `blacksmith-*` runners,
+# which this fork does not have. Those jobs do not fail — they sit `queued`
+# forever, so a pull request shows pending checks that never resolve and the
+# merge gate has no automated verification at all.
+#
+# This is a SEPARATE file rather than a patch to `ci.yml` on purpose: upstream
+# owns that file, and editing its `runs-on` lines would conflict on every
+# `git merge upstream/main`. A fork-only workflow never conflicts, and when
+# upstream's runners become available `ci.yml` starts working with nothing to
+# unpick here.
+#
+# Scope is deliberately the two things the merge gate needs: does it typecheck,
+# and do the server's tests pass. The non-server `test` job additionally needs
+# Electron and apt libsecret, and `rust`, mobile fingerprints and the desktop
+# build need more still — none of that is what a channel-aggregate change risks,
+# and each added surface is another way for this workflow to go red for a reason
+# nobody acts on. Widen it when something in scope has actually broken.
+name: Fork CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Fork Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # `.repos/` is vendored read-only reference material, ~large and never
+          # built. Upstream excludes it from every CI checkout for the same reason.
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Check
+        run: vp check
+
+      - name: Typecheck
+        run: vpr typecheck
+
+  test_server:
+    # apps/server sets `fileParallelism: false`, so its test files run strictly
+    # one at a time. Sharding spreads them over separate runners rather than
+    # separate workers, which is what preserves that isolation — the same reason
+    # upstream shards this job. Keep the shard count matching upstream's so a
+    # comparison between the two is meaningful.
+    name: Fork Test Server ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      # No Electron and no apt setup: `t3` has no Electron dependency and none
+      # of its tests touch the runtime or libsecret. Upstream's equivalent job
+      # omits them too.
+      - name: Test
+        env:
+          T3CODE_TRANSFER_BUDGET_REPORT_PATH: ${{ runner.temp }}/t3code-transfer-budget.md
+          T3CODE_TRANSFER_BUDGET_RESULT_PATH: ${{ runner.temp }}/thread-transfer-result.json
+        run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
