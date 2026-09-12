@@ -822,4 +822,67 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       expect(events[0]?.type).toBe("channel.meta-updated");
     }),
   );
+  it.effect(
+    "resolves the author by KIND as well as id, so a colliding thread cannot post as a human",
+    () =>
+      Effect.gen(function* () {
+        // `t3_bot-ami`, found by the guard sweep: dropping the `memberKind` clause from
+        // `requireChannelAuthorIsMember` leaves every test in this directory green, because
+        // every fixture's members differ in BOTH fields and a memberId-only comparison then
+        // returns the same row as the correct one.
+        //
+        // THE FIXTURE THAT SEPARATES THEM is one channel holding two members with the same
+        // `memberId` and different `memberKind`, with the WRONG one first — `find` returns the
+        // first match, so a fixture with the right member first passes under both
+        // implementations and measures nothing.
+        //
+        // REPLAYED STATE, not a state a command could produce. `requireChannelMemberShape`
+        // makes this collision impossible to ADD: a `thread` member needs a thread with that
+        // id to exist and a `human` member needs no thread with that id to exist, and two
+        // members sharing an id get the same answer, so one of them is always refused. But
+        // that guard runs on COMMANDS and membership replays from EVENTS — a row written
+        // before it existed arrives here untouched, which is the route this guard is the last
+        // defence on. The two fixtures above spend their collision proving the shape guard
+        // (both assert "is a thread id"), so neither can prove this one.
+        const colliding: OrchestrationReadModel = {
+          ...readModel(),
+          // The thread exists, so the THREAD member is a row the shape guard would admit; the
+          // human member sharing its id is the pre-guard row.
+          threads: threadsNamed([...CHANNEL_THREAD_IDS, "human-owner"]),
+          channels: [
+            {
+              id: CHANNEL,
+              name: "seniors",
+              members: [
+                { handle: BOSS1, memberKind: "thread", memberId: "human-owner" },
+                { handle: OWNER, memberKind: "human", memberId: "human-owner" },
+              ],
+              archivedAt: null,
+              createdAt: NOW,
+              updatedAt: NOW,
+            },
+          ],
+        };
+
+        const decided = yield* decideOrchestrationCommand({
+          command: channelProbe("channel.post.create") as never,
+          readModel: colliding,
+          // The seated HUMAN, whose id the thread member shares.
+          issuer: MEMBER_HUMAN,
+        });
+        const events = Array.isArray(decided) ? decided : [decided];
+        const event = events[0];
+        expect(event?.type).toBe("channel.post-created");
+
+        // THE AUTHOR HANDLE IS THE IMPERSONATION. It is taken from the row the lookup returned,
+        // so a memberId-only lookup finds the thread member first and the post is stored as
+        // written by `boss1` — a human posting under an agent's name, in the channel where the
+        // agents read their instructions. Asserting the handle rather than the returned member
+        // is what makes this about the consequence rather than about the function.
+        expect(
+          (event as { readonly payload?: { readonly authorHandle?: string } })?.payload
+            ?.authorHandle,
+        ).toBe(OWNER);
+      }),
+  );
 });
