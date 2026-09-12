@@ -89,6 +89,11 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
         readModel: makeReadModel(),
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      // Pins THIS invariant: without it another guard firing first would
+      // satisfy the _tag and the test would survive deleting the one it names.
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("Author is not a member");
+      }
     }),
   );
 
@@ -101,6 +106,11 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
         readModel: makeReadModel(),
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      // Pins THIS invariant: without it another guard firing first would
+      // satisfy the _tag and the test would survive deleting the one it names.
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("Mentions do not resolve");
+      }
     }),
   );
 
@@ -111,6 +121,11 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
         readModel: { ...makeReadModel(), channels: [] },
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      // Pins THIS invariant: without it another guard firing first would
+      // satisfy the _tag and the test would survive deleting the one it names.
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("does not exist");
+      }
     }),
   );
 
@@ -132,6 +147,11 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
         readModel: makeReadModel(),
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      // Pins THIS invariant: without it another guard firing first would
+      // satisfy the _tag and the test would survive deleting the one it names.
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is used twice");
+      }
     }),
   );
 
@@ -147,6 +167,11 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
         readModel: makeReadModel(),
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      // Pins THIS invariant: without it another guard firing first would
+      // satisfy the _tag and the test would survive deleting the one it names.
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is used twice");
+      }
     }),
   );
 
@@ -162,6 +187,11 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
         readModel: makeReadModel(),
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      // Pins THIS invariant: without it another guard firing first would
+      // satisfy the _tag and the test would survive deleting the one it names.
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is not a member of channel");
+      }
     }),
   );
 
