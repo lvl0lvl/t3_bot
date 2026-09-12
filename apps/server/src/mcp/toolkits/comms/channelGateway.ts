@@ -60,8 +60,13 @@ export class ChannelMentionUnresolvable extends Schema.TaggedError<ChannelMentio
  */
 export interface ChannelMember {
   /**
-   * What the agent types to mention this member, canonicalized the same way a
-   * channel name is: lowercase, no leading "@", no surrounding whitespace.
+   * What the agent types to mention this member, without the leading "@".
+   *
+   * Trimmed and non-empty, and nothing more: unlike a channel name this is NOT
+   * case-folded, because the aggregate matches it byte-exactly. Canonical
+   * handles are the intended end state (t3_bot-iin); until the aggregate
+   * canonicalizes them, a caller that folds a handle produces one that resolves
+   * to no member.
    */
   readonly handle: string;
   readonly memberKind: "thread" | "human";

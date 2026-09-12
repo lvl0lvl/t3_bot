@@ -69,6 +69,8 @@ interface HarnessOptions {
   }>;
   readonly posts?: ReadonlyArray<ChannelGateway.ChannelPostRecord>;
   readonly failures?: GatewayFailures;
+  /** Overridden only where a handle's exact bytes are the thing under test. */
+  readonly members?: ReadonlyArray<ChannelGateway.ChannelMember>;
 }
 
 const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: HarnessOptions = {}) {
@@ -77,6 +79,7 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
   ];
   const allPosts = options.posts ?? [];
   const fail = options.failures ?? {};
+  const members = options.members ?? MEMBERS;
   const created = yield* Ref.make<ReadonlyArray<ChannelGateway.CreatePostInput>>([]);
   const reads = yield* Ref.make<ReadonlyArray<ChannelGateway.ReadPostsInput>>([]);
   const postLookups = yield* Ref.make<ReadonlyArray<readonly [string, string]>>([]);
@@ -103,7 +106,7 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
               Option.map((channel): ChannelGateway.Channel => ({
                 channelId: CHANNEL_ID,
                 name: channel.name,
-                members: MEMBERS,
+                members,
               })),
             ),
           ),
@@ -274,31 +277,40 @@ describe("comms toolkit handlers", () => {
   );
 
   /**
-   * The canonical rule, as a table, because the toolkit and the decider each
-   * implement it and they have already disagreed once: the toolkit stripped
-   * every leading sigil while the decider stripped one, so "##seniors" resolved
-   * to two different channels depending on which side you asked. When the rule
-   * moves, this is the one place to change it — and the decider has the
-   * matching table, so a silent divergence has to break both.
+   * THE SHARED CANONICAL TABLE. The decider asserts this same list against its
+   * own `canonicalChannelName`, because the two sides implement one rule and
+   * have already disagreed about it: the toolkit stripped every leading sigil
+   * and the decider stripped one, so `##seniors` reached two different channels
+   * depending on which you asked. Both tables must stay identical — a change
+   * made on one side breaks a NAMED row on the other rather than passing.
+   *
+   * Rule (pm, 2026-09-11): trim, strip all leading sigils, trim, lowercase.
    */
   it("canonicalizes a channel name the way the aggregate stores it", () => {
     const cases: ReadonlyArray<readonly [string, string]> = [
       ["seniors", "seniors"],
       ["#seniors", "seniors"],
+      ["##seniors", "seniors"],
+      ["###a", "a"],
+      // Case alone, with and without a sigil: the reason this rule exists.
       ["Seniors", "seniors"],
       ["#SENIORS", "seniors"],
       ["  ##SENIORS  ", "seniors"],
       ["# seniors", "seniors"],
-      // Only sigils and spaces: empty, and rejected before any lookup.
+      // Only sigils and whitespace: empty. The toolkit rejects these before any
+      // lookup; the decider rejects them rather than storing a nameless channel.
       ["#", ""],
       ["##", ""],
       ["#   ", ""],
-      // A sigil that is not leading is part of the name.
+      // A sigil that is not leading is part of the name, not decoration.
+      ["#-#", "-#"],
       ["a#b", "a#b"],
     ];
-    expect(cases.map(([input]) => [input, normalizeChannelName(input)])).toEqual(
-      cases.map(([input, expected]) => [input, expected]),
-    );
+    const actual = cases.map(([input]) => `${input} -> ${normalizeChannelName(input)}`);
+    const expected = cases.map(([input, want]) => `${input} -> ${want}`);
+    // Compared as whole rows so a failure names the input that moved, rather
+    // than reporting that two arrays of strings differ somewhere.
+    expect(actual).toEqual(expected);
   });
 
   it.effect("finds a channel whatever case the agent types", () =>
@@ -316,19 +328,26 @@ describe("comms toolkit handlers", () => {
     }),
   );
 
-  it.effect("resolves a mention whatever case the agent types", () =>
+  it.effect("passes a mention through with its case intact", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness();
+      const harness = yield* makeHarness({
+        // A handle the aggregate accepts and stores as typed: ChannelMemberHandle
+        // is a trimmed non-empty string with no case rule.
+        members: [{ handle: "Boss1", memberKind: "thread", memberId: OTHER_THREAD_ID }],
+      });
       const result = yield* harness.call("comms_post", {
         channel: "seniors",
         body: "over to you",
-        mentions: ["@BOSS1", "Walt"],
+        mentions: ["@Boss1"],
       });
-      // Echoed and stored canonically: the aggregate matches a mention against
-      // its member handles exactly, so a mention written back in the agent's
-      // casing would wake nobody while looking delivered.
-      expect(result.mentioned).toEqual(["boss1", "walt"]);
-      expect((yield* Ref.get(harness.created))[0]?.mentions).toEqual(["boss1", "walt"]);
+      // Byte-identical to the stored handle, because that is what the aggregate
+      // compares against. Folding case here makes the post fail as a whole:
+      // requireChannelMentionsResolve tests an exact Set, so "boss1" resolves to
+      // nobody and the agent is told the member it just named does not exist —
+      // under a name it never typed. Channel NAMES fold; handles do not, until
+      // the aggregate canonicalizes them (t3_bot-iin).
+      expect(result.mentioned).toEqual(["Boss1"]);
+      expect((yield* Ref.get(harness.created))[0]?.mentions).toEqual(["Boss1"]);
     }),
   );
 

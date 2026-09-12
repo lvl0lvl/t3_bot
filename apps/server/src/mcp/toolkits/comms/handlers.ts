@@ -34,9 +34,22 @@ import {
 export const normalizeChannelName = (name: string): string =>
   name.trim().replace(/^#+/, "").trim().toLowerCase();
 
-/** Same rule for "@Boss1" and "boss1". */
-const normalizeHandle = (handle: string): string =>
-  handle.trim().replace(/^@+/, "").trim().toLowerCase();
+/**
+ * Sigil and whitespace only. HANDLES ARE NOT CASE-FOLDED, and that is not an
+ * oversight — folding them here breaks posting outright.
+ *
+ * The aggregate keys handles byte-exactly: `ChannelMemberHandle` is a branded
+ * `TrimmedNonEmptyString` with no case rule, `canonicalChannelName` is applied
+ * only to a channel's name, `requireChannelMentionsResolve` tests membership
+ * with an exact Set, and `projection_channel_members` is keyed
+ * `(channel_id, handle)` with no collation. So a member stored as "Boss1" is
+ * mentioned as "Boss1"; emitting "boss1" gets the whole post rejected as an
+ * unresolvable mention.
+ *
+ * Canonical handles are the intended end state (t3_bot-iin), and they have to
+ * land in the aggregate first. Do not fold here until they have.
+ */
+const normalizeHandle = (handle: string): string => handle.trim().replace(/^@+/, "").trim();
 
 /**
  * Mentions the agent asked for, resolved against the channel's membership, with
