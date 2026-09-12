@@ -13,6 +13,9 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   MessageId,
+  PROVIDER_DISPLAY_NAMES,
+  ProviderDriverKind,
+  defaultInstanceIdForDriver,
   ProjectId,
   ThreadId,
   TurnId,
@@ -2297,6 +2300,57 @@ describe("OrchestrationEngine", () => {
       // THE ASSERTION THIS TEST EXISTS FOR: not one receipt was rewritten, so
       // not one command was decided a second time.
       expect(await readAcceptedAt(system)).toEqual(firstReceipts);
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("seeds only provider instances this build can resolve", async () => {
+    // THE WALKTHROUGH P0. The seeder asked for instance `claude`; the Claude
+    // driver's kind is `claudeAgent`. `ProviderDriverKind` is a branded SLUG, so
+    // `make("claude")` typechecks, stores, and fails four layers downstream at
+    // the provider boundary — "references unknown provider instance 'claude'",
+    // an error that names the value and not the line that invented it. Every
+    // mention-wake failed on a fresh environment.
+    //
+    // Nothing in the suite could see it, and that is the part worth fixing
+    // rather than the string: no test resolved a seeded instanceId against
+    // anything. The seeded threads were asserted to EXIST, with the modes they
+    // carry and the ids they use, and an instance id nobody resolves is a
+    // plausible string in a field.
+    //
+    // THIS ASSERTS OVER EVERY SEEDED THREAD, not the one we know about. A test
+    // naming `claudeAgent` would pass today and say nothing about the next
+    // seeded provider — which is how this defect gets written a second time.
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-seed-instances-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    const workspaceRoot = NodePath.join(directory, "repo");
+    const system = await createOrchestrationSystem(databasePath);
+    try {
+      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
+
+      const seeded = await system.readModel();
+      expect(seeded.threads.length).toBeGreaterThan(0);
+
+      // The built-in driver kinds, from the record the product keys by them.
+      // Not a list written here: a list written here is a second place to be
+      // wrong, and it would agree with the seeder rather than with the build.
+      const builtInDriverKinds = new Set(Object.keys(PROVIDER_DISPLAY_NAMES));
+      const builtInInstanceIds = new Set(
+        [...builtInDriverKinds].map((kind) =>
+          defaultInstanceIdForDriver(ProviderDriverKind.make(kind)),
+        ),
+      );
+
+      // Named individually so a failure says WHICH thread and WHICH instance,
+      // rather than "a set did not equal a set".
+      for (const thread of seeded.threads) {
+        expect(
+          builtInInstanceIds.has(thread.modelSelection.instanceId),
+          `thread ${thread.id} is seeded with provider instance '${thread.modelSelection.instanceId}', which this build cannot resolve. Built-in instances: ${[...builtInInstanceIds].sort().join(", ")}`,
+        ).toBe(true);
+      }
     } finally {
       await system.dispose();
       await NodeFSP.rm(directory, { recursive: true, force: true });

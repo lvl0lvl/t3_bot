@@ -144,7 +144,14 @@ export const CustomModelSetting = Schema.Union([Schema.String, CustomModelEntry]
 export type CustomModelSetting = typeof CustomModelSetting.Type;
 
 const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
-const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
+/**
+ * Exported because a caller that spells this slug itself gets no help when it
+ * is wrong. `ProviderDriverKind` is a branded SLUG, so every misspelling
+ * typechecks — `"claude"` compiled, shipped, and every mention-wake failed at
+ * runtime with "references unknown provider instance 'claude'", which names the
+ * value and not the file that chose it.
+ */
+export const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
