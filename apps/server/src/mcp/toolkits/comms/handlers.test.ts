@@ -745,6 +745,25 @@ describe("comms toolkit helpers", () => {
     });
   });
 
+  it("does not fold case on a handle, so a member stored Boss1 needs Boss1", () => {
+    // The axis this branch got wrong once and then stopped watching. Folding
+    // here is HARMLESS now that delivery uses stored bytes - the regression is
+    // gone - but it is still a live behaviour change, and nothing said which
+    // behaviour we want. This is the one we have: handles match byte-exactly
+    // apart from sigils and Unicode form, because the aggregate stores them
+    // byte-exactly.
+    //
+    // When t3_bot-iin lands the aggregate canonicalises handles and this
+    // flips: the fold goes back in and this test asserts the opposite. It
+    // failing at that point is the point - it is what makes the change
+    // deliberate rather than incidental.
+    const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
+      { handle: "Boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
+    ];
+    expect(resolveMentions(["Boss1"], members)).toEqual({ handles: ["Boss1"] });
+    expect(resolveMentions(["boss1"], members)).toEqual({ unknown: ["boss1"] });
+  });
+
   it("reports an unresolved handle in canonical form, not as typed", () => {
     // The other half of the delivery rule, asserted because the docstring now
     // claims it: a RESOLVED handle goes out as stored bytes, an UNRESOLVED one
