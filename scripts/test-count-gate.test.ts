@@ -19,6 +19,7 @@ import {
   unmeasurableWorkspacesTouched,
   splitScope,
   workspacesToRun,
+  reportFileName,
   toSuite,
   type RunnerReport,
   type Suite,
@@ -206,6 +207,24 @@ describe("workspace enumeration", () => {
     expect(scope.skipped).toEqual([]);
   });
 
+  it("gives two workspaces two report files, whatever their names collapse to", () => {
+    // THE INPUT THAT SEPARATES THE TWO IMPLEMENTATIONS, which is the only reason
+    // this pair is here: under the old substitution both of these became
+    // `-t3tools-mobile.json`, and the second workspace's run then read — or
+    // overwrote — the first one's report. Every other name in this repo survives
+    // the substitution intact, so no fixture drawn from the real workspace list
+    // could tell the two apart.
+    expect(reportFileName("@t3tools/mobile")).not.toBe(reportFileName("@t3tools-mobile"));
+    // AND IT IS STILL A FILENAME a person can read in a directory listing, which
+    // is the reason it is an escape rather than a hash.
+    expect(reportFileName("@t3tools/mobile")).toBe("%40t3tools%2fmobile.json");
+    // `%` escapes too, or the encoding would not be reversible and the collision
+    // would come back one level up: `a%2fb` and `a/b` must not meet.
+    expect(reportFileName("a%2fb")).not.toBe(reportFileName("a/b"));
+    // A name already safe is left alone, so the common case stays legible.
+    expect(reportFileName("t3")).toBe("t3.json");
+  });
+
   it("keys a suite by REPO-RELATIVE path, which is the only thing base and head share", () => {
     // THE POSITIVE DIRECTION, which nothing asserted. Every other test here is a
     // refusal — a file that failed to load, a report with no files — and a
@@ -251,6 +270,15 @@ describe("workspace enumeration", () => {
       listed.length,
     );
     expect(scope.measured).toContain("@t3tools/scripts");
+    // THE TWO FILTERS AGREE, which is the whole of QUAL-28-06: the refusal reads
+    // `unmeasurableWorkspaces` and the scope line prints `unmeasurable`, and
+    // before this they were computed in different places from different
+    // predicates. A workspace refused-when-touched by one and filed under "no
+    // test script" by the other is the drift, and it is invisible until the day
+    // a declared workspace drops its `test` script.
+    expect(scope.unmeasurableWorkspaces.map((workspace) => workspace.name)).toEqual(
+      scope.unmeasurable,
+    );
   });
 
   it("names the workspace a test file was MOVED OUT OF, not just where it landed", () => {

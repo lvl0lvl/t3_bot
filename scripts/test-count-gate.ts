@@ -350,23 +350,34 @@ export const selectsWorkspace = (target: string, workspace: Workspace, repoRoot:
  * substituted its own invocation would measure a configuration nobody ships,
  * which is the whole defect being repaired here.
  */
+/**
+ * One workspace's report file, named so that two workspaces cannot share one.
+ *
+ * IT WAS A LOSSY SUBSTITUTION — every character outside `[A-Za-z0-9_-]` became
+ * `-`, so `@t3tools/mobile` and `@t3tools-mobile` both became
+ * `-t3tools-mobile` — and the collision was caught DOWNSTREAM, by deleting the
+ * file before the run: `existsSync` was otherwise satisfied by the earlier
+ * workspace's report when this one's run wrote none, and a bug lane executed
+ * exactly that, getting the other workspace's suite back verbatim.
+ *
+ * Percent-escaping is reversible where the substitution is not: `%` is itself
+ * outside the safe set, so it escapes to `%25` and no two names can produce the
+ * same bytes. `@t3tools/mobile` becomes `%40t3tools%2fmobile.json` — readable in
+ * a directory listing, which is why this is not a hash.
+ *
+ * EXPORTED BECAUSE IT WAS OTHERWISE UNREACHABLE. Inline in `runWorkspace` the
+ * only caller spawns a package manager, so reverting it to the substitution red
+ * nothing — a claim no input could tell from its opposite, which is the same
+ * shape as the unreachable guard a sweep found in `t3_bot-2oh`.
+ */
+export const reportFileName = (workspaceName: string): string =>
+  `${workspaceName.replace(
+    /[^A-Za-z0-9_-]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).padStart(2, "0")}`,
+  )}.json`;
+
 function runWorkspace(repoRoot: string, workspace: Workspace, reportDir: string): Suite {
-  // INJECTIVE, so two workspaces cannot name the same file. It was a lossy
-  // substitution — every character outside `[A-Za-z0-9_-]` became `-`, so
-  // `@t3tools/mobile` and `@t3tools-mobile` both became `-t3tools-mobile` — and
-  // a collision was caught DOWNSTREAM by deleting the file first, because
-  // `existsSync` was otherwise satisfied by the earlier workspace's report when
-  // this one's run failed and wrote nothing. A bug lane executed that: the failed
-  // run returned the other workspace's suite verbatim.
-  //
-  // Percent-escaping is reversible, which the substitution is not: `%` is itself
-  // outside the safe set, so it escapes to `%25` and no two names can produce the
-  // same bytes. `@t3tools/mobile` becomes `%40t3tools%2fmobile.json` — still
-  // readable in a directory listing, which is the reason this is not a hash.
-  const outputFile = NodePath.join(
-    reportDir,
-    `${workspace.name.replace(/[^A-Za-z0-9_-]/g, (c) => `%${c.charCodeAt(0).toString(16).padStart(2, "0")}`)}.json`,
-  );
+  const outputFile = NodePath.join(reportDir, reportFileName(workspace.name));
   const result = NodeChildProcess.spawnSync(
     "pnpm",
     ["--filter", workspace.name, "run", "test", "--reporter=json", `--outputFile=${outputFile}`],
