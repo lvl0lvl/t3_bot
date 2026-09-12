@@ -77,6 +77,11 @@ message types: `comms/README.md` there.
   fails to load in either revision, base will not check out) — never read 2 as green. What it cannot see: an
   assertion hollowed out of a test that keeps its name. The PM checks the gate output before merging.
 - Comments state the input that would break the code, not the reason it is safe.
+- **Before asserting reachability in a comment or a PR body, look for the answer the repo already holds.**
+  `rg` the beads and the sibling tests for the same question. Three times on 2026-09-12 a comment claimed
+  "unreachable" or "the only route is replay" while a bead's answered criterion and a test one file over said
+  "reachable by ordering" (add human X, create thread X, add thread X). Re-deriving an answer instead of
+  finding it is how the fixture ends up covering the ordering commands cannot produce.
 - Before pushing, write the adversarial question you would give a reviewer — "what legitimate input
   does this now reject that worked before?" — and answer it yourself. Writing the prompt is the review.
   Name your riskiest claim to the reviewer in that prompt ("I assert the finalizers run before
