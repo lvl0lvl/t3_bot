@@ -220,6 +220,62 @@ layer("ProjectionChannelRepository", (it) => {
     }),
   );
 
+  it.effect("reads the NEWEST window backward and still returns it ascending", () =>
+    Effect.gen(function* () {
+      const repo = yield* ProjectionChannelRepository;
+      const back = ChannelId.make("channel-backward");
+      for (const sequence of [4, 0, 2, 1, 3]) {
+        yield* repo.insertPost(post(`post-back-${sequence}`, back, sequence));
+      }
+
+      // FIVE ROWS AND A LIMIT OF TWO, because that is what distinguishes the
+      // two implementations. `ORDER BY sequence DESC LIMIT 2` then reversed
+      // gives [3, 4]; `ORDER BY sequence ASC LIMIT 2` gives [0, 1]. BOTH are
+      // ascending, so an assertion that only checked the order would pass
+      // against the wrong page. The sequences are the assertion.
+      const newest = yield* repo.listPostsBackward({
+        channelId: back,
+        limit: 2,
+        beforeSequence: undefined,
+      });
+      assert.deepStrictEqual(
+        newest.map((row) => row.sequence),
+        [3, 4],
+      );
+
+      // Exclusive, and walking UP the history: the cursor is the oldest
+      // sequence returned, so the next page is strictly older than it.
+      const older = yield* repo.listPostsBackward({
+        channelId: back,
+        limit: 2,
+        beforeSequence: 3,
+      });
+      assert.deepStrictEqual(
+        older.map((row) => row.sequence),
+        [1, 2],
+      );
+
+      // The beginning of history returns a SHORT page rather than an empty
+      // one - the caller learns it is at the start from the count, and from
+      // the empty page after it.
+      const first = yield* repo.listPostsBackward({
+        channelId: back,
+        limit: 2,
+        beforeSequence: 1,
+      });
+      assert.deepStrictEqual(
+        first.map((row) => row.sequence),
+        [0],
+      );
+      const beyond = yield* repo.listPostsBackward({
+        channelId: back,
+        limit: 2,
+        beforeSequence: 0,
+      });
+      assert.deepStrictEqual(beyond, []);
+    }),
+  );
+
   it.effect("the same post id in two channels does not drop either post", () =>
     Effect.gen(function* () {
       // Post ids are caller-supplied. Under a global key the second insert

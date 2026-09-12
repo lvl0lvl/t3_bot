@@ -87,6 +87,14 @@ export interface ListChannelPostsInput {
   readonly afterSequence: number | undefined;
 }
 
+export interface ListChannelPostsBackwardInput {
+  readonly channelId: ChannelId;
+  /** A maximum, not an exact count. */
+  readonly limit: number;
+  /** Exclusive: rows strictly before this sequence. Omitted for the newest page. */
+  readonly beforeSequence: number | undefined;
+}
+
 export interface ProjectionChannelRepositoryShape {
   readonly upsertChannel: (
     row: ProjectionChannel,
@@ -157,6 +165,19 @@ export interface ProjectionChannelRepositoryShape {
   /** Oldest first, ascending by sequence. */
   readonly listPosts: (
     input: ListChannelPostsInput,
+  ) => Effect.Effect<ReadonlyArray<ProjectionChannelPost>, ProjectionRepositoryError>;
+
+  /**
+   * The NEWEST rows before a point, returned ASCENDING like every other read.
+   *
+   * The window is chosen from the newest end; the order is not. A caller that
+   * renders oldest-at-top - which is every caller we have - would otherwise
+   * reverse each page itself, and a page someone forgets to reverse reads as
+   * though time runs backwards, which is diagnosed as a data bug rather than a
+   * rendering one. Reversed once here, where a test can hold it.
+   */
+  readonly listPostsBackward: (
+    input: ListChannelPostsBackwardInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionChannelPost>, ProjectionRepositoryError>;
 }
 
