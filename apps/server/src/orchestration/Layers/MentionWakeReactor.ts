@@ -77,6 +77,17 @@ const wakeKey = (channelId: string, postId: string, threadId: ThreadId) =>
  * and correlate by postId. The nonce is random per wake and is NOT part of the
  * commandId or the messageId, which stay derived — a replayed wake carries a
  * different nonce and is absorbed by the receipt check before its text matters.
+ *
+ * WHICH VALUES MAY SIT OUTSIDE THE FENCE. Not "the ones this system generated":
+ * that rule admitted the post id, which this system does not generate and which
+ * is what the incident came in through. The rule is that the fenced region is
+ * the DEFAULT and coming out of it needs an argument per value. Four values are
+ * out here and each has one: the channel name and the author handle because the
+ * header is this system speaking about WHO posted and WHERE, which is the
+ * distinction the fence exists to draw and which is destroyed by moving them
+ * inside it; the post id and the parent because a client correlates on them and
+ * an agent has to copy them back into comms_reply. Every one of the four is
+ * collapsed to a single line, and a fifth needs the same argument made out loud.
  */
 /**
  * One line, whatever the caller stored.
