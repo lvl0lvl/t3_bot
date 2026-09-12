@@ -1,4 +1,4 @@
-import { OrchestrationCheckpointFile } from "@t3tools/contracts";
+import { OrchestrationCheckpointFile, TurnId } from "@t3tools/contracts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Effect from "effect/Effect";
@@ -19,6 +19,7 @@ import {
   ProjectionTurnById,
   ProjectionTurnRepository,
   type ProjectionTurnRepositoryShape,
+  ProjectionTurnStateRow,
 } from "../Services/ProjectionTurns.ts";
 
 const ProjectionTurnDbRowSchema = ProjectionTurn.mapFields(
@@ -229,6 +230,24 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
       `,
   });
 
+  const selectTurnStatesByTurnIds = SqlSchema.findAll({
+    Request: Schema.Struct({ turnIds: Schema.Array(TurnId) }),
+    Result: ProjectionTurnStateRow,
+    // BY TURN ID ALONE in the WHERE, and the caller's thread ids are checked on
+    // the way out rather than in SQL: a `(thread_id, turn_id) IN ((?,?),...)`
+    // row-value list is valid SQLite but not something `sql.in` builds, and turn
+    // ids are UUIDs, so the over-fetch this admits is a collision that has never
+    // happened. The pair is still what the caller asked for and what it gets.
+    execute: ({ turnIds }) => sql`
+      SELECT
+        thread_id AS "threadId",
+        turn_id AS "turnId",
+        state
+      FROM projection_turns
+      WHERE turn_id IN ${sql.in(turnIds)}
+    `,
+  });
+
   const clearCheckpointTurnConflictRow = SqlSchema.void({
     Request: ClearCheckpointTurnConflictInput,
     execute: ({ threadId, turnId, checkpointTurnCount }) =>
@@ -307,6 +326,27 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
       Effect.map((rows) => rows as ReadonlyArray<Schema.Schema.Type<typeof ProjectionTurn>>),
     );
 
+  const listStatesByTurnIds: ProjectionTurnRepositoryShape["listStatesByTurnIds"] = (input) =>
+    // AN EMPTY ASK IS ANSWERED WITHOUT A QUERY: `IN ()` is not valid SQLite, and
+    // a page in which no post woke anybody is the ordinary case.
+    input.length === 0
+      ? Effect.succeed([])
+      : selectTurnStatesByTurnIds({ turnIds: input.map((pair) => pair.turnId) }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "ProjectionTurnRepository.listStatesByTurnIds:query",
+              "ProjectionTurnRepository.listStatesByTurnIds:decodeRows",
+            ),
+          ),
+          // The pair, as promised above: a row for a turn id the caller asked
+          // about under a different thread is not the caller's row.
+          Effect.map((rows) =>
+            rows.filter((row) =>
+              input.some((pair) => pair.threadId === row.threadId && pair.turnId === row.turnId),
+            ),
+          ),
+        );
+
   const getByTurnId: ProjectionTurnRepositoryShape["getByTurnId"] = (input) =>
     getProjectionTurnByTurnId(input).pipe(
       Effect.mapError(
@@ -344,6 +384,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
     deletePendingTurnStartByThreadId,
     listByThreadId,
     getByTurnId,
+    listStatesByTurnIds,
     clearCheckpointTurnConflict,
     deleteByThreadId,
   } satisfies ProjectionTurnRepositoryShape;

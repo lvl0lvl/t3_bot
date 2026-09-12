@@ -25,6 +25,7 @@ import {
   ChannelId,
   type OrchestrationChannelPost,
   type OrchestrationChannelPostPage,
+  type OrchestrationChannelPostWake,
   type OrchestrationChannelPostPageRequest,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -45,6 +46,9 @@ import {
   type ChannelPostDirection,
   resolveChannelPostPage,
 } from "./channelCursor.ts";
+import { wakesForPosts } from "./channelPostWakes.ts";
+import type { ChannelPostWakeRepository } from "../persistence/Services/ChannelPostWakes.ts";
+import type { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 
 /**
  * The caller asked for a channel it is not in, or one that does not exist.
@@ -70,7 +74,10 @@ export class ChannelCursorRejected extends Schema.TaggedError<ChannelCursorRejec
   { channelId: ChannelId, cursor: Schema.String },
 ) {}
 
-const toPost = (row: ProjectionChannelPost): OrchestrationChannelPost => ({
+const toPost = (
+  row: ProjectionChannelPost,
+  wakes: ReadonlyArray<OrchestrationChannelPostWake> | undefined,
+): OrchestrationChannelPost => ({
   id: row.postId,
   channelId: row.channelId,
   sequence: row.sequence,
@@ -79,6 +86,11 @@ const toPost = (row: ProjectionChannelPost): OrchestrationChannelPost => ({
   mentions: row.mentions,
   parentPostId: row.parentPostId,
   createdAt: row.createdAt,
+  // SPREAD, NOT ASSIGNED: `wakes: undefined` is a present key with an undefined
+  // value, which the schema's `optional` admits but a JSON encoder drops and a
+  // deep-equal assertion does not — so the wire and the test would disagree
+  // about the same post. Absent means absent.
+  ...(wakes === undefined ? {} : { wakes }),
 });
 
 /**
@@ -103,7 +115,7 @@ export function readChannelPostPage(input: {
 }): Effect.Effect<
   OrchestrationChannelPostPage,
   ChannelPostsUnreadable | ChannelCursorRejected | ProjectionRepositoryError,
-  ProjectionChannelRepository
+  ProjectionChannelRepository | ChannelPostWakeRepository | ProjectionTurnRepository
 > {
   return Effect.gen(function* () {
     const projectionChannels = yield* ProjectionChannelRepository;
@@ -138,9 +150,15 @@ export function readChannelPostPage(input: {
     // decisions about the cursor format, and this door held its own copy of all
     // four in a different style from the other door's.
     const page = resolveChannelPostPage({ channelId, direction, limit, rows });
+    // AFTER the page is cut, not before: the over-fetched row is not returned
+    // and its wakes are not the caller's business.
+    const wakes = yield* wakesForPosts({
+      channelId,
+      postIds: page.rows.map((row) => row.postId),
+    });
     return {
       channelId,
-      posts: page.rows.map(toPost),
+      posts: page.rows.map((row) => toPost(row, wakes.get(row.postId))),
       nextCursor: page.nextCursor,
     };
   });

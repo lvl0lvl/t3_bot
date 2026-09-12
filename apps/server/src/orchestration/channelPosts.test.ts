@@ -6,6 +6,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { ProjectionChannelRepositoryLive } from "../persistence/Layers/ProjectionChannels.ts";
+import { ChannelPostWakeRepositoryLive } from "../persistence/Layers/ChannelPostWakes.ts";
+import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { ProjectionChannelRepository } from "../persistence/Services/ProjectionChannels.ts";
 import { encodeChannelCursor } from "./channelCursor.ts";
@@ -42,7 +44,14 @@ const postCreatedAt = (sequence: number) =>
   `2026-01-01T00:${String(sequence).padStart(2, "0")}:00.000Z`;
 
 const layer = it.layer(
-  ProjectionChannelRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
+  // THE READ NOW JOINS TWO MORE TABLES for `wakes` (`t3_bot-j6o`), so the door
+  // needs their repositories even in a test where no post woke anybody — that
+  // is the common case and it still runs the query planner, not a stub.
+  Layer.mergeAll(
+    ProjectionChannelRepositoryLive,
+    ChannelPostWakeRepositoryLive,
+    ProjectionTurnRepositoryLive,
+  ).pipe(Layer.provideMerge(SqlitePersistenceMemory)),
 );
 
 /**
