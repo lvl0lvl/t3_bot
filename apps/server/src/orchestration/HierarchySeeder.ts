@@ -17,10 +17,12 @@
  * would also be a lie about atomicity — the read and the write are separate, and
  * only the receipt makes the repeat safe.
  *
- * ORDER IS LOAD-BEARING. Channels come last because a channel member of kind
- * `thread` must resolve to a LIVE thread (see `requireChannelMemberShape`), so
- * the threads have to exist first. Seeding channels before threads fails, and it
- * fails correctly.
+ * CHANNELS COME LAST, and on this tree that is convention rather than
+ * enforcement. Once `t3_bot-8i2` lands, a channel member of kind `thread` must
+ * resolve to a LIVE thread and seeding channels first FAILS. Today nothing
+ * refuses it, and a guard sweep confirmed the reorder is invisible to the whole
+ * suite — so this comment says what is true now, not what is true in the branch
+ * this was written alongside.
  */
 import {
   ChannelId,
@@ -123,7 +125,8 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
     });
   }
 
-  // Channels last: a `thread` member must resolve to a live thread.
+  // Channels last: once 8i2 lands a `thread` member must resolve to a live
+  // thread, and until then this ordering is correct but unenforced.
   yield* dispatch({
     type: "channel.create",
     commandId: CommandId.make("seed-channel-project"),

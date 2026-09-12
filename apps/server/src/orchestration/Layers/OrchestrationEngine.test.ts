@@ -2241,6 +2241,12 @@ describe("OrchestrationEngine", () => {
       ]);
       expect(seeded.channels.map((channel) => channel.name).sort()).toEqual(["project", "seniors"]);
 
+      // Every seeded thread runs in auto. A guard sweep found this unpinned, and
+      // it is not cosmetic: under full-access the demo stalls on an approval
+      // prompt nobody is watching, which looks exactly like the agents failing
+      // to answer each other.
+      expect(seeded.threads.map((thread) => thread.runtimeMode)).toEqual(["auto", "auto", "auto"]);
+
       // Membership by handle, because the handle is the mention key and the
       // demo's whole behaviour is "a mention wakes a senior".
       const seniors = seeded.channels.find((channel) => channel.name === "seniors");
