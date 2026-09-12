@@ -8675,6 +8675,72 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
+  it.effect("a THREAD member carrying the operator's id is not the operator", () =>
+    Effect.gen(function* () {
+      // THE FIXTURE COMES FROM THE PROPERTY, not from a plausible-looking row.
+      // The two tests above differ in BOTH fields — human/human-walt against
+      // thread/thread-pm — so a membership test that compared memberId alone and
+      // ignored memberKind passed both. Measured: dropping the kind comparison
+      // left all 185 green. The input that separates them is a member whose id
+      // MATCHES and whose kind does not.
+      //
+      // It is the same impersonation route `requireChannelMemberShape` refuses
+      // at the decider, and the same reason the mention-wake reactor keeps its
+      // own kind check: that invariant runs on COMMANDS, and this is a read path
+      // replaying EVENTS, so a row written before the invariant reaches here
+      // untouched.
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [
+                    {
+                      handle: "impostor",
+                      memberKind: "thread",
+                      memberId: HUMAN_OPERATOR_MEMBER_ID,
+                    },
+                  ],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, channelPostEvent);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.equal(items[1]?.kind, "channel-removed");
+      assert.deepEqual(items[2], { kind: "synchronized" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
   it.effect("buffers thread events published while the initial snapshot loads", () =>
     Effect.gen(function* () {
       const thread = makeDefaultOrchestrationReadModel().threads[0]!;
