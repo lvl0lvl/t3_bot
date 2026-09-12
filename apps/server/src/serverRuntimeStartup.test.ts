@@ -1,5 +1,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { DEFAULT_MODEL, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  CLAUDE_DRIVER_KIND,
+  DEFAULT_MODEL,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  defaultInstanceIdForDriver,
+} from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -11,6 +18,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "./config.ts";
+import * as HierarchySeeder from "./orchestration/HierarchySeeder.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -448,15 +456,31 @@ it.effect("completeAutoBootstrapWelcome settles an empty bootstrap result", () =
 );
 
 /**
- * A projection surface with one method on it.
+ * A projection surface with the two methods the seed reads.
  *
- * The seed reads exactly one thing, and a test that spells out the other
- * twenty-two `Effect.die("unused")` entries says nothing the one line does not.
- * Anything else it reaches for throws rather than returning a plausible stub.
+ * Spelling out the other twenty-one `Effect.die("unused")` entries would say nothing these two
+ * lines do not. Anything else the seeder reaches for throws rather than returning a plausible
+ * stub — which is how the instance repair's new read was caught here rather than in review.
  */
 const seedProjections = (
   getActiveProjectByWorkspaceRoot: ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]["getActiveProjectByWorkspaceRoot"],
-) => ({ getActiveProjectByWorkspaceRoot }) as never;
+) =>
+  ({
+    getActiveProjectByWorkspaceRoot,
+    // The seeder reads the command read model to find seeded threads whose provider instance
+    // predates the driver-kind fix (`t3_bot-p4u`). THE THREE THREADS, CARRYING THE RIGHT
+    // INSTANCE, because that is the branch a fresh boot takes: the creates above the read make
+    // their rows visible to it, so `existing` is defined and the OLD-VALUE GUARD is what skips
+    // the repair. An empty list skips it by the `existing === undefined` branch instead — a
+    // different line, and one that leaves this test green with the old-value guard deleted.
+    getCommandReadModel: () =>
+      Effect.succeed({
+        threads: HierarchySeeder.__testing.SEEDED_THREADS.map((thread) => ({
+          id: thread.id,
+          modelSelection: { instanceId: defaultInstanceIdForDriver(CLAUDE_DRIVER_KIND) },
+        })),
+      }),
+  }) as never;
 
 const seedEngine = (
   dispatch: OrchestrationEngine.OrchestrationEngineService["Service"]["dispatch"],
@@ -506,6 +530,10 @@ it.effect("the hierarchy seed is pointed at the server's own workspace root", ()
         // already-shipped command's members is a change that silently does not
         // happen on a database that has already booted.
         "channel.member.add",
+        // AND NOTHING ELSE. The instance repair must not fire on a fresh seed: its threads
+        // were just created with the right instance, so a `thread.meta.update` here would be
+        // the seeder re-deciding a command for a thread it had correctly created a moment
+        // earlier. Three of them, on every first boot.
       ],
     );
 

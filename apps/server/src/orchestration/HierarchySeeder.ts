@@ -9,18 +9,22 @@
  * refused them all. Going through the engine means the seeded hierarchy is
  * subject to the same rules as anything a user creates.
  *
- * IDEMPOTENCE IS BY RECEIPT. Every command below carries a DETERMINISTIC
- * commandId, so the engine's command-receipt idempotency short-circuits the
- * second boot before the decider ever sees it. That is why there is no error
- * handling around "already exists" anywhere here: on boot 2 nothing reaches the
- * decider at all.
+ * IDEMPOTENCE IS BY RECEIPT, which is why the creates need no error handling
+ * around "already exists": every command carries a DETERMINISTIC commandId, so
+ * the engine's receipt short-circuit stops a re-decide before the decider sees
+ * it. That receipt compares the commandId and the aggregate ref and NEVER the
+ * payload — which is also why correcting a shipped command's payload is silently
+ * skipped wherever it has already run. The instance repair in `seedHierarchy` is
+ * one command that DOES reach the decider on boot 2, and it gets there by
+ * carrying an id of its own rather than by editing one.
  *
- * There is exactly ONE read, and it is not there for idempotence — the receipt
- * already covers that. It is there because a DIFFERENT writer owns the same
- * subject: `autoBootstrapProjectFromCwd` also creates a project for the server's
- * cwd, and two projects for one workspace root is what
- * `requireActiveProjectWorkspaceRootAbsent` refuses. See `seedHierarchy` for why
- * that read is safe to separate from its write.
+ * There are TWO reads, and neither is there for idempotence — the receipts cover
+ * that. The first exists because a DIFFERENT writer owns the same subject:
+ * `autoBootstrapProjectFromCwd` also creates a project for the server's cwd, and
+ * two projects for one workspace root is what
+ * `requireActiveProjectWorkspaceRootAbsent` refuses. The second exists because
+ * the repair has to know what a thread's selection is now. `seedHierarchy` says
+ * what each costs and what makes each safe, and the two arguments are different.
  *
  * CHANNELS COME LAST, and whether that is convention or enforcement depends on
  * one thing: whether `requireChannelMemberShape` is present. It refuses a
@@ -75,6 +79,20 @@ const PROJECT_CHANNEL = ChannelId.make("channel-project");
 const SENIORS_CHANNEL = ChannelId.make("channel-seniors");
 
 /**
+ * The instance id this seeder SHIPPED with, which no build can resolve.
+ *
+ * A literal rather than `defaultInstanceIdForDriver(ProviderDriverKind.make("claude"))`,
+ * which is what produced it: writing the typo again to describe the typo invites someone to
+ * "fix" this line and silently disarm the repair below. This is a historical fact about what
+ * is in databases, not a value the product derives.
+ *
+ * The Claude driver's kind is `claudeAgent`. `ProviderDriverKind` is a branded slug, so
+ * `make("claude")` typechecked, stored, and failed four layers downstream at the provider
+ * boundary with "references unknown provider instance 'claude'".
+ */
+const SHIPPED_BAD_INSTANCE_ID = "claude";
+
+/**
  * The human's member id, from the one place that defines it.
  *
  * It was a local constant here and is now shared with the WebSocket layer,
@@ -111,13 +129,15 @@ const SEEDED_THREADS = [
  * and the bootstrap then resolves the project this seeded rather than creating
  * a second one.
  *
- * The read costs this one step its pure idempotence-by-receipt, and it is worth
- * being exact about what does and does not make that safe. It is NOT "the
+ * The project read costs THAT step its pure idempotence-by-receipt, and it is
+ * worth being exact about what does and does not make it safe. It is NOT "the
  * command worker serialises it": the read is a projection query and does not run
  * on that worker at all. It is safe because the only other writer of a project
  * for this root runs strictly after this phase returns, and because the create
  * still carries a deterministic id — so even a lost race degrades to a refused
- * duplicate rather than a second hierarchy.
+ * duplicate rather than a second hierarchy. The second read, below the creates,
+ * is safe for a different reason and says so there: this argument does not carry
+ * over to it.
  */
 export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
   readonly workspaceRoot: string;
@@ -168,6 +188,54 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
       branch: null,
       worktreePath: null,
       createdAt: input.createdAt,
+    });
+  }
+
+  // THE CREATES ABOVE DO NOTHING ON AN ENVIRONMENT THAT HAS ALREADY BOOTED: the receipt
+  // short-circuit below `channel.member.add`, doing its job. So #16's correction to `instanceId`
+  // reached a fresh database and was skipped everywhere that had booted, leaving
+  // `instanceId: 'claude'`, every mention-wake failing at the provider boundary, and
+  // `seedHierarchy` returning success. A NEW id is the whole fix (`t3_bot-p4u`).
+  //
+  // WHAT MAKES THIS READ SAFE IS NOT THE DETERMINISTIC ID — that stops a second write, not a
+  // stale overwrite. It is that no other writer of `thread.modelSelection` can run in this
+  // window: client commands are behind `commandGate.enqueueCommand`, signalled long after this
+  // phase, and no reactor writes `modelSelection`. Add a writer outside that gate and this read
+  // needs re-arguing.
+  //
+  // Two accepted costs, both recorded: the whole read model for three values, when two earlier
+  // startup phases already load it (`t3_bot-ofl`), and a loop that runs on every boot forever
+  // where a migration would retire itself by number (`t3_bot-0fx`).
+  const readModel = yield* projections.getCommandReadModel();
+  for (const thread of SEEDED_THREADS) {
+    const existing = readModel.threads.find((row) => row.id === thread.id);
+    // ABSENT IS NOT THE FRESH-BOOT CASE — measured: the create above is visible to this read
+    // with no drain between them, so on a first boot `existing` is defined with the right
+    // instance and the guard below is what skips it. Absent means a projection that has not got
+    // the row yet, and dispatching nothing is right: no receipt, so the next boot repairs it.
+    if (existing === undefined) {
+      continue;
+    }
+    // THE OLD VALUE, NOT "ANYTHING UNRESOLVABLE" (`t3_bot-p4u`, criterion 3). An operator who
+    // has re-pointed a thread owns that choice even if this build cannot resolve it either — a
+    // seeder that overwrote it would be worse than the bug. So this fires only on the exact id
+    // that shipped, which also means a deleted or archived thread is repaired: an undelete lands
+    // on a repaired row. Whether a delete outranks a re-point is `t3_bot-40z`.
+    if (existing.modelSelection.instanceId !== SHIPPED_BAD_INSTANCE_ID) {
+      continue;
+    }
+    yield* dispatch({
+      type: "thread.meta.update",
+      commandId: CommandId.make(`seed-thread-${thread.handle}-instance-repair`),
+      threadId: thread.id,
+      // SPREAD, not a fresh selection. `modelSelection` is replaced wholesale by this
+      // command, so writing `{ instanceId, model }` would discard a `model` or `options` the
+      // operator had changed. Repairing the one field the seeder got wrong is the difference
+      // between fixing a thread and re-seeding it.
+      modelSelection: {
+        ...existing.modelSelection,
+        instanceId: defaultInstanceIdForDriver(CLAUDE_DRIVER_KIND),
+      },
     });
   }
 
@@ -237,4 +305,7 @@ export const __testing = {
   SEEDED_THREADS,
   WALT_MEMBER_ID,
   SEED_ISSUER,
+  // So a test can replay the OLD seed under the ids the old seeder used, rather than
+  // approximating it — the whole point is that those receipts already exist.
+  SEED_PROJECT_ID,
 };
