@@ -1,5 +1,8 @@
 import {
   ApprovalRequestId,
+  ChannelId,
+  ChannelMemberHandle,
+  ChannelPostId,
   CheckpointRef,
   CommandId,
   CorrelationId,
@@ -3932,6 +3935,122 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           role: "assistant",
         },
       ]);
+    }),
+  );
+
+  it.effect("projects the channel lifecycle into its own tables", () =>
+    Effect.gen(function* () {
+      // applyChannelsProjection can be made entirely inert and every decider and
+      // repository test stays green, because none of them run the pipeline. This
+      // drives the real projector over the real event stream and reads the rows.
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const later = "2026-01-02T00:00:00.000Z";
+      const channelId = ChannelId.make("channel-seniors");
+
+      const base = (eventId: string) => ({
+        eventId: EventId.make(eventId),
+        aggregateKind: "channel" as const,
+        aggregateId: channelId,
+        occurredAt: now,
+        commandId: CommandId.make(eventId),
+        causationEventId: null,
+        correlationId: CommandId.make(eventId),
+        metadata: {},
+      });
+
+      yield* eventStore.append({
+        ...base("evt-channel-created"),
+        type: "channel.created",
+        payload: {
+          channelId,
+          name: "seniors",
+          members: [
+            {
+              handle: ChannelMemberHandle.make("pm"),
+              memberKind: "thread" as const,
+              memberId: "thread-pm",
+            },
+          ],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* eventStore.append({
+        ...base("evt-channel-archived"),
+        type: "channel.archived",
+        payload: { channelId, archivedAt: later, updatedAt: later },
+      });
+
+      yield* eventStore.append({
+        ...base("evt-channel-member-added"),
+        type: "channel.member-added",
+        payload: {
+          channelId,
+          member: {
+            handle: ChannelMemberHandle.make("boss1"),
+            memberKind: "thread" as const,
+            memberId: "thread-boss1",
+          },
+          updatedAt: later,
+        },
+      });
+
+      yield* eventStore.append({
+        ...base("evt-channel-post"),
+        type: "channel.post-created",
+        payload: {
+          channelId,
+          postId: ChannelPostId.make("post-1"),
+          authorRef: { memberKind: "thread" as const, memberId: "thread-pm" },
+          authorHandle: ChannelMemberHandle.make("pm"),
+          body: "what is 2+2",
+          mentions: [ChannelMemberHandle.make("boss1")],
+          parentPostId: null,
+          createdAt: now,
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const archivedRows = yield* sql<{
+        readonly archived_at: string | null;
+      }>`SELECT archived_at FROM projection_channels WHERE channel_id = ${channelId}`;
+      assert.strictEqual(archivedRows[0]?.archived_at, later);
+
+      // Unarchiving must clear it. A branch that only ever sets archivedAt
+      // passes every assertion above and fails here.
+      yield* eventStore.append({
+        ...base("evt-channel-unarchived"),
+        type: "channel.unarchived",
+        payload: { channelId, updatedAt: later },
+      });
+      yield* projectionPipeline.bootstrap;
+
+      const clearedRows = yield* sql<{
+        readonly archived_at: string | null;
+      }>`SELECT archived_at FROM projection_channels WHERE channel_id = ${channelId}`;
+      assert.strictEqual(clearedRows[0]?.archived_at, null);
+
+      const memberRows = yield* sql<{
+        readonly handle: string;
+      }>`SELECT handle FROM projection_channel_members WHERE channel_id = ${channelId} ORDER BY handle ASC`;
+      assert.deepStrictEqual(
+        memberRows.map((row) => row.handle),
+        ["boss1", "pm"],
+      );
+
+      const postRows = yield* sql<{
+        readonly post_id: string;
+        readonly author_handle: string;
+        readonly mentions_json: string;
+      }>`SELECT post_id, author_handle, mentions_json FROM projection_channel_posts WHERE channel_id = ${channelId}`;
+      assert.strictEqual(postRows.length, 1);
+      assert.strictEqual(postRows[0]?.author_handle, "pm");
+      assert.strictEqual(postRows[0]?.mentions_json, '["boss1"]');
     }),
   );
 });

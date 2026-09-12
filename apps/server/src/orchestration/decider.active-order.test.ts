@@ -57,6 +57,7 @@ function makeReadModel(overrides: Partial<OrchestrationThread> = {}): Orchestrat
         ...overrides,
       },
     ],
+    channels: [],
     updatedAt: NOW,
   };
 }

@@ -5,6 +5,9 @@ import * as NodePath from "node:path";
 
 import {
   ApprovalRequestId,
+  ChannelId,
+  ChannelMemberHandle,
+  ChannelPostId,
   EventId,
   CheckpointRef,
   CommandId,
@@ -359,6 +362,7 @@ describe("OrchestrationEngine", () => {
 
     const projectionSnapshot = {
       snapshotSequence: 7,
+      channels: [],
       updatedAt: "2026-03-03T00:00:04.000Z",
       projects: [
         {
@@ -2166,6 +2170,137 @@ describe("OrchestrationEngine", () => {
       expect(readModel.projects.map((project) => project.id)).toContain(projectId);
     } finally {
       await system.dispose();
+    }
+  });
+
+  it("serves channels to the decider after a restart", async () => {
+    // The decider validates channel commands against the read model the engine
+    // loads at startup. When that load did not read projection_channels, every
+    // channel command was rejected as "does not exist" AND channel.create was
+    // accepted a second time, wiping membership — with the whole suite green,
+    // because every other channel test hand-builds the read model. This drives
+    // the production path instead: real database, real restart.
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-channel-restart-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    let system = await createOrchestrationSystem(databasePath);
+    const channelId = ChannelId.make("channel-seniors");
+    const boss1 = ChannelMemberHandle.make("boss1");
+
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "channel.create",
+          commandId: CommandId.make("cmd-channel-create"),
+          channelId,
+          name: "seniors",
+          members: [{ handle: boss1, memberKind: "thread", memberId: "thread-boss1" }],
+          createdAt: now(),
+        }),
+      );
+
+      await system.dispose();
+      system = await createOrchestrationSystem(databasePath);
+
+      // Recreating the channel must be REJECTED. If the read model came back
+      // empty, requireChannelAbsent passes and this silently succeeds.
+      const recreate = await system.run(
+        Effect.exit(
+          system.engine.dispatch({
+            type: "channel.create",
+            commandId: CommandId.make("cmd-channel-recreate"),
+            channelId,
+            name: "seniors",
+            members: [],
+            createdAt: now(),
+          }),
+        ),
+      );
+      expect(recreate._tag).toBe("Failure");
+
+      // And a post from a known member must still be ACCEPTED, which fails in
+      // the opposite direction if membership was lost.
+      await system.run(
+        system.engine.dispatch({
+          type: "channel.post.create",
+          commandId: CommandId.make("cmd-channel-post"),
+          channelId,
+          postId: ChannelPostId.make("post-after-restart"),
+          authorRef: { memberKind: "thread", memberId: "thread-boss1" },
+          body: "still here",
+          mentions: [],
+          parentPostId: null,
+          createdAt: now(),
+        }),
+      );
+
+      const snapshot = await system.readModel();
+      expect(snapshot.channels.map((channel) => channel.id)).toEqual([channelId]);
+      expect(snapshot.channels[0]?.members.map((member) => member.handle)).toEqual([boss1]);
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("a duplicate channel name fails one command, not the engine", async () => {
+    // The decider validates channel existence by id, so a duplicate NAME reaches
+    // the projection and fails there on the unique index. All projectors share
+    // one transaction, so that write rolls back every projector's cursor for
+    // this event. The question this pins is the blast radius: a typed
+    // persistence error should fail THIS command and leave the engine serving,
+    // the same way an unroutable command does. If the engine wedged instead,
+    // one duplicate name would take down the environment.
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-channel-dupname-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    const system = await createOrchestrationSystem(databasePath);
+
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "channel.create",
+          commandId: CommandId.make("cmd-dup-first"),
+          channelId: ChannelId.make("channel-dup-a"),
+          name: "seniors",
+          members: [],
+          createdAt: now(),
+        }),
+      );
+
+      // Same name, different id: the decider accepts it, the projection refuses.
+      const duplicate = await system.run(
+        Effect.exit(
+          system.engine.dispatch({
+            type: "channel.create",
+            commandId: CommandId.make("cmd-dup-second"),
+            channelId: ChannelId.make("channel-dup-b"),
+            name: "seniors",
+            members: [],
+            createdAt: now(),
+          }),
+        ),
+      );
+      expect(duplicate._tag).toBe("Failure");
+
+      // The engine must still be serving. This is the assertion that matters.
+      await system.run(
+        system.engine.dispatch({
+          type: "channel.create",
+          commandId: CommandId.make("cmd-dup-after"),
+          channelId: ChannelId.make("channel-dup-c"),
+          name: "project",
+          members: [],
+          createdAt: now(),
+        }),
+      );
+
+      const snapshot = await system.readModel();
+      expect(snapshot.channels.map((channel) => channel.name).sort()).toEqual([
+        "project",
+        "seniors",
+      ]);
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
     }
   });
 });

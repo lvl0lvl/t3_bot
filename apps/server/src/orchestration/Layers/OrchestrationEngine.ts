@@ -1,9 +1,9 @@
 import type {
+  OrchestrationAggregateId,
+  OrchestrationAggregateKind,
   OrchestrationClientOrigin,
   OrchestrationEvent,
   OrchestrationReadModel,
-  ProjectId,
-  ThreadId,
 } from "@t3tools/contracts";
 import { OrchestrationCommand } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -71,8 +71,19 @@ interface CommandEnvelope {
  *
  * A catch-all thread branch was the alternative. The compiler rejects that for a
  * command with no `threadId` field, but a command that happens to carry one is
- * routed silently, attaching its events, receipt, and `hasEventAfter` scope to
- * whichever thread the payload names.
+ * routed silently.
+ *
+ * What that actually corrupts is narrower than it looks, and worth stating
+ * because the obvious guess is wrong. This result reaches only telemetry, the
+ * command-receipt conflict check, and the rejected receipt. Events carry the
+ * aggregate the decider stamped on them, the accepted receipt is stamped from
+ * that event, and both `hasEventAfter` call sites hardcode the thread kind. So
+ * the server holds two independent command-to-aggregate mappings — this switch
+ * and the decider's per-event literals — and what protects receipt scope is
+ * that they AGREE. When they disagree, the accepted receipt records the
+ * decider's aggregate while the conflict check compares this one, and a
+ * legitimate retry of a command that already succeeded is refused as a
+ * conflict. Nothing in the type system relates the two.
  *
  * Returns null rather than throwing when nothing matches. The call site turns
  * that into a rejection of the one command: this runs in the engine's single
@@ -80,8 +91,8 @@ interface CommandEnvelope {
  * later command on an unsettled Deferred.
  */
 function commandToAggregateRef(command: OrchestrationCommand): {
-  readonly aggregateKind: "project" | "thread";
-  readonly aggregateId: ProjectId | ThreadId;
+  readonly aggregateKind: OrchestrationAggregateKind;
+  readonly aggregateId: OrchestrationAggregateId;
 } | null {
   switch (command.type) {
     case "project.create":
@@ -130,6 +141,17 @@ function commandToAggregateRef(command: OrchestrationCommand): {
       return {
         aggregateKind: "thread",
         aggregateId: command.threadId,
+      };
+    case "channel.create":
+    case "channel.meta.update":
+    case "channel.archive":
+    case "channel.unarchive":
+    case "channel.member.add":
+    case "channel.member.remove":
+    case "channel.post.create":
+      return {
+        aggregateKind: "channel",
+        aggregateId: command.channelId,
       };
     default: {
       command satisfies never;

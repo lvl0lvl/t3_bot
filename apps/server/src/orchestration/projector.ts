@@ -27,6 +27,12 @@ import * as Predicate from "effect/Predicate";
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
   MessageSentPayloadSchema,
+  ChannelArchivedPayload,
+  ChannelCreatedPayload,
+  ChannelMemberAddedPayload,
+  ChannelMemberRemovedPayload,
+  ChannelMetaUpdatedPayload,
+  ChannelUnarchivedPayload,
   ProjectCreatedPayload,
   ProjectDeletedPayload,
   ProjectMetaUpdatedPayload,
@@ -310,6 +316,7 @@ export function createEmptyReadModel(nowIso: string): OrchestrationReadModel {
     snapshotSequence: 0,
     projects: [],
     threads: [],
+    channels: [],
     updatedAt: nowIso,
   };
 }
@@ -1053,6 +1060,105 @@ export function projectEvent(
           };
         }),
       );
+
+    case "channel.created":
+      return decodeForEvent(ChannelCreatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          channels: [
+            ...nextBase.channels.filter((entry) => entry.id !== payload.channelId),
+            {
+              id: payload.channelId,
+              name: payload.name,
+              members: payload.members,
+              archivedAt: null,
+              createdAt: payload.createdAt,
+              updatedAt: payload.updatedAt,
+            },
+          ],
+        })),
+      );
+
+    case "channel.meta-updated":
+      return decodeForEvent(ChannelMetaUpdatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          channels: nextBase.channels.map((entry) =>
+            entry.id === payload.channelId
+              ? {
+                  ...entry,
+                  ...(payload.name !== undefined ? { name: payload.name } : {}),
+                  updatedAt: payload.updatedAt,
+                }
+              : entry,
+          ),
+        })),
+      );
+
+    case "channel.archived":
+      return decodeForEvent(ChannelArchivedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          channels: nextBase.channels.map((entry) =>
+            entry.id === payload.channelId
+              ? { ...entry, archivedAt: payload.archivedAt, updatedAt: payload.updatedAt }
+              : entry,
+          ),
+        })),
+      );
+
+    case "channel.unarchived":
+      return decodeForEvent(ChannelUnarchivedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          channels: nextBase.channels.map((entry) =>
+            entry.id === payload.channelId
+              ? { ...entry, archivedAt: null, updatedAt: payload.updatedAt }
+              : entry,
+          ),
+        })),
+      );
+
+    case "channel.member-added":
+      return decodeForEvent(ChannelMemberAddedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          channels: nextBase.channels.map((entry) =>
+            entry.id === payload.channelId
+              ? {
+                  ...entry,
+                  members: [
+                    ...entry.members.filter((member) => member.handle !== payload.member.handle),
+                    payload.member,
+                  ],
+                  updatedAt: payload.updatedAt,
+                }
+              : entry,
+          ),
+        })),
+      );
+
+    case "channel.member-removed":
+      return decodeForEvent(ChannelMemberRemovedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          channels: nextBase.channels.map((entry) =>
+            entry.id === payload.channelId
+              ? {
+                  ...entry,
+                  members: entry.members.filter((member) => member.handle !== payload.handle),
+                  updatedAt: payload.updatedAt,
+                }
+              : entry,
+          ),
+        })),
+      );
+
+    // Cased deliberately rather than left to the default: a channel's post
+    // history is unbounded and this model is rebuilt on every event, so posts
+    // live in the projection the gateway reads, never here.
+    case "channel.post-created":
+      return Effect.succeed(nextBase);
 
     default:
       return Effect.succeed(nextBase);

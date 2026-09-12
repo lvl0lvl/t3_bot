@@ -1,5 +1,7 @@
 import {
   ChannelId,
+  ChannelMemberHandle,
+  ChannelPostId,
   CommandId,
   OrchestrationCommand,
   ProjectId,
@@ -20,6 +22,7 @@ const { commandToAggregateRef } = __testing;
 const PROJECT_ID = ProjectId.make("project-under-test");
 const THREAD_ID = ThreadId.make("thread-under-test");
 const CHANNEL_ID = ChannelId.make("channel-under-test");
+const CHANNEL_HANDLE = ChannelMemberHandle.make("boss1");
 
 /**
  * The id a correctly-routed command of each kind must carry. Keyed on the
@@ -99,7 +102,35 @@ const EXPECTED_AGGREGATE: Readonly<Record<string, OrchestrationAggregateKind>> =
   "thread.activity.append": "thread",
   "thread.revert.complete": "thread",
   "thread.title.regeneration.complete": "thread",
+  // Channel commands carry channelId alone, so they are not members of the
+  // dual-id hazard set this table's derivation selects — that derivation will
+  // not pick them up and an empty uncovered-hazards result says nothing about
+  // them. They need naming here explicitly, and the assertion below names them.
+  "channel.create": "channel",
+  "channel.meta.update": "channel",
+  "channel.archive": "channel",
+  "channel.unarchive": "channel",
+  "channel.member.add": "channel",
+  "channel.member.remove": "channel",
+  "channel.post.create": "channel",
 };
+
+/**
+ * Channel commands that must appear in the executed comparison.
+ *
+ * Asserted by NAME rather than by count: "seven were compared" is satisfied by
+ * any seven, and stops meaning these seven the moment an eighth lands or one of
+ * these drops out and an unrelated command drops in.
+ */
+const CHANNEL_COMMAND_TYPES = [
+  "channel.create",
+  "channel.meta.update",
+  "channel.archive",
+  "channel.unarchive",
+  "channel.member.add",
+  "channel.member.remove",
+  "channel.post.create",
+] as const;
 
 /**
  * The shape the command union is declared in. Annotating it structurally rather
@@ -179,6 +210,36 @@ const dualIdCommandTypes = (): ReadonlyArray<string> => {
 const PROBE_EXTRAS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
   // A thread id the read model does not already hold: creating the existing one
   // is rejected, which is what kept this command out of the comparison.
+  // The seeded channel is what lets the other five past requireChannel, and it
+  // is exactly what makes this one fail: requireChannelAbsent refuses an id the
+  // read model already holds. A different id, so the probe creates rather than
+  // collides.
+  "channel.create": {
+    channelId: ChannelId.make("channel-created-by-probe"),
+    name: "probe-channel",
+    members: [],
+    createdAt: NOW,
+  },
+  // A handle the seeded channel does not already hold; the seeded one collides.
+  "channel.member.add": {
+    member: {
+      handle: ChannelMemberHandle.make("added-by-probe"),
+      memberKind: "thread",
+      memberId: THREAD_ID,
+    },
+  },
+  // The seeded handle, because removing one that is not a member is refused.
+  "channel.member.remove": { handle: CHANNEL_HANDLE },
+  // The author must BE a member and every mention must resolve to one, so both
+  // point at the seeded member rather than at anything invented here.
+  "channel.post.create": {
+    postId: ChannelPostId.make("post-by-probe"),
+    authorRef: { memberKind: "thread", memberId: THREAD_ID },
+    body: "probe",
+    mentions: [CHANNEL_HANDLE],
+    parentPostId: null,
+    createdAt: NOW,
+  },
   "thread.create": {
     threadId: ThreadId.make("thread-created-by-probe"),
     title: "Probe thread",
@@ -282,6 +343,21 @@ const readModel = (): OrchestrationReadModel => ({
       session: null,
     },
   ] as unknown as OrchestrationReadModel["threads"],
+  // Seeded, not created by the probe. Six of the seven channel commands call
+  // requireChannel first and are refused without it — and a refused command
+  // emits no events, so it drops out of the executed comparison silently.
+  // The member is here for the same reason: channel.post.create additionally
+  // checks the author and its mentions against membership.
+  channels: [
+    {
+      id: CHANNEL_ID,
+      name: "seniors",
+      members: [{ handle: CHANNEL_HANDLE, memberKind: "thread" as const, memberId: THREAD_ID }],
+      archivedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    },
+  ],
   updatedAt: NOW,
 });
 
@@ -383,6 +459,18 @@ it.layer(NodeServices.layer)("router and decider agree", (it) => {
       expect(
         uncoveredHazards,
         "these commands carry both ids, so only this test can catch a misroute — and it did not compare them",
+      ).toEqual([]);
+
+      // The channel commands are NOT in the dual-id hazard set — they carry
+      // channelId alone — so the assertion above is silent about them and would
+      // pass with all seven skipped. Six of them call requireChannel first and
+      // emit nothing if the read model lacks the channel, which is precisely
+      // how they would drop out. Named rather than counted: "seven compared"
+      // is satisfied by any seven.
+      const uncoveredChannels = CHANNEL_COMMAND_TYPES.filter((type) => !compared.includes(type));
+      expect(
+        uncoveredChannels,
+        "these channel commands were never compared — a refused probe emits no events and drops out silently",
       ).toEqual([]);
     }),
   );

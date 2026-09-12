@@ -8,6 +8,8 @@ import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import {
   ApprovalRequestId,
   ChannelId,
+  ChannelMemberHandle,
+  ChannelPostId,
   CheckpointRef,
   ClientSurface,
   CommandId,
@@ -459,6 +461,45 @@ export const ProjectIconOverride = Schema.Union([
 ]);
 export type ProjectIconOverride = typeof ProjectIconOverride.Type;
 
+/**
+ * A channel member. `memberId` of a thread member is its ThreadId, and the
+ * field is deliberately not named `threadId`.
+ *
+ * Routing switches on `command.type` today, so nothing currently reads that
+ * name — the rule guards against a catch-all branch being reintroduced, which
+ * is the one shape that would route a channel command by the fields it happens
+ * to carry rather than by what it is.
+ */
+export const ChannelMember = Schema.Struct({
+  handle: ChannelMemberHandle,
+  memberKind: Schema.Literals(["thread", "human"]),
+  memberId: TrimmedNonEmptyString,
+});
+export type ChannelMember = typeof ChannelMember.Type;
+
+/** Identifies a post's author. Derived server-side, never supplied by an agent. */
+export const ChannelAuthorRef = Schema.Struct({
+  memberKind: Schema.Literals(["thread", "human"]),
+  memberId: TrimmedNonEmptyString,
+});
+export type ChannelAuthorRef = typeof ChannelAuthorRef.Type;
+
+/**
+ * A channel as the decider sees it. Membership is here because every write
+ * invariant needs it; posts are not, because this model is rebuilt on every
+ * event and a channel's history is unbounded. Post bodies live in the
+ * projection the gateway reads.
+ */
+export const OrchestrationChannel = Schema.Struct({
+  id: ChannelId,
+  name: TrimmedNonEmptyString,
+  members: Schema.Array(ChannelMember),
+  archivedAt: Schema.NullOr(IsoDateTime),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationChannel = typeof OrchestrationChannel.Type;
+
 export const OrchestrationProject = Schema.Struct({
   id: ProjectId,
   title: TrimmedNonEmptyString,
@@ -759,6 +800,7 @@ export const OrchestrationReadModel = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   projects: Schema.Array(OrchestrationProject),
   threads: Schema.Array(OrchestrationThread),
+  channels: Schema.Array(OrchestrationChannel),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationReadModel = typeof OrchestrationReadModel.Type;
@@ -986,6 +1028,66 @@ export const ProjectCreateCommand = Schema.Struct({
   // Retained for older clients that sent an automatic create-time seed. The
   // server ignores it; explicit project defaults use project.meta.update.
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
+  createdAt: IsoDateTime,
+});
+
+/** A mention cap keeps one post from fanning out to an unbounded wake set. */
+const ChannelMentions = Schema.Array(ChannelMemberHandle).check(Schema.isMaxLength(32));
+
+const ChannelCreateCommand = Schema.Struct({
+  type: Schema.Literal("channel.create"),
+  commandId: CommandId,
+  channelId: ChannelId,
+  // Canonical, without the leading "#".
+  name: TrimmedNonEmptyString,
+  members: Schema.Array(ChannelMember),
+  createdAt: IsoDateTime,
+});
+
+const ChannelMetaUpdateCommand = Schema.Struct({
+  type: Schema.Literal("channel.meta.update"),
+  commandId: CommandId,
+  channelId: ChannelId,
+  name: Schema.optional(TrimmedNonEmptyString),
+});
+
+const ChannelArchiveCommand = Schema.Struct({
+  type: Schema.Literal("channel.archive"),
+  commandId: CommandId,
+  channelId: ChannelId,
+});
+
+const ChannelUnarchiveCommand = Schema.Struct({
+  type: Schema.Literal("channel.unarchive"),
+  commandId: CommandId,
+  channelId: ChannelId,
+});
+
+const ChannelMemberAddCommand = Schema.Struct({
+  type: Schema.Literal("channel.member.add"),
+  commandId: CommandId,
+  channelId: ChannelId,
+  member: ChannelMember,
+});
+
+/** Keyed by handle: handle is unique within a channel, memberId is not. */
+const ChannelMemberRemoveCommand = Schema.Struct({
+  type: Schema.Literal("channel.member.remove"),
+  commandId: CommandId,
+  channelId: ChannelId,
+  handle: ChannelMemberHandle,
+});
+
+const ChannelPostCreateCommand = Schema.Struct({
+  type: Schema.Literal("channel.post.create"),
+  commandId: CommandId,
+  channelId: ChannelId,
+  postId: ChannelPostId,
+  authorRef: ChannelAuthorRef,
+  body: TrimmedNonEmptyString,
+  mentions: ChannelMentions,
+  // Threading is a field, not a second command.
+  parentPostId: Schema.NullOr(ChannelPostId),
   createdAt: IsoDateTime,
 });
 
@@ -1329,6 +1431,13 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUserInputDismissCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
+  ChannelCreateCommand,
+  ChannelMetaUpdateCommand,
+  ChannelArchiveCommand,
+  ChannelUnarchiveCommand,
+  ChannelMemberAddCommand,
+  ChannelMemberRemoveCommand,
+  ChannelPostCreateCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -1534,6 +1643,13 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "channel.created",
+  "channel.meta-updated",
+  "channel.archived",
+  "channel.unarchived",
+  "channel.member-added",
+  "channel.member-removed",
+  "channel.post-created",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -1548,6 +1664,63 @@ export type OrchestrationAggregateKind = typeof OrchestrationAggregateKind.Type;
 export const OrchestrationAggregateId = Schema.Union([ProjectId, ThreadId, ChannelId]);
 export type OrchestrationAggregateId = typeof OrchestrationAggregateId.Type;
 export const OrchestrationActorKind = Schema.Literals(["client", "server", "provider"]);
+
+export const ChannelCreatedPayload = Schema.Struct({
+  channelId: ChannelId,
+  name: TrimmedNonEmptyString,
+  members: Schema.Array(ChannelMember),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+
+export const ChannelMetaUpdatedPayload = Schema.Struct({
+  channelId: ChannelId,
+  name: Schema.optional(TrimmedNonEmptyString),
+  updatedAt: IsoDateTime,
+});
+
+export const ChannelArchivedPayload = Schema.Struct({
+  channelId: ChannelId,
+  archivedAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+
+export const ChannelUnarchivedPayload = Schema.Struct({
+  channelId: ChannelId,
+  updatedAt: IsoDateTime,
+});
+
+export const ChannelMemberAddedPayload = Schema.Struct({
+  channelId: ChannelId,
+  member: ChannelMember,
+  updatedAt: IsoDateTime,
+});
+
+export const ChannelMemberRemovedPayload = Schema.Struct({
+  channelId: ChannelId,
+  handle: ChannelMemberHandle,
+  updatedAt: IsoDateTime,
+});
+
+/**
+ * Carries `mentions` and `authorHandle` on the event, not only the command:
+ * the post->turn reactor decides from one event, and must never wake the
+ * post's own author. Reading either from a projection would reintroduce a join.
+ */
+export const ChannelPostCreatedPayload = Schema.Struct({
+  channelId: ChannelId,
+  postId: ChannelPostId,
+  authorRef: ChannelAuthorRef,
+  authorHandle: ChannelMemberHandle,
+  body: TrimmedNonEmptyString,
+  // Capped here as well as on the command. The reactor reads the EVENT, so a
+  // cap only on the command bounds the representation nothing downstream uses.
+  // Tightening a persisted-event schema is only safe because no channel event
+  // exists yet; after the first one this becomes a migration.
+  mentions: ChannelMentions,
+  parentPostId: Schema.NullOr(ChannelPostId),
+  createdAt: IsoDateTime,
+});
 
 export const ProjectCreatedPayload = Schema.Struct({
   projectId: ProjectId,
@@ -2005,6 +2178,41 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("channel.created"),
+    payload: ChannelCreatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("channel.meta-updated"),
+    payload: ChannelMetaUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("channel.archived"),
+    payload: ChannelArchivedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("channel.unarchived"),
+    payload: ChannelUnarchivedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("channel.member-added"),
+    payload: ChannelMemberAddedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("channel.member-removed"),
+    payload: ChannelMemberRemovedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("channel.post-created"),
+    payload: ChannelPostCreatedPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

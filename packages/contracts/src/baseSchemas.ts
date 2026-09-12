@@ -111,6 +111,11 @@ export const ProjectId = makeEntityId("ProjectId");
 export type ProjectId = typeof ProjectId.Type;
 export const ChannelId = makeEntityId("ChannelId");
 export type ChannelId = typeof ChannelId.Type;
+export const ChannelPostId = makeEntityId("ChannelPostId");
+export type ChannelPostId = typeof ChannelPostId.Type;
+/** What an agent types after "@" to reach a member. Unique within a channel. */
+export const ChannelMemberHandle = makeEntityId("ChannelMemberHandle");
+export type ChannelMemberHandle = typeof ChannelMemberHandle.Type;
 export const EnvironmentId = makeEntityId("EnvironmentId");
 export type EnvironmentId = typeof EnvironmentId.Type;
 export const CommandId = makeEntityId("CommandId");

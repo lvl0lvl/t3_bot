@@ -100,6 +100,7 @@ function makeReadModel(pullRequests: ReadonlyArray<ThreadPullRequestLink>): Orch
         session: null,
       },
     ],
+    channels: [],
     updatedAt: NOW,
   };
 }

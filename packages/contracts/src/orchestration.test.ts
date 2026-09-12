@@ -10,6 +10,7 @@ import {
   type ChatImageAttachment,
   ClientOrchestrationCommand,
   ModelSelection,
+  ChannelPostCreatedPayload,
   OrchestrationAggregateId,
   OrchestrationAggregateKind,
   OrchestrationCommand,
@@ -1559,6 +1560,30 @@ it.effect("events stored before the channel aggregate still decode", () =>
 
     assert.strictEqual(archived.aggregateKind, "thread");
     assert.strictEqual(archived.aggregateId, "thread-1");
+  }),
+);
+
+it.effect("the mention cap binds the post EVENT, not only the command", () =>
+  Effect.gen(function* () {
+    // The post->turn reactor decides from the event, so a cap enforced only on
+    // the command bounds the representation nothing downstream reads.
+    const decodePostCreated = Schema.decodeUnknownEffect(ChannelPostCreatedPayload);
+    const payload = (count: number) => ({
+      channelId: "channel-1",
+      postId: "post-1",
+      authorRef: { memberKind: "thread", memberId: "thread-pm" },
+      authorHandle: "pm",
+      body: "what is 2+2",
+      mentions: Array.from({ length: count }, (_, index) => `handle-${index}`),
+      parentPostId: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const atCap = yield* decodePostCreated(payload(32));
+    assert.strictEqual(atCap.mentions.length, 32);
+
+    const overCap = yield* Effect.exit(decodePostCreated(payload(33)));
+    assert.strictEqual(overCap._tag, "Failure");
   }),
 );
 

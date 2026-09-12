@@ -37,6 +37,15 @@ import {
 import {
   listThreadsByProjectId,
   requireActiveProjectWorkspaceRootAbsent,
+  requireCanonicalChannelHandle,
+  requireCanonicalChannelMember,
+  requireCanonicalChannelName,
+  requireChannel,
+  requireChannelAbsent,
+  requireChannelAuthorIsMember,
+  requireChannelHandlesUnique,
+  requireChannelMentionsResolve,
+  requireChannelNameAvailable,
   requireProject,
   requireProjectAbsent,
   requireThread,
@@ -2015,6 +2024,197 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
       return [unsettledEvent, activityAppendedEvent];
+    }
+
+    case "channel.create": {
+      yield* requireChannelAbsent({ readModel, command, channelId: command.channelId });
+      // Canonicalise before the uniqueness check, not after: "Boss1" and "boss1"
+      // are one mention key to every reader, so they must collide here.
+      const members = yield* Effect.forEach(command.members, (member) =>
+        requireCanonicalChannelMember({ command, member }),
+      );
+      yield* requireChannelHandlesUnique({ command, members });
+      const name = yield* requireCanonicalChannelName({ command, name: command.name });
+      yield* requireChannelNameAvailable({ readModel, command, name });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.created",
+        payload: {
+          channelId: command.channelId,
+          name,
+          members,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "channel.meta.update": {
+      yield* requireChannel({ readModel, command, channelId: command.channelId });
+      // A rename carries the same empty-canonical hole as a create, so it runs
+      // the same check rather than trusting the schema that passed the raw name.
+      const renamed =
+        command.name === undefined
+          ? undefined
+          : yield* requireCanonicalChannelName({ command, name: command.name });
+      if (renamed !== undefined) {
+        // Renaming onto a name another channel holds hits the same unique index
+        // as a duplicate create, so it gets the same typed refusal. Renaming a
+        // channel to the name it already has stays a no-op, not a conflict.
+        yield* requireChannelNameAvailable({
+          readModel,
+          command,
+          name: renamed,
+          exceptChannelId: command.channelId,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.meta-updated",
+        payload: {
+          channelId: command.channelId,
+          ...(renamed !== undefined ? { name: renamed } : {}),
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "channel.archive": {
+      yield* requireChannel({ readModel, command, channelId: command.channelId });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.archived",
+        payload: {
+          channelId: command.channelId,
+          archivedAt: occurredAt,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "channel.unarchive": {
+      yield* requireChannel({ readModel, command, channelId: command.channelId });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.unarchived",
+        payload: {
+          channelId: command.channelId,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "channel.member.add": {
+      const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
+      const member = yield* requireCanonicalChannelMember({ command, member: command.member });
+      yield* requireChannelHandlesUnique({
+        command,
+        members: [...channel.members, member],
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.member-added",
+        payload: {
+          channelId: command.channelId,
+          member,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "channel.member.remove": {
+      const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
+      // Canonical on both sides, or "@Boss1" fails to remove the member it names.
+      const handle = yield* requireCanonicalChannelHandle({ command, handle: command.handle });
+      if (!channel.members.some((member) => member.handle === handle)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Handle '${handle}' is not a member of channel '${command.channelId}'.`,
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.member-removed",
+        payload: {
+          channelId: command.channelId,
+          handle,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "channel.post.create": {
+      const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
+      // Membership and mention resolution are enforced here, not only in the
+      // toolkit: its pre-check and this write are not atomic, and every future
+      // caller inherits whatever the aggregate accepts.
+      const author = yield* requireChannelAuthorIsMember({
+        command,
+        channel,
+        authorRef: command.authorRef,
+      });
+      // After the author check, never before: canonicalising can itself fail on
+      // a handle of only sigils, and a guard that fires earlier would let a
+      // non-member tell a malformed mention from being excluded.
+      const mentions = yield* Effect.forEach(command.mentions, (handle) =>
+        requireCanonicalChannelHandle({ command, handle }),
+      );
+      yield* requireChannelMentionsResolve({ command, channel, mentions });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.post-created",
+        payload: {
+          channelId: command.channelId,
+          postId: command.postId,
+          authorRef: command.authorRef,
+          // Resolved from membership so the reactor never joins to find it.
+          authorHandle: author.handle,
+          body: command.body,
+          mentions,
+          parentPostId: command.parentPostId,
+          createdAt: command.createdAt,
+        },
+      };
     }
 
     default: {
