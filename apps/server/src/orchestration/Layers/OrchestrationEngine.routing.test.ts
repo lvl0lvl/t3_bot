@@ -293,7 +293,7 @@ const probe = (type: string): OrchestrationCommand =>
 const decidableProbe = (type: string): OrchestrationCommand =>
   ({
     ...(probe(type) as unknown as Record<string, unknown>),
-    ...(PROBE_EXTRAS[type] ?? {}),
+    ...PROBE_EXTRAS[type],
   }) as unknown as OrchestrationCommand;
 
 const readModel = (): OrchestrationReadModel => ({

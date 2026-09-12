@@ -28,8 +28,8 @@ import {
  * rule. `channel-removed` carries a bare `channelId`, and the stream emits it
  * for a channel the connection is NOT a member of — so a change to any channel
  * on the server tells every connected client that a channel with that id
- * exists. See `channelShellFor` in `ws.ts`, which says why neither available fix
- * works.
+ * exists. See `channelShellFor` in `ws.ts`, which now decides it from the
+ * removal's member ref and says what it still cannot decide.
  */
 export function toChannelShell(row: ProjectionChannelWithActivity): OrchestrationChannelShell {
   return {

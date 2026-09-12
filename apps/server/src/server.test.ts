@@ -8782,6 +8782,76 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
+  it.effect("says nothing when another HUMAN is removed from a channel it is not in", () =>
+    Effect.gen(function* () {
+      // THE OTHER HALF OF THE GUARD. The colliding fixture above proves the KIND
+      // half: a thread carrying the operator's memberId must not read as the
+      // operator. This proves the ID half, and without it `memberId` is not
+      // pinned at all — a review lane measured that comparing `memberKind`
+      // ALONE passed every test this PR had added, because every fixture
+      // differed from the connection member in kind or matched in both.
+      //
+      // Same kind, different id: a human `bob` removed from a channel the
+      // operator is not in. Under that mutant the operator is told this channel
+      // exists, which is the disclosure `t3_bot-7br` closes — and it bites the
+      // day there is more than one human, which is the day the bead is filed
+      // for.
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const otherHumanRemoval = {
+        ...foreignRemovalEvent,
+        eventId: EventId.make("event-channel-member-removed-other-human"),
+        payload: {
+          ...(foreignRemovalEvent as unknown as { payload: Record<string, unknown> }).payload,
+          handle: ChannelMemberHandle.make("bob"),
+          memberKind: "human",
+          memberId: "human-bob",
+        },
+      } as unknown as OrchestrationEvent;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [{ handle: "pm", memberKind: "thread", memberId: "thread-pm" }],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, otherHumanRemoval);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.deepEqual(items[1], { kind: "synchronized" });
+      assert.equal(items.filter((item) => item.kind === "channel-removed").length, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
   it.effect("keeps a removal that a later event in the same batch would coalesce away", () =>
     Effect.gen(function* () {
       // COALESCING KEEPS ONE EVENT PER AGGREGATE PER WINDOW, the latest. So a
