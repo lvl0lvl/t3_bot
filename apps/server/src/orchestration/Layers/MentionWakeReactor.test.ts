@@ -424,4 +424,90 @@ describe("MentionWakeReactor", () => {
       await removeDirectory(directory);
     }
   }, 30_000);
+
+  it("loses no wake when the server stops with work still queued", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    let system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      // Enough posts that the worker cannot have finished them all by the time
+      // the scope closes. This is a SIGTERM, not a crash: the ordinary way a
+      // server stops, with the worker queue non-empty.
+      for (let index = 0; index < 25; index += 1) {
+        await post(system, { id: `post-burst-${index}`, mentions: [MENTION] });
+      }
+      await system.dispose();
+
+      system = await makeSystem(databasePath);
+      await system.startReactor();
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      // Every one, or the cursor moved past work the worker never did - and
+      // those posts are gone for good, because nothing replays them and the
+      // derived commandId never gets the chance to absorb anything.
+      expect(await wakeMessages(system)).toHaveLength(25);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("wakes for the same post id in two different channels", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      const secondChannel = ChannelId.make("channel-juniors");
+      await system.run(
+        system.engine.dispatch({
+          type: "channel.create",
+          commandId: CommandId.make("cmd-channel-2"),
+          channelId: secondChannel,
+          name: "juniors",
+          members: [
+            { handle: MENTION, memberKind: "thread", memberId: WOKEN },
+            {
+              handle: ChannelMemberHandle.make("walt"),
+              memberKind: "human",
+              memberId: "human-walt",
+            },
+          ],
+          createdAt: NOW,
+        }),
+      );
+      await system.startReactor();
+
+      // A post id is caller-supplied and unique only WITHIN a channel - the
+      // projection is keyed (channel_id, post_id) for that reason, and the
+      // decider has no global uniqueness check. Two legal posts, one id.
+      for (const channelId of [CHANNEL_ID, secondChannel]) {
+        await system.run(
+          system.engine.dispatch({
+            type: "channel.post.create",
+            commandId: CommandId.make(`cmd-post-shared-${channelId}`),
+            channelId,
+            postId: ChannelPostId.make("post-shared-id"),
+            authorRef: { memberKind: "human", memberId: "human-walt" },
+            body: `posted in ${channelId}`,
+            mentions: [MENTION],
+            parentPostId: null,
+            createdAt: NOW,
+          }),
+        );
+      }
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // Two wakes. With the channel missing from the derived commandId both
+      // posts key the same, the engine absorbs the second as a replay, and one
+      // real mention is silently never delivered.
+      expect(await wakeMessages(system)).toHaveLength(2);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
 });

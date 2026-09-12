@@ -23,14 +23,21 @@ import {
 type PostCreated = Extract<OrchestrationEvent, { type: "channel.post-created" }>;
 
 /**
- * One wake per (post, thread), derived rather than generated.
+ * One wake per (channel, post, thread), derived rather than generated.
+ *
+ * The channel is part of the key because a post id is only unique WITHIN a
+ * channel — it is caller-supplied, and the projection is keyed
+ * `(channel_id, post_id)` for exactly that reason. Without it two legal posts
+ * in different channels derive one CommandId and the engine's receipt check
+ * absorbs the second as a replay: a real mention, silently never delivered.
  *
  * The engine's receipt idempotency turns a replayed command into a no-op, so
  * at-least-once delivery plus a derived id is exactly-once in effect. That is
  * what lets the cursor be written AFTER the dispatch in its own transaction: a
  * crash between the two replays the post on restart and the replay is absorbed.
  */
-const wakeKey = (postId: string, threadId: ThreadId) => `comms-wake:${postId}:${threadId}`;
+const wakeKey = (channelId: string, postId: string, threadId: ThreadId) =>
+  `comms-wake:${channelId}:${postId}:${threadId}`;
 
 /**
  * The prompt a woken agent sees. The first line is machine-parseable so a
@@ -128,7 +135,7 @@ const make = Effect.gen(function* () {
       if (Option.isNone(thread)) {
         continue;
       }
-      const key = wakeKey(event.payload.postId, threadId);
+      const key = wakeKey(event.payload.channelId, event.payload.postId, threadId);
       yield* engine.dispatch({
         type: "thread.turn.start",
         commandId: CommandId.make(key),
@@ -164,7 +171,39 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const worker = yield* makeDrainableWorker(wakeSafely);
+  /**
+   * The worker owns the cursor, and that is the whole point of it being here
+   * rather than in the stream.
+   *
+   * The worker is a separate fiber over an in-memory queue, interrupted when
+   * the scope closes. Advancing the cursor when the event was READ means a
+   * shutdown — SIGTERM, not only a crash — discards a queue whose posts the
+   * cursor already claims, and those wakes are lost FOREVER: the post is never
+   * replayed, so the derived commandId never gets the chance to absorb
+   * anything. Advancing after the wake makes the cursor lag, and lagging is
+   * exactly what the derived id makes free.
+   *
+   * Every event goes through here, not just the ones that wake somebody,
+   * because the cursor has to move past the others too.
+   */
+  const processEvent = (event: OrchestrationEvent) =>
+    Effect.gen(function* () {
+      if (event.type === "channel.post-created" && event.payload.mentions.length > 0) {
+        yield* wakeSafely(event);
+      }
+      yield* advance(event).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("mention wake cursor not advanced", {
+                sequence: event.sequence,
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      );
+    });
+
+  const worker = yield* makeDrainableWorker(processEvent);
 
   const seenSequence = yield* SubscriptionRef.make(0);
   const noteSeen = (sequence: number) =>
@@ -204,10 +243,7 @@ const make = Effect.gen(function* () {
 
   const handle = (event: OrchestrationEvent) =>
     Effect.gen(function* () {
-      if (event.type === "channel.post-created" && event.payload.mentions.length > 0) {
-        yield* worker.enqueue(event);
-      }
-      yield* advance(event);
+      yield* worker.enqueue(event);
       yield* noteSeen(event.sequence);
     });
 
