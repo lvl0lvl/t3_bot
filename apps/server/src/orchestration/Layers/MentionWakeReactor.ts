@@ -116,8 +116,61 @@ export const WAKE_BUDGET_RETENTION_HOURS = 24;
 // writable: `t3_bot-2d2` refuses a colon in either id at the persisted schema,
 // so the collision this escaping prevents cannot be built through a command.
 // The derivation is pure, so it can still be handed the hostile pair directly.
+export const WAKE_KEY_PREFIX = "comms-wake:";
+
 export const wakeKey = (channelId: string, postId: string, threadId: ThreadId) =>
-  `comms-wake:${encodeURIComponent(channelId)}:${encodeURIComponent(postId)}:${threadId}`;
+  `${WAKE_KEY_PREFIX}${encodeURIComponent(channelId)}:${encodeURIComponent(postId)}:${threadId}`;
+
+/**
+ * The parts back out of a wake key, and `None` for anything that is not one.
+ *
+ * PAIRED WITH `wakeKey` AND IN THE SAME MODULE, for the reason the cursor codec
+ * gives: a format with an encoder here and a decoder elsewhere is two chances to
+ * disagree, and this one's disagreement is silent — a mis-split key names a post
+ * that exists, in a channel that exists, and links a wake to the wrong one.
+ *
+ * `None` IS THE COMMON CASE AND NOT AN ERROR. Every ordinary user turn stages a
+ * pending row too, under a plain message id; the caller that needs this is
+ * looking at ALL of them and wants the ones that are wakes. A parser that threw
+ * would make the normal path the exceptional one.
+ *
+ * The split is safe because `wakeKey` percent-encodes both middle parts, so
+ * neither can contain ":" whatever the caller supplied — which is the property
+ * the escaping was added for, used here rather than restated.
+ *
+ * The thread id is NOT encoded by `wakeKey` and does not need to be: it is the
+ * last part, so it takes the whole remainder, and a colon in it could not move a
+ * boundary that has already been found.
+ */
+export const parseWakeKey = (
+  key: string,
+): Option.Option<{
+  readonly channelId: string;
+  readonly postId: string;
+  readonly threadId: ThreadId;
+}> => {
+  if (!key.startsWith(WAKE_KEY_PREFIX)) {
+    return Option.none();
+  }
+  const rest = key.slice(WAKE_KEY_PREFIX.length);
+  const firstBoundary = rest.indexOf(":");
+  if (firstBoundary === -1) {
+    return Option.none();
+  }
+  const secondBoundary = rest.indexOf(":", firstBoundary + 1);
+  if (secondBoundary === -1) {
+    return Option.none();
+  }
+  const threadId = rest.slice(secondBoundary + 1);
+  if (threadId.length === 0) {
+    return Option.none();
+  }
+  return Option.some({
+    channelId: decodeURIComponent(rest.slice(0, firstBoundary)),
+    postId: decodeURIComponent(rest.slice(firstBoundary + 1, secondBoundary)),
+    threadId: ThreadId.make(threadId),
+  });
+};
 
 /**
  * The prompt a woken agent sees.
