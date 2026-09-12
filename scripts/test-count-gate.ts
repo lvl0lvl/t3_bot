@@ -961,7 +961,7 @@ export function compare(base: Suite, head: Suite): ReadonlyArray<Row> {
 export const isRegression = (row: Row) => row.lost.length > 0;
 
 function main(): number {
-  const { base, showNames, allow } = parseArgs(process.argv.slice(2));
+  const { base: askedBase, showNames, allow } = parseArgs(process.argv.slice(2));
 
   // CWD MUST BE THE REPO ROOT. Head is keyed against the cwd and base against
   // the temp worktree root, so from a subdirectory the two key domains disagree
@@ -976,10 +976,16 @@ function main(): number {
 
   const scope = describeScope(process.cwd());
 
-  // THE BASE IS A SHA FROM HERE ON. `resolveBase` has the account; the short
-  // version is that the ref can move under the run and the SHA cannot, and a
-  // head that lacks the SHA is refused before a single suite runs.
-  const baseSha = resolveBase(process.cwd(), base);
+  // THE BASE IS A SHA FROM HERE ON, AND THE REF HAS NO OTHER NAME. `resolveBase`
+  // has the account; the short version is that the ref can move under the run
+  // and the SHA cannot, and a head that lacks the SHA is refused before a
+  // single suite runs. `askedBase` is what the author typed and is used ONCE
+  // more, to print. Every site that measures reads `base`, which is the SHA —
+  // so the mistake this fixes, reading the ref at one site and the SHA at
+  // another, is not a thing that can be typed by reaching for the obvious
+  // name. A mutant that made one site read the ref survived every test,
+  // because no fixture can move a ref mid-run; the name is the guard instead.
+  const base = resolveBase(process.cwd(), askedBase);
 
   // SCOPE YOU CHANGED IS SCOPE YOU HAVE TO MEASURE. A workspace skipped for
   // being unmeasurable in a cold tree is acceptable only while the PR did not
@@ -1000,7 +1006,7 @@ function main(): number {
   // the closing line, and a run that says what it measured does not also have to
   // refuse over what it was told not to.
   const touched = unmeasurableWorkspacesTouched(
-    changedPaths(process.cwd(), baseSha),
+    changedPaths(process.cwd(), base),
     scope.unmeasurableWorkspaces,
     process.cwd(),
   );
@@ -1013,7 +1019,7 @@ function main(): number {
   }
 
   const head = runSuite(process.cwd());
-  const baseSuite = withBaseWorktree(baseSha, (cwd) => runSuite(cwd));
+  const baseSuite = withBaseWorktree(base, (cwd) => runSuite(cwd));
   const rows = compare(baseSuite, head);
 
   const width = Math.max(...rows.map((row) => row.path.length), 4);
@@ -1026,7 +1032,7 @@ function main(): number {
   // in the command either.
   const narrowing = TEST_TARGET === "" ? "" : ` [narrowed by '${TEST_TARGET}']`;
   write(
-    `measured ${scope.measured.length} workspace(s) against ${describeBase(base, baseSha)}: ` +
+    `measured ${scope.measured.length} workspace(s) against ${describeBase(askedBase, base)}: ` +
       `${scope.measured.join(", ")}` +
       narrowing,
   );
@@ -1089,7 +1095,7 @@ function main(): number {
     // lost went on to say no name was lost — and this is the line the PM reads
     // before merging.
     write(
-      `\nMeasured ${scope.measured.length} workspace(s) against ${describeBase(base, baseSha)}` +
+      `\nMeasured ${scope.measured.length} workspace(s) against ${describeBase(askedBase, base)}` +
         `${narrowing}: ` +
         (lostUnderAllow === 0
           ? "no test lost by count or by name."
