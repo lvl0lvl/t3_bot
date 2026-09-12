@@ -123,7 +123,6 @@ import {
   OrchestrationThreadSettleBlockedError,
 } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
@@ -970,15 +969,30 @@ const buildAppUnderTest = (options?: {
             latestSequence: Effect.succeed(0),
             ...options?.layers?.orchestrationEngine,
           }),
-          // The comms toolkit is registered on the real server layer now, and
-          // its live gateway reads the channel projection. This harness mocks
-          // the engine, so it mocks the repository beside it rather than
-          // building a database for a router test that never touches a channel.
+          /**
+           * ONE MOCK OF THIS SERVICE, at the level the app actually sees.
+           *
+           * There were two, at two levels of the layer graph, after the comms
+           * toolkit's harness mock met the shell stream's. The OUTER one wins,
+           * so the inner one's `options` override never reached the app and the
+           * shell snapshot path found no `listChannelsForMember` — which the
+           * suite reported as a parse error on a duplicate import, hiding it.
+           *
+           * The reads the registered comms toolkit performs answer empty; the
+           * WRITES still die, because a router test that reaches one has moved
+           * off its subject.
+           */
           Layer.mock(ProjectionChannelRepository)({
+            upsertChannel: () => Effect.die("unused"),
             getChannelByName: () => Effect.succeedNone,
             getChannelById: () => Effect.succeedNone,
+            getChannelWithActivityById: () => Effect.succeedNone,
+            replaceMembers: () => Effect.die("unused"),
+            insertPost: () => Effect.die("unused"),
             getPost: () => Effect.succeedNone,
+            listChannelsForMember: () => Effect.succeed([]),
             listPosts: () => Effect.succeed([]),
+            ...options?.layers?.projectionChannels,
           }),
           Layer.mock(ThreadDeletionReactor)({
             start: () => Effect.void,
@@ -994,22 +1008,6 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provide(
         Layer.mergeAll(
-          // The channel projection the shell stream refetches through. Every
-          // method dies rather than answering plausibly, except the two the ws
-          // layer actually calls: a test that reaches an unused one without
-          // saying so is a test whose subject has moved.
-          Layer.mock(ProjectionChannelRepository)({
-            upsertChannel: () => Effect.die("unused"),
-            getChannelByName: () => Effect.die("unused"),
-            getChannelById: () => Effect.die("unused"),
-            getChannelWithActivityById: () => Effect.succeedNone,
-            replaceMembers: () => Effect.die("unused"),
-            insertPost: () => Effect.die("unused"),
-            getPost: () => Effect.die("unused"),
-            listChannelsForMember: () => Effect.succeed([]),
-            listPosts: () => Effect.die("unused"),
-            ...options?.layers?.projectionChannels,
-          }),
           Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
             getUserInputActivity: () => Effect.die("unused"),
             getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
