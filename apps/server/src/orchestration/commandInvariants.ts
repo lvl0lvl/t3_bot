@@ -3,6 +3,7 @@ import type {
   ChannelId,
   ChannelMember,
   ChannelMemberHandle,
+  CommandIssuer,
   OrchestrationChannel,
   OrchestrationCommand,
   OrchestrationProject,
@@ -11,6 +12,12 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
+import {
+  canonicalChannelHandle,
+  canonicalChannelName,
+  describeForbiddenIdentityCharacter,
+  isStorableCanonicalIdentity,
+} from "@t3tools/shared/channelIdentity";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Effect from "effect/Effect";
 
@@ -45,42 +52,84 @@ export function listThreadsByProjectId(
 }
 
 /**
- * The canonical form of a channel name: lowercase, no leading sigils, trimmed.
+ * The issuer the engine stamped, refusing a command that arrived without one.
  *
- * Applied in the decider so the projection only ever holds canonical names and
- * a plain byte comparison is correct. The comms toolkit normalises too, for a
- * readable error, but this is the guarantee — an agent typing "#Seniors" and
- * one typing "seniors" must reach the same channel, and a failed name lookup
- * is deliberately indistinguishable from "you are not a member", so a case
- * mismatch would otherwise be unreportable.
+ * The issuer rides the decider's input rather than the 89 command structs, so
+ * the compiler cannot force a caller to supply it. This closes that: a channel
+ * command with no issuer is REFUSED, never processed unauthenticated. Fail-open
+ * was the original bug — `requireChannelAuthorIsMember` asked whether the
+ * author was SOME member and never whether it was the CALLER.
  *
- * Every leading sigil goes, not just one: the sigil is decoration, so "##general"
- * is a fat-finger that must resolve rather than create a second channel. The
- * exact rule is pinned as a table in `canonicalChannelName.test.ts`; the two
- * normalisers have diverged once already, over exactly this.
+ * Every `channel.*` branch calls this. `decider.issuer.test.ts` asserts that by
+ * name over the whole command union, so a new channel command that skips it
+ * fails a test instead of shipping unauthorized.
  */
-export function canonicalChannelName(name: string): string {
-  return canonicalise(name, /^#+/);
+export function requireCommandIssuer(input: {
+  readonly command: OrchestrationCommand;
+  readonly issuer: CommandIssuer | undefined;
+}): Effect.Effect<CommandIssuer, OrchestrationCommandInvariantError> {
+  if (input.issuer !== undefined) {
+    return Effect.succeed(input.issuer);
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `Command '${input.command.type}' arrived without an issuer and cannot be authorized.`,
+    ),
+  );
 }
 
 /**
- * The same rule for a member handle, with "@" as the sigil.
+ * The author of a post, derived from the issuer — never from the command.
  *
- * Handles carry the name rule's failure one level down. The toolkit passes a
- * mention through byte-exact today and is to fold it later; folding THERE while
- * handles are stored as typed makes every capitalised mention unresolvable and
- * refuses the post whole, so the aggregate has to fold first. Folding here also
- * makes "Boss1" and "boss1" collide in the uniqueness check, which is the point
- * of that check: stored apart, they are one ambiguous mention key to every
- * reader.
+ * A `system` issuer is refused: a reactor has no handle, so it has nothing to
+ * appear as in a channel. It may administer, not speak.
  */
-export function canonicalChannelHandle(handle: string): string {
-  return canonicalise(handle, /^@+/);
+export function requireIssuerCanAuthor(input: {
+  readonly command: OrchestrationCommand;
+  readonly issuer: CommandIssuer;
+}): Effect.Effect<ChannelAuthorRef, OrchestrationCommandInvariantError> {
+  // An ALLOW-list, named kind by kind. Written as `!== "system"` this granted
+  // authorship to any kind added to CommandIssuer later — one contract edit
+  // away from the fail-open bug this whole change exists to close.
+  if (input.issuer.memberKind === "human" || input.issuer.memberKind === "thread") {
+    return Effect.succeed({
+      memberKind: input.issuer.memberKind,
+      memberId: input.issuer.memberId,
+    });
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `A '${input.issuer.memberKind}' issuer has no handle and cannot author a channel post.`,
+    ),
+  );
 }
 
-/** One rule, two sigils, so a name and a handle cannot drift apart. */
-function canonicalise(value: string, sigil: RegExp): string {
-  return value.trim().replace(sigil, "").trim().toLowerCase();
+/**
+ * Membership and channel administration are human-or-system only for M1.
+ *
+ * An agent thread that could add itself would be granting itself post and read
+ * rights on any channel whose id it can name, and one that could remove a peer
+ * would silently evict it from the wake set. Both were unguarded: `member.add`
+ * checked only handle uniqueness and `member.remove` only that the handle was
+ * present, neither asked who was issuing.
+ */
+export function requireIssuerCanAdminister(input: {
+  readonly command: OrchestrationCommand;
+  readonly issuer: CommandIssuer;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  // An ALLOW-list for the same reason as above: `!== "thread"` granted channel
+  // administration to every kind that did not exist yet.
+  if (input.issuer.memberKind === "human" || input.issuer.memberKind === "system") {
+    return Effect.void;
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `A '${input.issuer.memberKind}' issuer cannot administer a channel: '${input.command.type}' requires a human or system issuer.`,
+    ),
+  );
 }
 
 /**
@@ -99,15 +148,23 @@ export function requireCanonicalChannelName(input: {
   readonly name: string;
 }): Effect.Effect<string, OrchestrationCommandInvariantError> {
   const canonical = canonicalChannelName(input.name);
-  if (canonical.length > 0) {
-    return Effect.succeed(canonical);
+  if (canonical.length === 0) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        `Channel name '${input.name}' is only sigils and whitespace and has no canonical form.`,
+      ),
+    );
   }
-  return Effect.fail(
-    invariantError(
-      input.command.type,
-      `Channel name '${input.name}' is only sigils and whitespace and has no canonical form.`,
-    ),
-  );
+  if (!isStorableCanonicalIdentity(canonical)) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        `Channel name contains ${describeForbiddenIdentityCharacter(canonical)}, which cannot appear in a stored name.`,
+      ),
+    );
+  }
+  return Effect.succeed(canonical);
 }
 
 /**
@@ -167,6 +224,57 @@ export function requireChannel(input: {
   );
 }
 
+/**
+ * An archived channel is READABLE and otherwise inert.
+ *
+ * Archiving is how a channel is retired. A retired channel that still accepts
+ * posts wakes its members from something nobody is watching, and one whose
+ * roster still moves lets a member be added to a channel nobody can post to, or
+ * removed from one nobody is reading. Reading stays open because the history is
+ * the point of keeping the channel at all.
+ *
+ * A RENAME is deliberately still allowed and is not a gap: channels have no
+ * delete, so renaming an archived channel is the only way to free a name its
+ * UNIQUE index still holds. See `requireChannelNameAvailable`.
+ */
+export function requireChannelNotArchived(input: {
+  readonly command: OrchestrationCommand;
+  readonly channel: OrchestrationChannel;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  if (input.channel.archivedAt === null) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `Channel '${input.channel.id}' is archived and cannot handle command '${input.command.type}'.`,
+    ),
+  );
+}
+
+/**
+ * Unarchiving needs an archived channel, so an already-live channel is refused.
+ *
+ * The mirror of `requireChannelNotArchived` on `channel.archive`: archiving an
+ * already-archived channel used to re-stamp `archivedAt`, so an idempotent-
+ * looking retry destroyed the answer to "when was this retired". Refusing both
+ * no-ops keeps that timestamp meaning one thing.
+ */
+export function requireChannelArchived(input: {
+  readonly command: OrchestrationCommand;
+  readonly channel: OrchestrationChannel;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  if (input.channel.archivedAt !== null) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `Channel '${input.channel.id}' is not archived and cannot handle command '${input.command.type}'.`,
+    ),
+  );
+}
+
 export function requireChannelAbsent(input: {
   readonly readModel: OrchestrationReadModel;
   readonly command: OrchestrationCommand;
@@ -200,6 +308,14 @@ export function requireCanonicalChannelHandle(input: {
       invariantError(
         input.command.type,
         `Handle '${input.handle}' is only sigils and whitespace and has no canonical form.`,
+      ),
+    );
+  }
+  if (!isStorableCanonicalIdentity(canonical)) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        `Handle contains ${describeForbiddenIdentityCharacter(canonical)}, which cannot appear in a stored handle.`,
       ),
     );
   }
@@ -424,3 +540,9 @@ export function requireThreadAbsent(input: {
     ),
   );
 }
+
+/**
+ * Re-exported so the decider and its tests keep one import, while the rule
+ * itself lives in `@t3tools/shared/channelIdentity` for the toolkit to share.
+ */
+export { canonicalChannelHandle, canonicalChannelName };

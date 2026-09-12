@@ -22,6 +22,7 @@ const { commandToAggregateRef } = __testing;
 const PROJECT_ID = ProjectId.make("project-under-test");
 const THREAD_ID = ThreadId.make("thread-under-test");
 const CHANNEL_ID = ChannelId.make("channel-under-test");
+const ARCHIVED_CHANNEL_ID = ChannelId.make("channel-archived-under-test");
 const CHANNEL_HANDLE = ChannelMemberHandle.make("boss1");
 
 /**
@@ -220,6 +221,8 @@ const PROBE_EXTRAS: Readonly<Record<string, Readonly<Record<string, unknown>>>> 
     members: [],
     createdAt: NOW,
   },
+  // The live channel refuses this; the archived one is its only valid target.
+  "channel.unarchive": { channelId: ARCHIVED_CHANNEL_ID },
   // A handle the seeded channel does not already hold; the seeded one collides.
   "channel.member.add": {
     member: {
@@ -357,6 +360,17 @@ const readModel = (): OrchestrationReadModel => ({
       createdAt: NOW,
       updatedAt: NOW,
     },
+    // channel.unarchive is refused on a live channel, and channel.archive on an
+    // archived one, so one channel cannot serve both probes. Without this the
+    // unarchive probe emits no events and drops out of the comparison.
+    {
+      id: ARCHIVED_CHANNEL_ID,
+      name: "retired",
+      members: [{ handle: CHANNEL_HANDLE, memberKind: "thread" as const, memberId: THREAD_ID }],
+      archivedAt: NOW,
+      createdAt: NOW,
+      updatedAt: NOW,
+    },
   ],
   updatedAt: NOW,
 });
@@ -419,6 +433,13 @@ it.layer(NodeServices.layer)("router and decider agree", (it) => {
         const planned = yield* decideOrchestrationCommand({
           command,
           readModel: readModel(),
+          // Channel commands are refused without an issuer, so the probe
+          // carries one or every channel row would drop out of the comparison
+          // and this table would go green having compared nothing.
+          issuer:
+            type === "channel.post.create"
+              ? { memberKind: "thread", memberId: THREAD_ID }
+              : { memberKind: "human", memberId: "human-walt" },
           // `exit`, not `result`: a probe payload that omits a command's own
           // fields makes some decider cases DEFECT rather than reject, and a
           // defect is not a typed failure. Either way the command simply did

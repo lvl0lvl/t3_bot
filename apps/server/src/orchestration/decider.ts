@@ -6,6 +6,7 @@ import {
   ThreadLinkedPullRequest,
   UserInputRequestedPayload,
   isImportedAgentSessionMessageId,
+  type CommandIssuer,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -37,6 +38,7 @@ import {
 import {
   listThreadsByProjectId,
   requireActiveProjectWorkspaceRootAbsent,
+  requireCommandIssuer,
   requireCanonicalChannelHandle,
   requireCanonicalChannelMember,
   requireCanonicalChannelName,
@@ -45,7 +47,11 @@ import {
   requireChannelAuthorIsMember,
   requireChannelHandlesUnique,
   requireChannelMentionsResolve,
+  requireChannelArchived,
   requireChannelNameAvailable,
+  requireChannelNotArchived,
+  requireIssuerCanAdminister,
+  requireIssuerCanAuthor,
   requireProject,
   requireProjectAbsent,
   requireThread,
@@ -219,10 +225,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   command,
   readModel,
   userInputActivity,
+  issuer,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
   readonly userInputActivity?: OrchestrationThreadActivity;
+  /**
+   * Who issued the command, stamped by the engine from the caller's credential.
+   *
+   * Optional in the type because 89 command structs do not carry it and the
+   * compiler cannot force 144 call sites to pass it. Every `channel.*` branch
+   * refuses a command that arrives without one, so absence fails closed rather
+   * than running unauthorized — see `requireCommandIssuer`.
+   */
+  readonly issuer?: CommandIssuer;
 }): Effect.fn.Return<
   DecideOrchestrationCommandResult,
   OrchestrationCommandRejection | PlatformError.PlatformError,
@@ -2027,6 +2043,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "channel.create": {
+      yield* requireIssuerCanAdminister({
+        command,
+        issuer: yield* requireCommandIssuer({ command, issuer }),
+      });
       yield* requireChannelAbsent({ readModel, command, channelId: command.channelId });
       // Canonicalise before the uniqueness check, not after: "Boss1" and "boss1"
       // are one mention key to every reader, so they must collide here.
@@ -2055,6 +2075,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "channel.meta.update": {
+      yield* requireIssuerCanAdminister({
+        command,
+        issuer: yield* requireCommandIssuer({ command, issuer }),
+      });
       yield* requireChannel({ readModel, command, channelId: command.channelId });
       // A rename carries the same empty-canonical hole as a create, so it runs
       // the same check rather than trusting the schema that passed the raw name.
@@ -2091,7 +2115,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "channel.archive": {
-      yield* requireChannel({ readModel, command, channelId: command.channelId });
+      yield* requireIssuerCanAdminister({
+        command,
+        issuer: yield* requireCommandIssuer({ command, issuer }),
+      });
+      yield* requireChannelNotArchived({
+        command,
+        channel: yield* requireChannel({ readModel, command, channelId: command.channelId }),
+      });
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -2110,7 +2141,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "channel.unarchive": {
-      yield* requireChannel({ readModel, command, channelId: command.channelId });
+      yield* requireIssuerCanAdminister({
+        command,
+        issuer: yield* requireCommandIssuer({ command, issuer }),
+      });
+      yield* requireChannelArchived({
+        command,
+        channel: yield* requireChannel({ readModel, command, channelId: command.channelId }),
+      });
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -2128,7 +2166,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "channel.member.add": {
+      yield* requireIssuerCanAdminister({
+        command,
+        issuer: yield* requireCommandIssuer({ command, issuer }),
+      });
       const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
+      // A retired channel's roster does not move: adding a member to a channel
+      // nobody can post to, or removing one from a channel nobody is reading,
+      // are both changes with no effect anyone can observe.
+      yield* requireChannelNotArchived({ command, channel });
       const member = yield* requireCanonicalChannelMember({ command, member: command.member });
       yield* requireChannelHandlesUnique({
         command,
@@ -2152,7 +2198,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "channel.member.remove": {
+      yield* requireIssuerCanAdminister({
+        command,
+        issuer: yield* requireCommandIssuer({ command, issuer }),
+      });
       const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
+      // A retired channel's roster does not move: adding a member to a channel
+      // nobody can post to, or removing one from a channel nobody is reading,
+      // are both changes with no effect anyone can observe.
+      yield* requireChannelNotArchived({ command, channel });
       // Canonical on both sides, or "@Boss1" fails to remove the member it names.
       const handle = yield* requireCanonicalChannelHandle({ command, handle: command.handle });
       if (!channel.members.some((member) => member.handle === handle)) {
@@ -2183,17 +2237,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // Membership and mention resolution are enforced here, not only in the
       // toolkit: its pre-check and this write are not atomic, and every future
       // caller inherits whatever the aggregate accepts.
-      const author = yield* requireChannelAuthorIsMember({
+      // The author is the ISSUER, never a command field. Deriving it is what
+      // makes "is the author a member" mean "is the CALLER a member" — the
+      // question the old shape never asked.
+      const authorRef = yield* requireIssuerCanAuthor({
         command,
-        channel,
-        authorRef: command.authorRef,
+        issuer: yield* requireCommandIssuer({ command, issuer }),
       });
+      const author = yield* requireChannelAuthorIsMember({ command, channel, authorRef });
+      // After the member check, for the same reason the mention check is: that a
+      // channel is ARCHIVED tells the reader it EXISTS, which a non-member must
+      // not learn — "archived" and "no such channel" have to stay one answer to
+      // an outsider.
+      yield* requireChannelNotArchived({ command, channel });
       // After the author check, never before: canonicalising can itself fail on
       // a handle of only sigils, and a guard that fires earlier would let a
       // non-member tell a malformed mention from being excluded.
-      const mentions = yield* Effect.forEach(command.mentions, (handle) =>
+      const canonicalMentions = yield* Effect.forEach(command.mentions, (handle) =>
         requireCanonicalChannelHandle({ command, handle }),
       );
+      // Folding makes distinct spellings one handle, so "@Boss1" and "boss1" in
+      // one post now collapse — and would otherwise land as two identical
+      // mentions in the persisted event, waking the same member twice for one
+      // post. Dedupe here rather than in the reactor: the event is what replays.
+      const mentions = [...new Set(canonicalMentions)];
       yield* requireChannelMentionsResolve({ command, channel, mentions });
       return {
         ...(yield* withEventBase({
@@ -2206,7 +2273,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           channelId: command.channelId,
           postId: command.postId,
-          authorRef: command.authorRef,
+          authorRef,
           // Resolved from membership so the reactor never joins to find it.
           authorHandle: author.handle,
           body: command.body,

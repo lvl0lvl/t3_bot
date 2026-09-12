@@ -63,6 +63,15 @@ const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
 
+/**
+ * A human issuer, as the engine stamps for an RPC client.
+ *
+ * Channel commands are refused without one, so every channel dispatch in this
+ * file carries a credential. A test that omitted it would fail closed on
+ * authorization and never reach the invariant it means to exercise.
+ */
+const ADMIN_DISPATCH = { issuer: { memberKind: "human", memberId: "human-walt" } } as const;
+
 function makeOrchestrationLayer(
   databasePath?: string,
   repositoryIdentityResolver?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"],
@@ -2188,14 +2197,17 @@ describe("OrchestrationEngine", () => {
 
     try {
       await system.run(
-        system.engine.dispatch({
-          type: "channel.create",
-          commandId: CommandId.make("cmd-channel-create"),
-          channelId,
-          name: "seniors",
-          members: [{ handle: boss1, memberKind: "thread", memberId: "thread-boss1" }],
-          createdAt: now(),
-        }),
+        system.engine.dispatch(
+          {
+            type: "channel.create",
+            commandId: CommandId.make("cmd-channel-create"),
+            channelId,
+            name: "seniors",
+            members: [{ handle: boss1, memberKind: "thread", memberId: "thread-boss1" }],
+            createdAt: now(),
+          },
+          ADMIN_DISPATCH,
+        ),
       );
 
       await system.dispose();
@@ -2205,14 +2217,20 @@ describe("OrchestrationEngine", () => {
       // empty, requireChannelAbsent passes and this silently succeeds.
       const recreate = await system.run(
         Effect.exit(
-          system.engine.dispatch({
-            type: "channel.create",
-            commandId: CommandId.make("cmd-channel-recreate"),
-            channelId,
-            name: "seniors",
-            members: [],
-            createdAt: now(),
-          }),
+          system.engine.dispatch(
+            {
+              type: "channel.create",
+              commandId: CommandId.make("cmd-channel-recreate"),
+              channelId,
+              name: "seniors",
+              members: [],
+              createdAt: now(),
+              // A valid issuer on purpose: without one this fails closed on
+              // authorization and the test would pass without ever reaching
+              // requireChannelAbsent, which is the thing it exists to check.
+            },
+            ADMIN_DISPATCH,
+          ),
         ),
       );
       expect(recreate._tag).toBe("Failure");
@@ -2220,17 +2238,19 @@ describe("OrchestrationEngine", () => {
       // And a post from a known member must still be ACCEPTED, which fails in
       // the opposite direction if membership was lost.
       await system.run(
-        system.engine.dispatch({
-          type: "channel.post.create",
-          commandId: CommandId.make("cmd-channel-post"),
-          channelId,
-          postId: ChannelPostId.make("post-after-restart"),
-          authorRef: { memberKind: "thread", memberId: "thread-boss1" },
-          body: "still here",
-          mentions: [],
-          parentPostId: null,
-          createdAt: now(),
-        }),
+        system.engine.dispatch(
+          {
+            type: "channel.post.create",
+            commandId: CommandId.make("cmd-channel-post"),
+            channelId,
+            postId: ChannelPostId.make("post-after-restart"),
+            body: "still here",
+            mentions: [],
+            parentPostId: null,
+            createdAt: now(),
+          },
+          { issuer: { memberKind: "thread", memberId: "thread-boss1" } },
+        ),
       );
 
       const snapshot = await system.readModel();
@@ -2256,41 +2276,53 @@ describe("OrchestrationEngine", () => {
 
     try {
       await system.run(
-        system.engine.dispatch({
-          type: "channel.create",
-          commandId: CommandId.make("cmd-dup-first"),
-          channelId: ChannelId.make("channel-dup-a"),
-          name: "seniors",
-          members: [],
-          createdAt: now(),
-        }),
-      );
-
-      // Same name, different id: the decider accepts it, the projection refuses.
-      const duplicate = await system.run(
-        Effect.exit(
-          system.engine.dispatch({
+        system.engine.dispatch(
+          {
             type: "channel.create",
-            commandId: CommandId.make("cmd-dup-second"),
-            channelId: ChannelId.make("channel-dup-b"),
+            commandId: CommandId.make("cmd-dup-first"),
+            channelId: ChannelId.make("channel-dup-a"),
             name: "seniors",
             members: [],
             createdAt: now(),
-          }),
+          },
+          ADMIN_DISPATCH,
+        ),
+      );
+
+      // Same name, different id. The decider refuses it now that it checks name
+      // availability; before that it was admitted here and refused by the
+      // projection's UNIQUE index with a raw SQL error. Either way the command
+      // fails, so what this test actually pins is the BLAST RADIUS below.
+      const duplicate = await system.run(
+        Effect.exit(
+          system.engine.dispatch(
+            {
+              type: "channel.create",
+              commandId: CommandId.make("cmd-dup-second"),
+              channelId: ChannelId.make("channel-dup-b"),
+              name: "seniors",
+              members: [],
+              createdAt: now(),
+            },
+            ADMIN_DISPATCH,
+          ),
         ),
       );
       expect(duplicate._tag).toBe("Failure");
 
       // The engine must still be serving. This is the assertion that matters.
       await system.run(
-        system.engine.dispatch({
-          type: "channel.create",
-          commandId: CommandId.make("cmd-dup-after"),
-          channelId: ChannelId.make("channel-dup-c"),
-          name: "project",
-          members: [],
-          createdAt: now(),
-        }),
+        system.engine.dispatch(
+          {
+            type: "channel.create",
+            commandId: CommandId.make("cmd-dup-after"),
+            channelId: ChannelId.make("channel-dup-c"),
+            name: "project",
+            members: [],
+            createdAt: now(),
+          },
+          ADMIN_DISPATCH,
+        ),
       );
 
       const snapshot = await system.readModel();

@@ -1,4 +1,5 @@
 import type {
+  CommandIssuer,
   OrchestrationAggregateId,
   OrchestrationAggregateKind,
   OrchestrationClientOrigin,
@@ -57,6 +58,15 @@ const isOrchestrationCommandIdConflictError = Schema.is(OrchestrationCommandIdCo
 interface CommandEnvelope {
   command: OrchestrationCommand;
   origin: OrchestrationClientOrigin | undefined;
+  /**
+   * Who issued the command, from the caller's credential.
+   *
+   * Lives on the envelope, not the command, for the same reason `origin` does:
+   * the decider stays pure and attribution is the engine's business. The
+   * difference is that this one is an authorization input, so the decider is
+   * given it explicitly rather than having it stamped onto events afterwards.
+   */
+  issuer: CommandIssuer | undefined;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   startedAtMs: number;
 }
@@ -336,6 +346,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel: commandReadModel,
+          ...(envelope.issuer === undefined ? {} : { issuer: envelope.issuer }),
           ...(Option.isSome(userInputActivity)
             ? { userInputActivity: userInputActivity.value }
             : {}),
@@ -530,8 +541,13 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     Effect.gen(function* () {
       const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
       yield* Queue.offer(commandQueue, {
+        // The issuer is taken from the caller's credential and OVERWRITES
+        // anything of the same name on the command. Overwrite rather than
+        // reject: refusing a supplied issuer would confirm to a prober that the
+        // field exists and decides authorization.
         command,
         origin: options?.origin,
+        issuer: options?.issuer,
         result,
         startedAtMs: yield* Clock.currentTimeMillis,
       });
