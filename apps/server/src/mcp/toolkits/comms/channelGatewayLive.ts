@@ -32,6 +32,7 @@ import {
   ChannelCursorUnusable,
   ChannelWriteConflict,
   type Channel,
+  type ChannelMemberRef,
   type ChannelPage,
   type ChannelPostRecord,
   type CreatePostInput,
@@ -77,7 +78,7 @@ const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
 
-  const getChannelForMember = (name: string, threadId: string) =>
+  const getChannelForMember = (name: string, member: ChannelMemberRef) =>
     Effect.gen(function* () {
       // A NON-CANONICAL NAME IS A DEFECT, not a typed failure. Matching here is
       // exact, so passing what the agent typed returns None — and None means
@@ -113,8 +114,17 @@ const make = Effect.gen(function* () {
       // Membership decides visibility, and an ARCHIVED channel still resolves:
       // readable, not postable. The refusal to post is the aggregate's and
       // arrives at createPost.
+      // BOTH FIELDS, and the kind was a literal until this change. Comparing
+      // only `memberId` is a mutation that has survived a full suite three
+      // times in this repository - the decider's author lookup, the shell
+      // stream's membership test, and this reactor's own wake filter - because
+      // every channel fixture gives its members ids that differ in BOTH
+      // fields, so the two implementations are indistinguishable against any
+      // data we had (`t3_bot-46h`). The colliding roster that tells them apart
+      // is in this change's tests.
       const isMember = row.value.members.some(
-        (member) => member.memberKind === "thread" && member.memberId === threadId,
+        (candidate) =>
+          candidate.memberKind === member.memberKind && candidate.memberId === member.memberId,
       );
       return isMember ? Option.some(toChannel(row.value)) : Option.none<Channel>();
     });

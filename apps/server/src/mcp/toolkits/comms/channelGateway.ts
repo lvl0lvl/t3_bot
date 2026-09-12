@@ -176,6 +176,26 @@ export interface ChannelPostRecord {
   readonly createdAt: string;
 }
 
+/**
+ * WHO IS ASKING. Derived from the caller's own credential, NEVER from a request
+ * field.
+ *
+ * That rule is the whole of the read side's authorisation and nothing enforces
+ * it mechanically. On the write side the decider refuses a channel command that
+ * arrives without an issuer, so a gateway that forgot one would fail loudly;
+ * here a caller that took this from its request payload would simply read
+ * whatever that member can read, successfully, forever. A read tool that passed
+ * an agent-supplied ref would let any agent read any channel any member is in.
+ *
+ * The toolkit passes `{ memberKind: "thread", memberId: <the credential's
+ * thread> }`. An RPC passes the authenticated session's member. Neither reads
+ * it off the wire.
+ */
+export interface ChannelMemberRef {
+  readonly memberKind: "thread" | "human";
+  readonly memberId: string;
+}
+
 export type ReadDirection = "forward" | "backward";
 
 export interface ChannelPage {
@@ -269,7 +289,7 @@ export interface ChannelGatewayShape {
    */
   readonly getChannelForMember: (
     name: string,
-    threadId: ThreadId,
+    member: ChannelMemberRef,
   ) => Effect.Effect<Option.Option<Channel>, ChannelStoreUnavailable>;
 
   /**

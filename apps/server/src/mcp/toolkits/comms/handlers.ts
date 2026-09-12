@@ -221,7 +221,10 @@ const make = Effect.gen(function* () {
       return yield* new CommsChannelNotFoundError({ channel: normalized });
     }
     const channel = yield* channels
-      .getChannelForMember(normalized, scope.threadId)
+      // THE CREDENTIAL'S thread, never a field from the tool call. The ref is
+      // a parameter now, so "read as someone else" is one argument away and
+      // there is no decider on the read side to refuse it.
+      .getChannelForMember(normalized, { memberKind: "thread", memberId: scope.threadId })
       .pipe(
         Effect.catchTags(isWrite ? storeUnavailableAsWrite : storeUnavailableAsRead),
         Effect.catchCause(isWrite ? writeDefect : readDefect),

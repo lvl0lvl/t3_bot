@@ -85,7 +85,9 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
   const created = yield* Ref.make<ReadonlyArray<ChannelGateway.CreatePostInput>>([]);
   const reads = yield* Ref.make<ReadonlyArray<ChannelGateway.ReadPostsInput>>([]);
   const postLookups = yield* Ref.make<ReadonlyArray<readonly [string, string]>>([]);
-  const channelLookups = yield* Ref.make<ReadonlyArray<readonly [string, string]>>([]);
+  const channelLookups = yield* Ref.make<
+    ReadonlyArray<readonly [string, ChannelGateway.ChannelMemberRef]>
+  >([]);
 
   const die = (op: GatewayFailures["dieOn"]) =>
     fail.dieOn === op ? Effect.die(new Error(`fake gateway defect in ${op}`)) : Effect.void;
@@ -93,16 +95,21 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
   const gateway = Layer.succeed(
     ChannelGateway.ChannelGateway,
     ChannelGateway.ChannelGateway.of({
-      getChannelForMember: (name, threadId) =>
+      getChannelForMember: (name, member) =>
         die("getChannel").pipe(
           Effect.andThen(fail.getChannel ? Effect.fail(fail.getChannel) : Effect.void),
-          Effect.andThen(
-            Ref.update(channelLookups, (seen) => [...seen, [name, threadId] as const]),
-          ),
+          Effect.andThen(Ref.update(channelLookups, (seen) => [...seen, [name, member] as const])),
           Effect.as(
             Option.fromNullishOr(
               channels.find(
-                (channel) => channel.name === name && channel.memberThreadIds.includes(threadId),
+                (channel) =>
+                  channel.name === name &&
+                  // BOTH FIELDS, like the live layer. A fake that matched on
+                  // memberId alone would answer the colliding roster
+                  // differently from the thing it stands in for, which is where
+                  // the last paging bug hid.
+                  member.memberKind === "thread" &&
+                  channel.memberThreadIds.includes(member.memberId),
               ),
             ).pipe(
               Option.map((channel): ChannelGateway.Channel => ({
@@ -443,7 +450,12 @@ describe("comms toolkit handlers", () => {
       // The canonical form is what reaches the seam. Matching there is exact,
       // so anything else reads as "no such channel" — which is deliberately the
       // same answer a non-member gets, and therefore undiagnosable.
-      expect(yield* Ref.get(harness.channelLookups)).toEqual([["seniors", THREAD_ID]]);
+      expect(yield* Ref.get(harness.channelLookups)).toEqual([
+        // THE KIND TOO, not just the id. The toolkit derives the ref from
+        // its credential, so "thread" here is the assertion that the
+        // handler did not take a member from the tool call.
+        ["seniors", { memberKind: "thread", memberId: THREAD_ID }],
+      ]);
     }),
   );
 
@@ -596,7 +608,12 @@ describe("comms toolkit handlers", () => {
       // calls leaves a second resolution completely undetected, and validating
       // the parent against a different resolution than the post is written to
       // would let the two disagree.
-      expect(yield* Ref.get(harness.channelLookups)).toEqual([["seniors", THREAD_ID]]);
+      expect(yield* Ref.get(harness.channelLookups)).toEqual([
+        // THE KIND TOO, not just the id. The toolkit derives the ref from
+        // its credential, so "thread" here is the assertion that the
+        // handler did not take a member from the tool call.
+        ["seniors", { memberKind: "thread", memberId: THREAD_ID }],
+      ]);
       expect(yield* Ref.get(harness.postLookups)).toEqual([[CHANNEL_ID, "post-1"]]);
     }),
   );

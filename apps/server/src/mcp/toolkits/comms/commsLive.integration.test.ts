@@ -717,6 +717,71 @@ describe("the comms toolkit on the live gateway", () => {
   );
 
   it.effect(
+    "tells a THREAD member from a HUMAN member carrying the same id",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const channels = yield* ProjectionChannelRepository;
+
+        // THE COLLIDING ROSTER, written straight into the projection rather
+        // than through the aggregate. `requireChannelMemberShape` refuses this
+        // shape on COMMANDS, while membership replays from EVENTS - so a row
+        // like this arrives by the path the command guard does not cover, which
+        // is exactly why the guard is not the answer here (`t3_bot-46h`,
+        // criterion 5: do not weaken it to make the fixture constructible).
+        //
+        // WHY IT HAS TO EXIST: every other channel fixture in this repo gives
+        // its members ids that differ in BOTH fields. Against those,
+        // `memberId === x` and `memberKind === k && memberId === x` return the
+        // same answer for every input - so the correct comparison and the
+        // impersonating one are indistinguishable, and the same mutation has
+        // survived a full suite three times in three files (`t3_bot-ami`,
+        // `t3_bot-8i2`, and the shell stream). This is the input that separates
+        // them.
+        const shared = "collides-with-a-thread";
+        yield* channels.replaceMembers({
+          channelId: CHANNEL_ID,
+          members: [
+            { handle: ChannelMemberHandle.make("ghost"), memberKind: "thread", memberId: shared },
+            { handle: ChannelMemberHandle.make("walt"), memberKind: "human", memberId: shared },
+          ],
+        });
+
+        const gateway = yield* ChannelGateway;
+        // The HUMAN resolves for the human ref and the THREAD for the thread
+        // ref, and both must be the channel - a comparison on memberId alone
+        // returns whichever row `some` reaches first for BOTH, which is a post
+        // attributed to the wrong member on a call that returns success.
+        const asHuman = yield* gateway.getChannelForMember("seniors", {
+          memberKind: "human",
+          memberId: shared,
+        });
+        const asThread = yield* gateway.getChannelForMember("seniors", {
+          memberKind: "thread",
+          memberId: shared,
+        });
+        expect(Option.isSome(asHuman)).toBe(true);
+        expect(Option.isSome(asThread)).toBe(true);
+
+        // AND THE KIND THAT IS NOT IN THE ROSTER IS REFUSED, which is the half
+        // that fails when `memberKind` is dropped from the comparison: the id
+        // matches, so an id-only check admits a member that is not there.
+        yield* channels.replaceMembers({
+          channelId: CHANNEL_ID,
+          members: [
+            { handle: ChannelMemberHandle.make("ghost"), memberKind: "thread", memberId: shared },
+          ],
+        });
+        const impostor = yield* gateway.getChannelForMember("seniors", {
+          memberKind: "human",
+          memberId: shared,
+        });
+        expect(Option.isNone(impostor)).toBe(true);
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
     "treats a non-canonical name as a DEFECT rather than an empty answer",
     () =>
       Effect.gen(function* () {
@@ -727,13 +792,18 @@ describe("the comms toolkit on the live gateway", () => {
         // calls the gateway directly, the only way to exercise a guard against
         // a FUTURE caller. Returning None instead would surface as an agent
         // told it is not in a channel it IS in, with nothing saying why.
-        const defect = yield* gateway.getChannelForMember("#Seniors", BOSS3).pipe(Effect.exit);
+        const defect = yield* gateway
+          .getChannelForMember("#Seniors", { memberKind: "thread", memberId: BOSS3 })
+          .pipe(Effect.exit);
         expect(defect._tag).toBe("Failure");
         expect(String(defect)).toContain("non-canonical name");
 
         // The canonical form of the same name resolves, so the assertion above
         // is about the FORM rather than about the channel being absent.
-        const found = yield* gateway.getChannelForMember("seniors", BOSS3);
+        const found = yield* gateway.getChannelForMember("seniors", {
+          memberKind: "thread",
+          memberId: BOSS3,
+        });
         expect(Option.isSome(found)).toBe(true);
       }).pipe(Effect.provide(TestLayer)),
     30_000,
