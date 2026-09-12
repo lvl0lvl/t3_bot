@@ -682,6 +682,29 @@ describe("the comms toolkit on the live gateway", () => {
         // to any assertion that only checks THAT it failed.
         const unbrandable = yield* gateway.getPost("not a channel id", "post-1").pipe(Effect.exit);
         expect(unbrandable._tag).toBe("Failure");
+
+        // AND `createPost` HONOURS ITS OWN SIGNATURE. It declares five typed
+        // failures; a malformed parent used to come out as a raw schema Die
+        // with a serialised AST, so a caller writing an exhaustive `catchTags`
+        // would look correct and be wrong. The toolkit never reached it -
+        // `comms_reply` resolves the parent first - which is exactly why
+        // nothing tested it.
+        for (const malformed of ["a:b", "has space", "   ", "post-\u{1F525}"]) {
+          const refused = yield* gateway
+            .createPost({
+              channelId: CHANNEL_ID,
+              threadId: BOSS3,
+              body: "replying to nothing",
+              mentions: [],
+              parentPostId: malformed,
+            })
+            .pipe(Effect.exit);
+          expect(refused._tag).toBe("Failure");
+          // A TYPED refusal, not a defect. `Effect.flip` could not tell these
+          // apart: it propagates a die rather than yielding it as a value.
+          expect(String(refused)).toContain("ChannelWriteConflict");
+          expect(String(refused)).not.toContain("SchemaIssue");
+        }
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );

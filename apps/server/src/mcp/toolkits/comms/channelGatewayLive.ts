@@ -84,8 +84,8 @@ const make = Effect.gen(function* () {
       // a non-member gets. A caller's mistake would arrive as an agent being
       // told it is not in a channel it is in, with nothing anywhere saying why.
       //
-      // Dying names the offending caller in a stack trace instead. Same
-      // judgement `notWired` already makes in this seam: a build mistake is not
+      // Dying names the offending caller in a stack trace instead. The same
+      // judgement this seam makes about every misuse of it: a build mistake is not
       // a condition an agent caused or an operator can retry.
       if (name !== canonicalChannelName(name)) {
         return yield* Effect.die(
@@ -227,6 +227,31 @@ const make = Effect.gen(function* () {
       // orDie: a platform crypto failure is a defect, not something an agent
       // did or an operator fixes by retrying, and it must not arrive as one of
       // the seam's typed refusals.
+      // DECODED, NOT CONSTRUCTED. `.make` throws on an id the brand refuses,
+      // and this function declares five typed failures - so a direct caller
+      // writing an exhaustive `catchTags` would look correct and still take a
+      // raw schema Die carrying a serialised AST. The toolkit happens not to
+      // reach it, because `comms_reply` passes the postId the projection
+      // returned; that is provenance rather than call order, and it is still
+      // a rule in another function. This PR removed that argument twice
+      // already, and keeping a third instance annotated as the exception is
+      // what makes the rule read as optional.
+      //
+      // A refusal is PERMANENT for this input, so it is not retryable: no
+      // amount of trying again makes "a:b" a post id.
+      const parent =
+        input.parentPostId === null
+          ? null
+          : yield* Option.match(decodePostId(input.parentPostId), {
+              onNone: () =>
+                Effect.fail(
+                  new ChannelWriteConflict({
+                    detail: "the parent post id is not a post id",
+                    retryable: false,
+                  }),
+                ),
+              onSome: Effect.succeed,
+            });
       const postId = `post-${(yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replace(/-/g, "")}`;
       const createdAt = DateTime.formatIso(yield* DateTime.now);
       yield* engine
@@ -238,24 +263,7 @@ const make = Effect.gen(function* () {
             postId: ChannelPostId.make(postId),
             body: input.body,
             mentions: input.mentions.map((handle) => ChannelMemberHandle.make(handle)),
-            // BREAKS ON a parentPostId the brand refuses - "a:b", a space, an
-            // emoji, 65 characters. `.make` throws, and a DIRECT caller of this
-            // seam gets that throw as a raw schema Die carrying a serialised
-            // AST, out of a function whose signature declares five typed
-            // failures. Not a worse error - no error at all. Through the
-            // toolkit it is converted, because the throw is inside an
-            // `Effect.gen` and `publish`'s `Effect.catchCause(writeDefect)`
-            // turns the Die into `CommsPostFailedError` whose detail is a
-            // stack trace with absolute server paths.
-            //
-            // The toolkit does not reach it: `comms_reply` passes the postId
-            // the PROJECTION returned, which was a valid id when it was
-            // stored. That is provenance rather than call order, so there is no
-            // ordering here for anyone to reverse - but a future caller
-            // constructing this input itself has nothing stopping it, and
-            // `t3_bot-d7d` is where the construction is replaced by a decode.
-            parentPostId:
-              input.parentPostId === null ? null : ChannelPostId.make(input.parentPostId),
+            parentPostId: parent,
             createdAt,
           },
           // THE ISSUER, NOT A COMMAND FIELD. The decider derives the author
@@ -286,8 +294,7 @@ const make = Effect.gen(function* () {
               // `PostResult.channel` and `ReadChannelResult.channel` are both
               // the NAME. It also carried the phrase "Orchestration command
               // invariant failed". An agent can act on `retryable`; it can act
-              // on neither of those, and a reader of the channel name it was
-              // never given can.
+              // on neither of those.
               //
               // What it COSTS is real and should not be read as free: a
               // membership revoked between the check and the write now reaches
