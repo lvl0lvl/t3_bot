@@ -2,6 +2,8 @@ import { ChannelId, ChannelMemberHandle, CommandId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
+import { FORBIDDEN_IN_CANONICAL_IDENTITY } from "@t3tools/shared/channelIdentity";
+
 import {
   canonicalChannelHandle,
   canonicalChannelName,
@@ -168,6 +170,89 @@ it.effect("refuses a handle that is only sigils and whitespace", () =>
     }
   }),
 );
+
+/**
+ * Idempotence over a RANGE rather than a fixture.
+ *
+ * The table-driven version of this test was green three separate times while the
+ * property was false — for a sigil hidden behind a space, then for whitespace
+ * runs, then for anything whose lowercase form is newly composable. Each time the
+ * assertion was right and the fixture could not reach the failure.
+ *
+ * So this asserts the property over every code point in the BMP instead of over
+ * rows someone chose. It is the fixture that keeps failing, not the assertion.
+ *
+ * It does NOT replace the table. Idempotence and DISTINCTNESS are different
+ * properties: removing the whitespace collapse leaves the function perfectly
+ * idempotent and makes a no-break space a second identity, which only a row
+ * naming both spellings can catch. The range pins "canonicalising twice changes
+ * nothing"; the table pins "these two inputs are the same channel". Verified by
+ * mutation — dropping the collapse reds three table tests and no range test.
+ */
+it("is idempotent for every single code point in the BMP", () => {
+  const moved: Array<string> = [];
+  for (let point = 0; point <= 0xffff; point += 1) {
+    // Lone surrogates are not scalar values and cannot appear in a valid string.
+    if (point >= 0xd800 && point <= 0xdfff) continue;
+    const input = String.fromCodePoint(point);
+    const once = canonicalChannelName(input);
+    if (canonicalChannelName(once) !== once) {
+      moved.push(`U+${point.toString(16).toUpperCase().padStart(4, "0")}`);
+    }
+  }
+  expect(moved, "these code points canonicalise to something that canonicalises again").toEqual([]);
+});
+
+it("is idempotent across combining pairs, where composition changes length", () => {
+  // Pairs, because the failures that reached production were all two-character:
+  // a base plus a combining mark whose folded form composes, and a Hangul lead
+  // plus vowel that composes into one syllable.
+  const ranges: ReadonlyArray<readonly [number, number]> = [
+    [0x0041, 0x005a], // ASCII upper
+    [0x0300, 0x036f], // combining diacriticals
+    [0x1e00, 0x1eff], // latin extended additional
+    [0x1100, 0x1112], // hangul lead jamo
+    [0x1161, 0x1175], // hangul vowel jamo
+  ];
+  const points: Array<number> = [];
+  for (const [from, to] of ranges) {
+    for (let point = from; point <= to; point += 1) points.push(point);
+  }
+  const moved: Array<string> = [];
+  for (const first of points) {
+    for (const second of points) {
+      const input = String.fromCodePoint(first) + String.fromCodePoint(second);
+      const once = canonicalChannelHandle(input);
+      if (canonicalChannelHandle(once) !== once) moved.push(input);
+      if (moved.length > 4) break;
+    }
+    if (moved.length > 4) break;
+  }
+  expect(moved).toEqual([]);
+});
+
+it("stores a name in every script a member might use", () => {
+  // The accepted set only ever got SMALLER as the character gate tightened, and
+  // nothing was watching what fell out of it. An emoji handle did, once.
+  const names = [
+    "\u65e5\u672c\u8a9e",
+    "\ud55c\uad6d\uc5b4",
+    "\u0642\u0646\u0627\u0629",
+    "\u05e2\u05e8\u05d5\u05e5",
+    "\u0939\u093f\u0928\u094d\u0926\u0940",
+    "\u0e44\u0e17\u0e22",
+    "\u043a\u0430\u043d\u0430\u043b",
+    "\u03ba\u03b1\u03bd\u03ac\u03bb\u03b9",
+    "\u1100\u1161",
+    "caf\u00e9",
+    "\u2764\ufe0f",
+  ];
+  const refused = names.filter((name) => {
+    const canonical = canonicalChannelName(name);
+    return canonical.length === 0 || FORBIDDEN_IN_CANONICAL_IDENTITY.test(canonical);
+  });
+  expect(refused, "these are legitimate names the gate now refuses").toEqual([]);
+});
 
 it.effect("returns the canonical name for every row that has one", () =>
   Effect.gen(function* () {
