@@ -1,4 +1,10 @@
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+  type AtomCommandResult,
+} from "@t3tools/client-runtime/state/runtime";
 import type { ChannelSupport, EnvironmentChannelShell } from "@t3tools/client-runtime/state/shell";
+import { AsyncResult } from "effect/unstable/reactivity";
 
 /**
  * What the channel route renders, as four named outcomes.
@@ -53,6 +59,60 @@ export function resolveChannelComposerState(
   channel: Pick<EnvironmentChannelShell, "archivedAt">,
 ): ChannelComposerState {
   return channel.archivedAt === null ? "open" : "archived";
+}
+
+/**
+ * What to do with the result of a send.
+ *
+ * THREE OUTCOMES, because the composer has three and they are not orderable by
+ * severity: a success clears the draft, an INTERRUPT does neither (a cancelled
+ * send is not a failure, and the three sibling call sites in this app all bail
+ * on it first), and a real failure keeps the draft AND reports why.
+ *
+ * Extracted because it was the fourth decision in this component and the only
+ * one left in JSX — and then grew from one branch to three there, untested,
+ * while the other three each had tests. Taking two booleans rather than the
+ * `AsyncResult` keeps this free of Effect types and makes the interrupt case
+ * expressible as an input, which is the combination no single boolean carries.
+ */
+export type SendOutcome =
+  | { readonly kind: "clear-draft" }
+  | { readonly kind: "ignore" }
+  | { readonly kind: "report-failure"; readonly message: string };
+
+/**
+ * Shown when a refusal arrives as something that is not an `Error`.
+ *
+ * A cause can squash to a string, a tagged error, or anything a provider threw,
+ * and `String(unknown)` can produce "[object Object]" — which tells the operator
+ * nothing about a post they still have in the box.
+ */
+const UNKNOWN_FAILURE = "An unexpected error occurred.";
+
+export function resolveSendOutcome(result: AtomCommandResult<unknown, unknown>): SendOutcome {
+  if (AsyncResult.isSuccess(result)) {
+    return { kind: "clear-draft" };
+  }
+  // Checked BEFORE reporting, and reachable only once the success case has
+  // returned — a success carries no `cause`, so this is not callable on one.
+  // That is why the parameter is the RESULT and not two booleans: they are not
+  // independently available at the call site, and `AtomCommandResult` does not
+  // narrow on its tag, so the narrowing has to happen here.
+  //
+  // An interrupt that raised "Could not post" would be a lie about an action
+  // the operator themselves cancelled.
+  if (isAtomCommandInterrupted(result)) {
+    return { kind: "ignore" };
+  }
+  // THE MESSAGE COMES BACK WITH THE OUTCOME so the caller never touches the
+  // result again. It was a `squashAtomCommandFailure` at the call site, where
+  // control flow through the outcome meant the result no longer narrowed to a
+  // failure — and the `instanceof Error` fallback it guarded was untested.
+  const error = squashAtomCommandFailure(result);
+  return {
+    kind: "report-failure",
+    message: error instanceof Error ? error.message : UNKNOWN_FAILURE,
+  };
 }
 
 /**

@@ -1,8 +1,4 @@
 import { mentionedHandles } from "@t3tools/client-runtime/channel-mentions";
-import {
-  isAtomCommandInterrupted,
-  squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentChannelShell } from "@t3tools/client-runtime/state/shell";
 import type { ChannelId, EnvironmentId } from "@t3tools/contracts";
 import { ArchiveIcon, HashIcon, SendIcon } from "lucide-react";
@@ -13,6 +9,7 @@ import {
   canSendChannelPost,
   resolveChannelComposerState,
   resolveChannelViewState,
+  resolveSendOutcome,
   type ChannelViewState,
 } from "./ChannelView.logic";
 import { useEnvironmentSettings } from "../hooks/useSettings";
@@ -200,14 +197,15 @@ function ChannelComposer({ channel }: { readonly channel: EnvironmentChannelShel
       },
     }).then((result) => {
       setSending(false);
-      if (result._tag === "Success") {
+      const outcome = resolveSendOutcome(result);
+      if (outcome.kind === "clear-draft") {
         setBody("");
         return;
       }
       // AN INTERRUPT IS NOT A FAILURE — the three sibling call sites
       // (ChatView, GitActionsControl, ChatMarkdown) all skip it, and a
       // cancelled send that raised "Could not post" would be a lie.
-      if (isAtomCommandInterrupted(result)) {
+      if (outcome.kind === "ignore") {
         return;
       }
       // The draft survives a refusal, and the reason is now VISIBLE. Without
@@ -220,12 +218,11 @@ function ChannelComposer({ channel }: { readonly channel: EnvironmentChannelShel
       // nobody, and `requireCanonicalChannelHandle` names the forbidden code
       // point as "U+200B" — both of which tell the operator what to change in
       // the text they can still see.
-      const error = squashAtomCommandFailure(result);
       toastManager.add(
         stackedThreadToast({
           type: "error",
           title: `Could not post to #${channel.name}`,
-          description: error instanceof Error ? error.message : "An unexpected error occurred.",
+          description: outcome.message,
         }),
       );
     });
