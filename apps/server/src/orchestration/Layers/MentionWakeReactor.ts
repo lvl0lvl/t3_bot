@@ -82,7 +82,7 @@ const wakeKey = (channelId: string, postId: string, threadId: ThreadId) =>
  * outcome this whole reactor exists to prevent. The cost is that a post id that
  * needed collapsing cannot be copied back into `comms_reply` verbatim - which is
  * true of an id carrying a newline however it is rendered, and the aggregate
- * should not be storing one (t3_bot-0d8).
+ * should not be storing one (t3_bot-2d2).
  */
 const oneLine = (value: string) => value.replace(/\s+/gu, " ").trim();
 
