@@ -135,9 +135,9 @@ export interface ProjectionChannelRepositoryShape {
    * would reorder to the bottom and show "No posts yet" over a channel that had
    * just received a post.
    *
-   * Membership is not filtered for the reason `getChannelById` gives: the
-   * conflation belongs where the caller's identity is known, and the projector
-   * has to see rows it must update.
+   * Membership is not filtered, for the reason `getChannelByName`'s docstring
+   * above gives: the conflation belongs where the caller's identity is known,
+   * and the projector has to see rows it must update.
    */
   readonly getChannelWithActivityById: (
     channelId: ChannelId,
