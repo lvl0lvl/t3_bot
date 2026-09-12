@@ -38,6 +38,8 @@ message types: `comms/README.md` there.
 - Seniors never edit `main` checkout. Use `EnterWorktree` (or `git worktree add`).
 - Branch: `<boss>/<bd-id>-<slug>`, e.g. `boss1/t3_bot-12-channel-aggregate`.
 - Rebase on `origin/main` before opening a PR.
+- **Push every commit** (`git push -u origin <branch>`). Unpushed work is invisible to the PM and
+  indistinguishable from a stall.
 
 ## Beads (shared manifest)
 
