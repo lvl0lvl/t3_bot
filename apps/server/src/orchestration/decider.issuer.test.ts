@@ -822,4 +822,170 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       expect(events[0]?.type).toBe("channel.meta-updated");
     }),
   );
+  it.effect(
+    "resolves the author by KIND as well as id, so a colliding thread cannot post as a human",
+    () =>
+      Effect.gen(function* () {
+        // `t3_bot-ami`, found by the guard sweep: dropping the `memberKind` clause from
+        // `requireChannelAuthorIsMember` leaves every test in this directory green, because
+        // no fixture that reaches THIS guard holds a colliding pair — and that is the
+        // accurate form of the claim. Colliding rosters do exist in the tree:
+        // `decider.channels.test.ts`'s `COLLIDING_ROSTER` and one in
+        // `MentionWakeReactor.test.ts`, both one memberId under two memberKinds. They cannot
+        // kill this mutant because they are spent on other guards — the removal event's ref
+        // and the wake budget — and neither drives a post through the author lookup. The
+        // sweep measured the mutant surviving with both of them already present.
+        //
+        // THE FIXTURE THAT SEPARATES THEM is one channel holding two members with the same
+        // `memberId` and different `memberKind`, with the WRONG one first — `find` returns the
+        // first match, so a fixture with the right member first passes under both
+        // implementations and measures nothing.
+        //
+        // COMMAND-REACHABLE TODAY, which is the opposite of what this comment first said. I
+        // reasoned that `requireChannelMemberShape` makes the collision impossible to add —
+        // a `thread` member needs a thread with that id to exist, a `human` member needs no
+        // thread with that id to exist, so one of the two is always refused. That is true at
+        // a single instant and irrelevant, because the answer changes when the thread is
+        // created BETWEEN the two commands:
+        //
+        //   1. `channel.create` with a HUMAN member whose memberId is "thread-agent" —
+        //      accepted; the human branch refuses only when such a thread EXISTS NOW.
+        //   2. `thread.create` with threadId "thread-agent" — accepted; the id is
+        //      client-chosen and `ThreadId` carries no format constraint.
+        //   3. `channel.member.add` with a THREAD member naming "thread-agent" — accepted,
+        //      the thread is live now.
+        //
+        // Four ordinary commands, all as the human operator, no replay. This is
+        // `t3_bot-46h`'s criterion 4, already answered REACHABLE by PR #24, and
+        // `decider.channels.test.ts` in this tree says it too: "the roster is reachable by
+        // ordering — a human member added while no thread of that id exists, then the thread".
+        // `MentionWakeReactor.test.ts` builds the same roster. This file used to assert the
+        // opposite of all three.
+        //
+        // WHAT IS TRUE ABOUT THE SHAPE GUARD is narrower than what I claimed: it refuses the
+        // second member AT THE MOMENT OF THE ADD, and never re-validates a member already on
+        // the roster. So THIS ordering — thread first — is not command-producible, and the
+        // reverse one is. The test below this one covers the reachable ordering; this one
+        // covers a roster that only replay produces, and both are states the lookup can be
+        // handed.
+        //
+        // Which makes this guard a LIVE defence on a reachable impersonation rather than a
+        // last-ditch check on legacy rows. The fixture below is still a read model rather
+        // than a command sequence, because a unit test of the decider takes one; the shape it
+        // holds is one the aggregate will produce.
+        //
+        // The two fixtures above spend their collision proving the SHAPE guard (both assert
+        // "is a thread id"), so neither can prove this one.
+        const colliding: OrchestrationReadModel = {
+          ...readModel(),
+          // The thread exists, so the THREAD member is a row the shape guard admits. The
+          // human member sharing its id is one the aggregate accepts too, as long as it was
+          // added before that thread was created — see above.
+          threads: threadsNamed([...CHANNEL_THREAD_IDS, "human-owner"]),
+          channels: [
+            {
+              id: CHANNEL,
+              name: "seniors",
+              members: [
+                { handle: BOSS1, memberKind: "thread", memberId: "human-owner" },
+                { handle: OWNER, memberKind: "human", memberId: "human-owner" },
+              ],
+              archivedAt: null,
+              createdAt: NOW,
+              updatedAt: NOW,
+            },
+          ],
+        };
+
+        // THE ORDER IS THE MEASUREMENT, so it is asserted rather than left to the comment
+        // above. `find` returns the first match, so the WRONG member has to be first:
+        // reversed, this test passes under a memberId-only lookup too and measures nothing.
+        // Measured by the review lane — reversing these two rows and applying the id-only
+        // mutant left all 685 tests green, with the guard broken.
+        //
+        // Asserting a fixture is normally a smell. This fixture's order IS the
+        // discriminating input, so pinning it pins the test's power, not the
+        // implementation's.
+        expect(colliding.channels[0]?.members[0]).toMatchObject({
+          handle: BOSS1,
+          memberKind: "thread",
+        });
+
+        const decided = yield* decideOrchestrationCommand({
+          command: channelProbe("channel.post.create") as never,
+          readModel: colliding,
+          // The seated HUMAN, whose id the thread member shares.
+          issuer: MEMBER_HUMAN,
+        });
+        const events = Array.isArray(decided) ? decided : [decided];
+        const event = events[0];
+        expect(event?.type).toBe("channel.post-created");
+
+        // THE AUTHOR HANDLE IS THE IMPERSONATION. It is taken from the row the lookup returned,
+        // so a memberId-only lookup finds the thread member first and the post is stored as
+        // written by `boss1` — a human posting under an agent's name, in the channel where the
+        // agents read their instructions. Asserting the handle rather than the returned member
+        // is what makes this about the consequence rather than about the function.
+        expect(
+          (event as { readonly payload?: { readonly authorHandle?: string } })?.payload
+            ?.authorHandle,
+        ).toBe(OWNER);
+      }),
+  );
+  it.effect(
+    "resolves a THREAD author past a human row sharing its id, which is the reachable ordering",
+    () =>
+      Effect.gen(function* () {
+        // THE ORDERING COMMANDS ACTUALLY PRODUCE, and the mirror of the test above.
+        // `requireChannelMemberShape` refuses a human member whose memberId names an EXISTING
+        // thread, so via commands the human is necessarily added FIRST and the thread of that
+        // name created after (`t3_bot-46h` criterion 4, answered by PR #24). The roster is
+        // therefore [human/X, thread/X] — the reverse of the fixture above, which only replay
+        // produces.
+        //
+        // Under a memberId-only lookup this is the impersonation that runs the other way: an
+        // AGENT's post is found against the human row and stored under a human's handle. In the
+        // channel where agents read their instructions, a post that appears to come from Walt is
+        // the worse direction of the two.
+        const colliding: OrchestrationReadModel = {
+          ...readModel(),
+          threads: threadsNamed([...CHANNEL_THREAD_IDS, "human-owner"]),
+          channels: [
+            {
+              id: CHANNEL,
+              name: "seniors",
+              members: [
+                // Human first: the order the aggregate reaches, and the order that makes the
+                // WRONG row first for a thread author.
+                { handle: OWNER, memberKind: "human", memberId: "human-owner" },
+                { handle: BOSS1, memberKind: "thread", memberId: "human-owner" },
+              ],
+              archivedAt: null,
+              createdAt: NOW,
+              updatedAt: NOW,
+            },
+          ],
+        };
+
+        // The order is the measurement here too, mirrored.
+        expect(colliding.channels[0]?.members[0]).toMatchObject({
+          handle: OWNER,
+          memberKind: "human",
+        });
+
+        const decided = yield* decideOrchestrationCommand({
+          command: channelProbe("channel.post.create") as never,
+          readModel: colliding,
+          // The THREAD, whose id the human member shares.
+          issuer: { memberKind: "thread", memberId: "human-owner" },
+        });
+        const events = Array.isArray(decided) ? decided : [decided];
+        const event = events[0];
+        expect(event?.type).toBe("channel.post-created");
+        expect(
+          (event as { readonly payload?: { readonly authorHandle?: string } })?.payload
+            ?.authorHandle,
+        ).toBe(BOSS1);
+      }),
+  );
 });
