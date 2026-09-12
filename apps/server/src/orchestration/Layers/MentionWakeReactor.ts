@@ -10,6 +10,8 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
+import { MentionWakeBudgetRepositoryLive } from "../../persistence/Layers/MentionWakeBudget.ts";
+import { MentionWakeBudgetRepository } from "../../persistence/Services/MentionWakeBudget.ts";
 import { ProjectionChannelRepository } from "../../persistence/Services/ProjectionChannels.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
@@ -35,6 +37,35 @@ type PostCreated = Extract<OrchestrationEvent, { type: "channel.post-created" }>
  * the log.
  */
 export const HELD_BACKLOG_LIMIT = 500;
+
+/**
+ * The per-channel wake budget, and the window it is counted over.
+ *
+ * DERIVED, because "10 per 5 minutes" with no argument is a number the next
+ * person changes by feel. Two measurements bound it from either side.
+ *
+ * The ADMIT side, from the M1 walkthrough: a real exchange ran pm -> boss1 ->
+ * pm, three wakes in about sixty seconds. A cap has to leave room for several
+ * of those at once, because a channel with four agents in it holds more than
+ * one conversation. Twenty wakes is six or seven such exchanges inside one
+ * window, or one wake every thirty seconds sustained for ten minutes - busier
+ * than any channel this system has yet seen, and a human posting resets it.
+ *
+ * The REFUSE side, from what a runaway costs: two agents mentioning each other
+ * wake at whatever the provider's turn latency is, ten to sixty seconds, so an
+ * unattended loop sustains ten to sixty wakes per ten minutes indefinitely.
+ * Twenty stops it inside the first window, at a price of at most twenty turns.
+ *
+ * COUNTED PER POST THAT WOKE SOMEBODY, not per thread woken. That is the loop's
+ * unit - a wake produces a post, that post wakes again - and it is the unit the
+ * walkthrough's "three wakes" was measured in. A post mentioning five threads
+ * starts five turns and spends one, so the worst case inside a window is the
+ * budget times a channel's membership; membership is set by a human or the
+ * system and is small, while the number of POSTS is what an unattended loop can
+ * grow without bound. Bounding the unbounded term is the point.
+ */
+export const WAKE_BUDGET_PER_CHANNEL = 20;
+export const WAKE_BUDGET_WINDOW_MINUTES = 10;
 
 /**
  * One wake per (channel, post, thread), derived rather than generated.
@@ -278,6 +309,7 @@ const make = Effect.gen(function* () {
   const channels = yield* ProjectionChannelRepository;
   const crypto = yield* Crypto.Crypto;
   const threads = yield* ProjectionThreadRepository;
+  const budget = yield* MentionWakeBudgetRepository;
 
   /**
    * Every thread member the post named, resolved against the channel's CURRENT
@@ -330,9 +362,88 @@ const make = Effect.gen(function* () {
     return { channelName: channel.value.name, threadIds };
   });
 
+  /**
+   * Both timestamps from one reading of the clock, formatted the way the rows
+   * are stored.
+   *
+   * The comparison in SQL is a STRING comparison, which is only an ordering
+   * because `formatIso` is `toISOString` - always UTC, always the same width.
+   * Every value on both sides of it is written by this function, so nothing
+   * else's timestamp format can make the window silently wrong.
+   */
+  const budgetWindow = Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    return {
+      now: DateTime.formatIso(now),
+      windowStart: DateTime.formatIso(
+        DateTime.subtract(now, { minutes: WAKE_BUDGET_WINDOW_MINUTES }),
+      ),
+    };
+  });
+
+  /**
+   * Refuse this post's wakes and say so at ERROR, loudly enough to act on.
+   *
+   * The one line carries the channel, the window, the budget, when the channel
+   * was first stopped and how many wakes have been refused since, because a
+   * channel whose agents have stopped answering and a channel that has gone
+   * quiet look identical to everyone - including the human who is the only way
+   * out. The tally is persisted rather than counted here, so a restart does not
+   * reset it to one while thousands were refused.
+   */
+  const refuse = Effect.fn("MentionWakeReactor.refuse")(function* (
+    event: PostCreated,
+    channelName: string,
+    at: string,
+  ) {
+    const suppression = yield* budget.suppress({ channelId: event.payload.channelId, at });
+    yield* Effect.logError("mention wake budget exhausted; channel stopped until a human posts", {
+      channelId: event.payload.channelId,
+      channelName,
+      postId: event.payload.postId,
+      budget: WAKE_BUDGET_PER_CHANNEL,
+      windowMinutes: WAKE_BUDGET_WINDOW_MINUTES,
+      exhaustedAt: suppression.exhaustedAt,
+      suppressedCount: suppression.suppressedCount,
+    });
+  });
+
   const wake = Effect.fn("MentionWakeReactor.wake")(function* (event: PostCreated) {
     const { channelName, threadIds } = yield* targetThreads(event);
     if (channelName === null || threadIds.length === 0) {
+      return;
+    }
+
+    // NOTHING IS SPENT ABOVE THIS LINE. A post naming a handle that belongs to
+    // nobody, or naming only the author, resolves to no threads and must not
+    // cost a channel any of its budget - it starts no turn, so it is not part
+    // of the amplification this bounds.
+    const { now, windowStart } = yield* budgetWindow;
+
+    // THE LATCH IS CHECKED BEFORE THE WINDOW, and that order is the feature
+    // rather than an optimisation. A rolling window on its own REFILLS: two
+    // agents spend twenty wakes, go quiet for ten minutes and resume, forever,
+    // at a reduced rate. `t3_bot-64d` asks for a stop, not a throttle, and the
+    // way out is a human - so once a channel is exhausted it stays exhausted
+    // however long it has been idle, until `clear` runs.
+    const suppressed = yield* budget.getSuppression({ channelId: event.payload.channelId });
+    if (Option.isSome(suppressed)) {
+      yield* refuse(event, channelName, now);
+      return;
+    }
+
+    // Spent BEFORE the dispatch, because the budget pays for the decision to
+    // wake rather than for the wake landing - and because the spend is keyed by
+    // post id, so the replay this reactor's lagging cursor guarantees cannot
+    // spend it twice. The count includes this post.
+    const spent = yield* budget.spend({
+      channelId: event.payload.channelId,
+      postId: event.payload.postId,
+      wokenAt: now,
+      windowStart,
+    });
+    if (spent > WAKE_BUDGET_PER_CHANNEL) {
+      yield* refuse(event, channelName, now);
       return;
     }
     for (const threadId of threadIds) {
@@ -410,13 +521,43 @@ const make = Effect.gen(function* () {
    * loses that wake permanently, because nothing replays it and the derived
    * commandId never gets its chance to absorb anything.
    */
+  /**
+   * A human post clears the channel's budget: the spent wakes and the latch.
+   *
+   * IDENTIFIED BY `memberKind`, not by member id and not by handle. A thread and
+   * a human may hold the same `memberId` - that is what `t3_bot-46h` exists to
+   * make testable - so a memberId-only check reads an agent's post as a human's
+   * and hands the runaway its own way out.
+   *
+   * Runs for EVERY human post, mentions or not. A human typing "stop" in a
+   * channel without naming anyone is the plainest form of the loop-breaking
+   * this feature is built around, and requiring a mention would mean the
+   * obvious gesture silently did nothing.
+   *
+   * Runs BEFORE the wake, so a human who posts a mention into an exhausted
+   * channel both resets it and is delivered.
+   */
+  const resetIfHuman = (event: PostCreated) =>
+    event.payload.authorRef.memberKind === "human"
+      ? budget.clear({ channelId: event.payload.channelId })
+      : Effect.void;
+
+  const handlePost = (event: PostCreated) =>
+    Effect.gen(function* () {
+      yield* resetIfHuman(event);
+      if (event.payload.mentions.length === 0) {
+        return;
+      }
+      yield* wake(event);
+    });
+
   const wakeSafely = (event: PostCreated) =>
-    wake(event).pipe(
+    handlePost(event).pipe(
       Effect.as(true),
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.failCause(cause)
-          : Effect.logWarning("mention wake failed; cursor held", {
+          : Effect.logWarning("mention wake or budget reset failed; cursor held", {
               postId: event.payload.postId,
               channelId: event.payload.channelId,
               cause: Cause.pretty(cause),
@@ -447,7 +588,12 @@ const make = Effect.gen(function* () {
 
   const processEvent = (event: OrchestrationEvent) =>
     Effect.gen(function* () {
-      if (event.type === "channel.post-created" && event.payload.mentions.length > 0) {
+      // EVERY post-created, not only the ones carrying mentions. A human post
+      // with no mentions clears the channel's wake budget, and that reset is the
+      // only way out of an exhausted channel - so it has to run under the same
+      // held-cursor protection as a wake. A reset lost to one transient database
+      // failure would leave the channel stopped with nothing to replay it.
+      if (event.type === "channel.post-created") {
         const woken = yield* wakeSafely(event);
         if (!woken && heldAt === null) {
           heldAt = event.sequence;
@@ -588,4 +734,15 @@ const make = Effect.gen(function* () {
   return { start, drainThrough } satisfies MentionWakeReactorShape;
 });
 
-export const MentionWakeReactorLive = Layer.effect(MentionWakeReactor, make);
+/**
+ * The wake budget's storage is provided HERE rather than at each assembly site.
+ *
+ * It has exactly one reader, and a budget that a harness forgot to wire is a
+ * cap that silently is not there - the failure this repo's wiring rule names.
+ * Provided rather than merged because nothing else should be able to reach it:
+ * it is reactor state, not a projection, and nothing rebuilds it from the event
+ * log.
+ */
+export const MentionWakeReactorLive = Layer.effect(MentionWakeReactor, make).pipe(
+  Layer.provide(MentionWakeBudgetRepositoryLive),
+);
