@@ -9573,6 +9573,60 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("the HTTP door refuses a page limit outside 1..200", () =>
+    Effect.gen(function* () {
+      // THREE NUMBERS THIS DOOR USED TO ACCEPT. `TEST-25-03` moved this decoder's
+      // ceiling to 1,000,000 — five thousand times the socket's — deleted its `isInt`
+      // and dropped its floor to zero, and all three survived the suite. The socket's
+      // copy of the same four numbers is in `contracts/orchestration.test.ts`; asserting
+      // the NUMBERS at both doors is what makes them comparable, since a shared
+      // constant is a compile-time argument and these are two different schemas.
+      //
+      // "Too much data over a websocket" is the regression this repository names
+      // first, and `?limit=201` was the whole of the way past it.
+      const paged: Array<{ readonly limit: number; readonly beforeSequence: number | undefined }> =
+        [];
+
+      yield* buildAppUnderTest({
+        layers: { projectionChannels: postsByMember({ asked: [], paged }) },
+      });
+
+      for (const limit of ["201", "0", "2.5", "-1"]) {
+        const response = yield* fetchEffect(
+          yield* getHttpServerUrl(
+            `/api/orchestration/channels/channel-project/posts?direction=backward&limit=${limit}`,
+          ),
+          { headers: { cookie: yield* getAuthenticatedSessionCookieHeader() } },
+        );
+        const body = yield* responseJsonEffect<unknown>(response);
+        assert.equal(response.status, 400, `limit=${limit} was not refused`);
+        // THE BODY IS `null`, AND THAT IS THE MEASUREMENT rather than the intent. The
+        // payload decoder's refusal is the platform's, so it carries no `code`, no
+        // `reason` and no `traceId` — unlike every refusal this handler raises itself,
+        // which is where `invalid_cursor` comes from. A caller cannot tell
+        // `?limit=201` from any other malformed query.
+        //
+        // Asserted as it is so that giving these refusals a reason REDS this line
+        // instead of passing quietly: the next person to look should be told the shape
+        // changed. `t3_bot-v33` carries it.
+        assert.isNull(body, `limit=${limit} answered with a body`);
+      }
+
+      // AND 200 IS ACCEPTED, so the cases above are a boundary rather than a door that
+      // refuses everything. A decoder rejecting every limit would pass all four.
+      const ok = yield* fetchEffect(
+        yield* getHttpServerUrl(
+          "/api/orchestration/channels/channel-project/posts?direction=backward&limit=200",
+        ),
+        { headers: { cookie: yield* getAuthenticatedSessionCookieHeader() } },
+      );
+      assert.equal(ok.status, 200);
+
+      // The four refusals never reached the repository; only the accepted one did.
+      assert.deepStrictEqual(paged, [{ limit: 201, beforeSequence: undefined }]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("the HTTP door refuses a channel the operator is not in", () =>
     Effect.gen(function* () {
       // `channelsByMember` answers a non-operator with `channel-someone-else`,

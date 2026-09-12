@@ -23,6 +23,18 @@ import { readChannelPostPage } from "./channelPosts.ts";
  */
 const NOW = "2026-01-01T00:00:00.000Z";
 const PM = ChannelMemberHandle.make("pm");
+const WALT = ChannelMemberHandle.make("walt");
+
+/**
+ * A post's own time, DIFFERENT PER POST.
+ *
+ * Every post shared `NOW` before this, so freezing `createdAt` in the projection
+ * produced exactly what the fixture held and the mutant survived by construction.
+ * It is also the client's sort key, so a frozen one reorders every channel in the
+ * browser — with the whole server suite green.
+ */
+const postCreatedAt = (sequence: number) =>
+  `2026-01-01T00:${String(sequence).padStart(2, "0")}:00.000Z`;
 
 const layer = it.layer(
   ProjectionChannelRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
@@ -62,15 +74,23 @@ const channelWith = (channelId: ChannelId, member: ChannelMemberRef) => ({
   updatedAt: NOW,
 });
 
+/**
+ * One post, with NO FIELD HOLDING THE VALUE ITS MUTANT WOULD PRODUCE.
+ *
+ * `mentions` was `[]` and `parentPostId` was `null`, which are exactly what dropping
+ * them yields, so two of the four axes were unmeasurable however carefully they were
+ * asserted. Even-sequenced posts mention someone and every post after the first
+ * replies to the one before it, so both fields carry something a mutant would lose.
+ */
 const post = (channelId: ChannelId, sequence: number) => ({
   postId: ChannelPostId.make(`post-${channelId}-${sequence}`),
   channelId,
   sequence,
   authorHandle: PM,
   body: `post ${sequence}`,
-  mentions: [],
-  parentPostId: null,
-  createdAt: NOW,
+  mentions: sequence % 2 === 0 ? [WALT] : [],
+  parentPostId: sequence === 1 ? null : ChannelPostId.make(`post-${channelId}-${sequence - 1}`),
+  createdAt: postCreatedAt(sequence),
 });
 
 const request = (
@@ -117,6 +137,30 @@ layer("readChannelPostPage", (it) => {
       // rather than a rendering one.
       assert.deepStrictEqual(ids(page), expected(channelId, [4, 5]));
       assert.isNotNull(page.nextCursor);
+
+      // ONE WHOLE POST, because `ids` pins one field of eight. Measured before this
+      // existed: blanking `body`, emptying `mentions`, nulling `parentPostId` and
+      // freezing `createdAt` in the projection each survived this file AND both
+      // doors' tests — 201 tests green while every post arrived empty.
+      assert.deepStrictEqual(page.posts[1], {
+        id: ChannelPostId.make(`post-${channelId}-5`),
+        channelId,
+        sequence: 5,
+        authorHandle: PM,
+        body: "post 5",
+        mentions: [],
+        parentPostId: ChannelPostId.make(`post-${channelId}-4`),
+        createdAt: postCreatedAt(5),
+      });
+      // AND ONE THAT MENTIONS SOMEONE, since a post with no mentions cannot tell a
+      // projection that drops them from one that keeps them.
+      assert.deepStrictEqual(page.posts[0]?.mentions, [WALT]);
+      // THE PAGE NAMES THE CHANNEL IT ANSWERS FOR (`TEST-25-07`). A mutant returning
+      // a different id here survived every test at both doors, because no client
+      // reads the field. It stays on the wire — a page that does not say what it is a
+      // page OF cannot be matched to a request by anything but call ordering — so it
+      // is asserted here rather than removed.
+      assert.strictEqual(page.channelId, channelId);
     }),
   );
 
