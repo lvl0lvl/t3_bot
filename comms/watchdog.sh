@@ -12,7 +12,8 @@ TRACKS="boss1 boss3"; STALE_MIN=${STALE_MIN:-30}; BEAT_MIN=${BEAT_MIN:-15}; REWA
 now() { date +%s; }
 last_post_epoch() { f=$(ls -t "$BOARD" | /usr/bin/grep -- "-$1-" | head -1); [ -n "$f" ] && stat -f %m "$BOARD/$f" || echo 0; }
 last_push_epoch() { git -C "$REPO" for-each-ref --sort=-committerdate --format='%(committerdate:unix)' "refs/remotes/origin/$1/*" 2>/dev/null | head -1; }
-has_claim() { (cd "$REPO" && bd list -n 0 --status=in_progress --assignee="$1" 2>/dev/null | /usr/bin/grep -qE '^[◐○] '); }
+# If bd itself fails, treat the track as claimed: an instrument that reports nothing is not reporting "no work".
+has_claim() { out=$(cd "$REPO" && bd list -n 0 --status=in_progress --assignee="$1" 2>&1) || return 0; printf '%s' "$out" | /usr/bin/grep -qE '^[◐○] '; }
 declare -A woke; last_beat=$(now); last_tick=$(now); last_fetch=0
 while true; do
   t=$(now)
