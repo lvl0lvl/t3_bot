@@ -207,6 +207,12 @@ describe("the comms toolkit on the live gateway", () => {
         expect(stored[0]?.authorHandle).toBe("boss3");
         expect(stored[0]?.mentions).toEqual(["boss1"]);
         expect(stored[0]?.postId).toBe(posted.postId);
+        // THE BODY, which this test's own docstring promised and did not check.
+        // Replacing `body: input.body` with a constant in the dispatched
+        // command reds only the mention-wake test, and only because the wake's
+        // fenced text happens to carry it - so redacting every post body ships
+        // green the day that test changes.
+        expect(stored[0]?.body).toBe("over to you");
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );
@@ -237,6 +243,22 @@ describe("the comms toolkit on the live gateway", () => {
           BOSS3,
         );
         expect(mentioned.mentioned).toEqual(["boss1"]);
+
+        // TWO POSTS INTO ONE CHANNEL, which nothing did before. The command id
+        // derives from the post id (`comms-post:${postId}`), so a generator
+        // that returned a constant would have the engine absorb the second
+        // post as a replay of the first: the agent is told it posted, and
+        // nothing is stored. `const postId = "post-constant"` survived the
+        // entire comms suite. Success with no write is the one failure an
+        // agent cannot see.
+        const channels = yield* ProjectionChannelRepository;
+        const stored = yield* channels.listPosts({
+          channelId: CHANNEL_ID,
+          limit: 10,
+          afterSequence: undefined,
+        });
+        expect(stored.map((post) => post.body)).toEqual(["from boss1", "seen"]);
+        expect(mentioned.postId).not.toBe(stored[0]?.postId);
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );
@@ -280,6 +302,13 @@ describe("the comms toolkit on the live gateway", () => {
 
         // And the author is not woken by their own post.
         const own = yield* threads.getThreadDetailById(BOSS3);
+        // ANCHOR THE SUBJECT FIRST. `[]` is what an absent thread produces too,
+        // so the empty assertion below could not tell "boss3 was not woken"
+        // from "boss3 was never looked up". Repointing this query at a thread
+        // that does not exist left the test green; the same move on the BOSS1
+        // lookup above reds it. The query discriminates - the assertion was
+        // just not tied to it.
+        expect(Option.isSome(own)).toBe(true);
         const ownWakes = Option.isNone(own)
           ? []
           : own.value.messages
