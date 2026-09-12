@@ -82,6 +82,23 @@ message types: `comms/README.md` there.
   show it (three files, one day: fifteen fixtures, then four, then three at the doors — CI found the last).
   When a format grows, re-run the previous PR's mutants on every file that holds a fixture of it.
 - Comments state the input that would break the code, not the reason it is safe.
+- **A universal or a reachability claim is measured, not remembered.** "Every fixture in the repo…" and "no
+  command can produce this" are the two shapes that have been wrong every time (four times on 2026-09-12):
+  `rg` the subject before writing the universal, and read the NOTES and acceptance criteria of every bead in
+  the chain before writing the reachability claim — a bead's description is its oldest text and its notes are
+  its newest, and `bd show` prints the description first. The same check catches an inverted protection
+  claim ("exporting this constant means a test cannot silently disarm it" — one `rg` showed the fixture
+  importing it). Cite the field or the SHA you read it from, so the next author can check the same place.
+- **Bead citations resolve against `main`, not the branch.** `bd` exports to the main checkout's
+  `.beads/issues.jsonl`, so a bead created in a worktree is invisible to every branch pushed from it. Cite
+  freely; the PM flushes and commits beads on `main` before merging any PR that cites them, and a body must
+  not claim a bead is "in the branch".
+- **Adding a required segment to a format moves every existing fixture past the guard it was written for.**
+  A two-segment cursor fixture, once the format needs three, is refused at the boundary before it reaches the
+  clause its test measures; the test stays green and stops testing, and nobody edited it, so the diff cannot
+  show it (three files, one day: fifteen fixtures, then four, then three at the doors — CI found the last).
+  When a format grows, re-run the previous PR's mutants on every file that holds a fixture of it.
+- Comments state the input that would break the code, not the reason it is safe.
 - **Before asserting reachability in a comment or a PR body, look for the answer the repo already holds.**
   `rg` the beads and the sibling tests for the same question. Three times on 2026-09-12 a comment claimed
   "unreachable" or "the only route is replay" while a bead's answered criterion and a test one file over said
