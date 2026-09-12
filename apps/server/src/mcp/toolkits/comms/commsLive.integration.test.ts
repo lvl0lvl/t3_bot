@@ -726,6 +726,11 @@ describe("the comms toolkit on the live gateway", () => {
         expect((error as unknown as { channel: string }).channel).toBe("seniors");
         const message = (error as { message: string }).message;
         expect(message).toContain("seniors");
+        // AND IT SAYS THE TRUE THING ABOUT THIS CURSOR, which for this one is
+        // that another channel issued it. The clause is asserted whole because
+        // `toContain("seniors")` above passes for every sentence that mentions
+        // the channel, including the one that blamed it wrongly (`t3_bot-2oh`).
+        expect(message).toContain("That cursor was not issued by 'seniors'.");
         // AND IT SAYS WHAT TO DO. The message was replaceable with anything;
         // what an agent needs from it is the recovery, and the recovery has to
         // match the direction this tool actually reads.
@@ -745,6 +750,27 @@ describe("the comms toolkit on the live gateway", () => {
           BOSS3,
         );
         expect(second.posts.map((post) => post.body)).toEqual(["two"]);
+
+        // AND THE OTHER REFUSAL THIS CHANNEL CAN PRODUCE, through the live
+        // decoder rather than a fake: the same cursor with its direction word
+        // flipped. The channel half and the sequence are the gateway's own, so
+        // provenance is not what is refused — and the sentence must not say it
+        // is. THE FAKE CANNOT PROVE THIS. `handlers.test.ts` drives a double
+        // that computes its own reason, so a decoder that named the wrong cause
+        // would leave that file green; this is the only place the real word
+        // becomes the prose an agent acts on.
+        const otherDirection = first.nextCursor!.replace(":forward:", ":backward:");
+        expect(otherDirection).not.toBe(first.nextCursor);
+        const wrongWay = yield* call(
+          "comms_read_channel",
+          { channel: "seniors", cursor: otherDirection },
+          BOSS3,
+        ).pipe(Effect.flip);
+        expect((wrongWay as { _tag: string })._tag).toBe("CommsCursorUnusableError");
+        const wrongWayMessage = (wrongWay as { message: string }).message;
+        expect(wrongWayMessage).toContain("in the other direction");
+        expect(wrongWayMessage).not.toContain("was not issued by");
+        expect(wrongWayMessage).toContain("without a cursor");
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );
