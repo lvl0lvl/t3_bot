@@ -66,6 +66,10 @@ message types: `comms/README.md` there.
   property rather than the mutant you wrote, and re-read every negative when a fixture grows a subject.
 - **A guard wired at N call sites needs N tests.** "I tested the guard" is not "I tested every site";
   removing the check from one site must red a test that names that site.
+- **A test count may not go down silently.** A green suite says nothing about proofs that were deleted: a
+  range-replace patch removed three direct-gateway tests from #13 and reverting #13's fix passed 152/152. The
+  local gate compares per-file test counts against base; a decrease is named in the PR body with the reason,
+  and the previous PR's mutants on that file are re-run.
 - Comments state the input that would break the code, not the reason it is safe.
 - Before pushing, write the adversarial question you would give a reviewer — "what legitimate input
   does this now reject that worked before?" — and answer it yourself. Writing the prompt is the review.
