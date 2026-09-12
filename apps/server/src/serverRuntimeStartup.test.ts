@@ -456,7 +456,17 @@ it.effect("completeAutoBootstrapWelcome settles an empty bootstrap result", () =
  */
 const seedProjections = (
   getActiveProjectByWorkspaceRoot: ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]["getActiveProjectByWorkspaceRoot"],
-) => ({ getActiveProjectByWorkspaceRoot }) as never;
+) =>
+  ({
+    getActiveProjectByWorkspaceRoot,
+    // The seeder reads the command read model to find seeded threads whose provider
+    // instance predates the driver-kind fix (`t3_bot-p4u`). NO THREADS here, which is the
+    // honest fixture for this test: nothing exists to repair on a fresh seed, so the
+    // dispatched command list stays what this test is about. A read model carrying the
+    // colliding rows would make this a test of the repair, which the engine test covers
+    // against a real database.
+    getCommandReadModel: () => Effect.succeed({ threads: [] }),
+  }) as never;
 
 const seedEngine = (
   dispatch: OrchestrationEngine.OrchestrationEngineService["Service"]["dispatch"],
@@ -506,6 +516,10 @@ it.effect("the hierarchy seed is pointed at the server's own workspace root", ()
         // already-shipped command's members is a change that silently does not
         // happen on a database that has already booted.
         "channel.member.add",
+        // AND NOTHING ELSE. The instance repair must not fire on a fresh seed: its threads
+        // were just created with the right instance, so a `thread.meta.update` here would be
+        // the seeder re-deciding a command for a thread it had correctly created a moment
+        // earlier. Three of them, on every first boot.
       ],
     );
 
