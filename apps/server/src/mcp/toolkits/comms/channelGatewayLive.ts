@@ -209,6 +209,18 @@ const make = Effect.gen(function* () {
             postId: ChannelPostId.make(postId),
             body: input.body,
             mentions: input.mentions.map((handle) => ChannelMemberHandle.make(handle)),
+            // BREAKS ON a parentPostId the brand refuses - "a:b", a space, an
+            // emoji, 65 characters. `.make` throws, and unlike `getPost` this
+            // one is inside an `Effect.gen`, so the throw becomes a Die that
+            // `publish`'s `Effect.catchCause(writeDefect)` converts into a
+            // typed `CommsPostFailedError`. Guarded, then - but into the WRONG
+            // error, and only because `comms_reply` calls `getPost` first and
+            // that call now refuses a malformed id. That is a rule in another
+            // function about a different call, which is the coupling this file
+            // removed from the archived check twenty lines up. Nothing tests
+            // the ordering. `t3_bot-d7d` is where it gets decoded rather than
+            // constructed; until then, a caller reaching this directly with an
+            // unvalidated parent id gets a worse error than it should.
             parentPostId:
               input.parentPostId === null ? null : ChannelPostId.make(input.parentPostId),
             createdAt,
