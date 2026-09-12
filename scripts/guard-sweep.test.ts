@@ -10,6 +10,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   applyMutation,
+  confirm,
+  duplicateMutationIds,
   exitCodeFor,
   formatReport,
   judge,
@@ -363,5 +365,83 @@ describe("exitCodeFor", () => {
     // one mutation. Stated rather than left to be discovered, since 0 here means
     // "nothing survived" and not "nothing was asked".
     expect(exitCodeFor([])).toBe(0);
+  });
+});
+
+describe("confirm", () => {
+  // `t3_bot-t0v`: `server.test.ts` holds order- or timing-dependent tests. An
+  // unrelated OTLP-export test reddened in ONE run of a mutation touching only the
+  // channel-posts HTTP door and stayed green in four re-runs, and a static-filename
+  // test did the same under a different mutation. A kill's reds have to reproduce.
+  it("drops a red the second run did not reproduce", () => {
+    // THE FIXTURE THAT SEPARATES THE TWO IMPLEMENTATIONS: the two runs must DISAGREE.
+    // Every case where they agree is satisfied by returning the verdict untouched, so
+    // a fixture with matching runs measures nothing about this function.
+    const baseline = run([], 10);
+    const first = judge(baseline, run(["g.ts > real", "flaky.ts > unstable"], 10));
+    const verdict = confirm(first, run(["g.ts > real"], 10), baseline);
+    expect(verdict).toEqual({ _tag: "killed", by: ["g.ts > real"] });
+  });
+
+  it("calls it a SURVIVOR when every red was noise", () => {
+    // The safe direction: an unpinned guard reported for someone to look at, rather
+    // than a mutation quietly credited with a kill it did not earn.
+    const baseline = run([], 10);
+    const first = judge(baseline, run(["flaky.ts > unstable"], 10));
+    expect(confirm(first, run([], 10), baseline)).toEqual({ _tag: "survived" });
+  });
+
+  it("keeps a kill whose reds both reproduced", () => {
+    const baseline = run([], 10);
+    const first = judge(baseline, run(["g.ts > real", "h.ts > also"], 10));
+    expect(confirm(first, run(["g.ts > real", "h.ts > also"], 10), baseline)).toEqual({
+      _tag: "killed",
+      by: ["g.ts > real", "h.ts > also"],
+    });
+  });
+
+  it("leaves the verdict alone when the confirming run did not collect", () => {
+    // A second run that measured less than the baseline says nothing about the reds,
+    // and reading it as "they did not reproduce" would turn every real kill under a
+    // flaky COLLECTION into a survivor — the same unmeasured-as-evidence mistake the
+    // baseline guard exists for, arrived at from the other side.
+    const baseline = run([], 10);
+    const first = judge(baseline, run(["g.ts > real"], 10));
+    expect(confirm(first, run([], 0), baseline)).toEqual({ _tag: "killed", by: ["g.ts > real"] });
+    expect(confirm(first, run([], 4), baseline)).toEqual({ _tag: "killed", by: ["g.ts > real"] });
+  });
+
+  it("does not re-judge a survivor or a not-run", () => {
+    // Only a candidate KILL is re-run, because a flaky red can turn a survivor into a
+    // kill and never the reverse. Nothing calls this with a second run for the others,
+    // and if something did it must not invent a verdict for them.
+    const baseline = run([], 10);
+    expect(confirm({ _tag: "survived" }, run(["g.ts > real"], 10), baseline)).toEqual({
+      _tag: "survived",
+    });
+    const notRun = { _tag: "not-run", reason: "anchor absent" } as const;
+    expect(confirm(notRun, run(["g.ts > real"], 10), baseline)).toEqual(notRun);
+  });
+});
+
+describe("duplicateMutationIds", () => {
+  it("names an id two rows share", () => {
+    // `id` is the report's ONLY row identity — the table's second column, the survivor
+    // list, the NOT RUN list and every kill heading. Two rows sharing one produce a
+    // summary naming a row that also appears as a kill, and a reader cannot tell which
+    // of the two survived.
+    expect(duplicateMutationIds([{ id: "a" }, { id: "b" }, { id: "a" }])).toEqual(["a"]);
+  });
+
+  it("is empty when every id is distinct", () => {
+    expect(duplicateMutationIds([{ id: "a" }, { id: "b" }])).toEqual([]);
+  });
+
+  it("names each repeated id ONCE, sorted, however many times it repeats", () => {
+    // Three rows sharing an id is one problem, not two, and the message is read by a
+    // person fixing a config.
+    expect(
+      duplicateMutationIds([{ id: "z" }, { id: "z" }, { id: "z" }, { id: "a" }, { id: "a" }]),
+    ).toEqual(["a", "z"]);
   });
 });

@@ -138,8 +138,14 @@ export const SweepConfig = Schema.Struct({
    * A new worktree has no `node_modules`, and a sweep MUTATES source, so it
    * cannot borrow another tree's — repointing a link inside a shared
    * `node_modules` is the exact write that left 653 tests green over 12,246
-   * type errors. Omit it only with `--in-place`, where the tree is already
-   * installed.
+   * type errors.
+   *
+   * IGNORED WITH `--in-place`, and that tree is assumed installed. It is not run
+   * there because an install writes into the tree the operator is working in, and
+   * repointing a link inside a shared `node_modules` is the write that left those
+   * 653 tests green. The run says out loud that it skipped it — this field used to
+   * read "omit it only with `--in-place`", which told an author omitting was safe
+   * there and implied providing it was honoured, and it was discarded in silence.
    */
   setupCommand: Schema.optional(Schema.Array(Schema.String)),
 });
@@ -154,6 +160,30 @@ export type SweepConfig = typeof SweepConfig.Type;
  * a decode error.
  */
 const decodeSweepConfig = Schema.decodeUnknownEffect(Schema.fromJsonString(SweepConfig));
+
+/**
+ * Distinct `id`s, because `id` is the report's ONLY row identity.
+ *
+ * It is the table's second column, the survivor list, the NOT RUN list and every
+ * kill heading. Two rows sharing one produce a report whose summary names a row
+ * that also appears as a kill, and a reader cannot tell which of the two survived
+ * — the summary and the table disagree and both are printed. Nothing checked it:
+ * not the schema, which sees two valid strings, and not the runtime, which keyed
+ * nothing.
+ */
+export const duplicateMutationIds = (
+  mutations: ReadonlyArray<{ readonly id: string }>,
+): ReadonlyArray<string> => {
+  const seen = new Set<string>();
+  const duplicated = new Set<string>();
+  for (const mutation of mutations) {
+    if (seen.has(mutation.id)) {
+      duplicated.add(mutation.id);
+    }
+    seen.add(mutation.id);
+  }
+  return [...duplicated].sort();
+};
 
 // ---------------------------------------------------------------------------
 // Applying one mutation — the part that has been wrong before
@@ -227,6 +257,46 @@ export type Verdict =
 export const judge = (baseline: RunResult, mutant: RunResult): Verdict => {
   const newlyFailing = [...mutant.failed].filter((name) => !baseline.failed.has(name)).sort();
   return newlyFailing.length === 0 ? { _tag: "survived" } : { _tag: "killed", by: newlyFailing };
+};
+
+/**
+ * A kill's reds, reduced to the ones a second run reproduced.
+ *
+ * WHY THIS EXISTS: `server.test.ts` holds order- or timing-dependent tests. An
+ * unrelated OTLP-export test reddened in one run of a mutation that touches only the
+ * channel-posts HTTP door and stayed green in four re-runs of the same mutation, and a
+ * static-filename test did the same thing under a different mutation — two instances in
+ * two different tests (`t3_bot-t0v`). Both verdicts were right anyway, because a real
+ * kill was present alongside the noise. That is the dangerous shape: nothing in the
+ * report distinguished the two reds, so the next row where noise is the ONLY red would
+ * read as a kill.
+ *
+ * ONE RE-RUN, NOT THREE. A test that fails intermittently can pass twice in a row, so
+ * this narrows the window rather than closing it; two agreeing runs is the cheapest
+ * thing that separates "this mutation broke it" from "this test is unstable", and the
+ * cost is one extra suite run per candidate kill.
+ *
+ * A row whose every red was noise becomes SURVIVED, which is the safe direction: it
+ * reports an unpinned guard for someone to look at rather than quietly crediting a
+ * mutation with a kill it did not earn.
+ */
+export const confirm = (
+  verdict: Verdict,
+  second: RunResult | undefined,
+  baseline: RunResult,
+): Verdict => {
+  if (verdict._tag !== "killed" || second === undefined) {
+    return verdict;
+  }
+  // A confirming run that did not collect says nothing about the reds, so the first
+  // run's verdict stands rather than being weakened by an unmeasured second.
+  if (second.total === 0 || second.total < baseline.total) {
+    return verdict;
+  }
+  const again = judge(baseline, second);
+  const reproduced =
+    again._tag === "killed" ? verdict.by.filter((name) => again.by.includes(name)) : [];
+  return reproduced.length === 0 ? { _tag: "survived" } : { _tag: "killed", by: reproduced };
 };
 
 /**
@@ -518,6 +588,17 @@ const runSuite = Effect.fn("guardSweep.runSuite")(function* (config: SweepConfig
   return readVitestJson(stdout);
 });
 
+/**
+ * Sweep `root`, which the CALLER has decided is safe to mutate.
+ *
+ * THE CLEAN-TREE PRECONDITION IS THE CALLER'S, because only the caller knows whose
+ * tree this is. Restoration is `git checkout -- <file>`, so uncommitted work in the
+ * operator's own tree is work the sweep would discard — and `--in-place` checks for
+ * exactly that before it starts. A scratch worktree detached at HEAD has nothing of
+ * theirs to lose, and checking it here meant the check ran AFTER `setupCommand` had
+ * written to it: an install's own output was reported as the operator's uncommitted
+ * work, with "Commit first" said about a temp directory the finalizer then deleted.
+ */
 export const sweep = Effect.fn("guardSweep.sweep")(function* (
   config: SweepConfig,
   root: string,
@@ -526,7 +607,6 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
-  yield* requireCleanTree(root);
   yield* Console.log("baseline…");
   const baseline = yield* runSuite(config, root);
   if (baseline.total === 0) {
@@ -617,16 +697,46 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
       yield* Console.log(`${mutation.id}: NOT RUN — could not write ${mutation.file}`);
       continue;
     }
-    const result = yield* runSuite(config, root).pipe(
+    const runs = yield* Effect.gen(function* () {
+      const first = yield* runSuite(config, root);
+      // A SECOND RUN ONLY WHEN THE FIRST LOOKS LIKE A KILL, and the reds have to
+      // appear in both.
+      //
+      // `server.test.ts` has order- or timing-dependent tests: an unrelated OTLP
+      // export test reddened in one run of a mutant that touches only the channel
+      // posts HTTP door and stayed green in four re-runs, and a static-filename test
+      // did the same under a different mutant (`t3_bot-t0v`, two instances in two
+      // different tests). Both verdicts happened to be right because a real kill was
+      // present too — the cost is that "killed by 2" with one red being noise makes
+      // the NEXT survivor unreadable, and a flaky red can present a survivor as a
+      // kill outright.
+      //
+      // Only on a candidate kill, so the common case pays nothing: a flaky red can
+      // turn a survivor into a kill, never a kill into a survivor, so a row that
+      // already reads SURVIVED has nothing a second run would change.
+      if (first.total === 0 || first.total < baseline.total) {
+        return { first, second: undefined };
+      }
+      const provisional = judge(baseline, first);
+      if (provisional._tag !== "killed") {
+        return { first, second: undefined };
+      }
+      yield* Console.log(`${mutation.id}: confirming ${provisional.by.length} red…`);
+      return { first, second: yield* runSuite(config, root) };
+    }).pipe(
       // THE RESTORE IS NOT BEST-EFFORT. It used to be `Effect.ignore`, which
       // turned a failed `git checkout` into a mutated file left on disk and a
       // report that read as a clean run. `orDie` because there is no recovery:
       // continuing would sweep the next mutation against a still-mutated tree
       // and attribute the result to the wrong line.
+      //
+      // It wraps BOTH runs, so the confirming run happens while the mutation is
+      // still applied — a restore between them would confirm the unmutated tree.
       Effect.ensuring(
         mustSucceed(["git", "checkout", "--", mutation.file], root).pipe(Effect.orDie),
       ),
     );
+    const result = runs.first;
     // FEWER TESTS THAN THE BASELINE IS NO MEASUREMENT, and `total === 0` alone was
     // not enough. When a mutation breaks the file it mutates, vitest reports every
     // file that imports it as `status: "failed"` with an EMPTY assertion list —
@@ -648,7 +758,7 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
               _tag: "not-run",
               reason: `the mutated suite ran ${result.total} tests against the baseline's ${baseline.total}, so something did not collect`,
             } as const)
-          : judge(baseline, result);
+          : confirm(judge(baseline, result), runs.second, baseline);
     swept.push({ mutation, verdict });
     yield* Console.log(
       `${mutation.id}: ${
@@ -772,6 +882,14 @@ export const guardSweepCommand = Command.make(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const parsed = yield* decodeSweepConfig(yield* fs.readFileString(config));
+      const duplicated = duplicateMutationIds(parsed.mutations);
+      if (duplicated.length > 0) {
+        return yield* new GuardSweepUnmeasurableError({
+          detail:
+            `two mutations share an id (${duplicated.join(", ")}), and the report ` +
+            "identifies every row by it",
+        });
+      }
       // RESOLVED ONCE, and `mustSucceed`: a report that quietly names no commit
       // is the stale-table problem this provenance line exists to end, so a repo
       // whose HEAD cannot be read fails loudly instead.
@@ -779,12 +897,38 @@ export const guardSweepCommand = Command.make(
       const provenance = { repo, commit, config };
 
       if (inPlace) {
+        // BEFORE ANYTHING ELSE, and on the operator's OWN tree, which is the only
+        // path where this check means what its message says: the restore is
+        // `git checkout`, so uncommitted work here is work the sweep would discard.
+        // It used to live inside `sweep`, where the worktree path reached it after
+        // `setupCommand` had written to a freshly detached tree — so an install's own
+        // output was reported as the operator's uncommitted work, with "Commit first"
+        // said about a temp directory that the finalizer then deleted.
+        yield* requireCleanTree(repo);
         yield* Console.log(`sweeping ${repo} IN PLACE — no copy was made`);
+        if (parsed.setupCommand !== undefined) {
+          // SAID, NOT SILENTLY DROPPED. This path used to return before the setup
+          // block, so a configured setup vanished under a flag whose docs implied it
+          // was honoured — and the checked-in config's setup is
+          // `pnpm install --frozen-lockfile`, whose absence produces the empty-baseline
+          // failure that is hardest to read back to a cause.
+          //
+          // Skipped rather than run: an install writes into the tree the operator is
+          // working in, and repointing a link inside a shared `node_modules` is the
+          // write that left 653 tests green over 12,246 type errors.
+          yield* Console.log(
+            `in place: skipping setupCommand (${parsed.setupCommand.join(" ")}) — ` +
+              "this tree is assumed installed",
+          );
+        }
         const outcome = yield* sweep(parsed, repo, provenance);
         yield* Console.log(outcome.report);
         return yield* exitWith(exitCodeFor(outcome.swept));
       }
 
+      // NOT CHECKED FOR CLEANLINESS: the worktree is about to be created detached at
+      // HEAD, so nothing of the operator's is in it, and their own tree is not the one
+      // being mutated. A dirty `repo` is no obstacle to `git worktree add`.
       const tree = yield* scratchWorktree(repo);
       yield* Console.log(`sweeping a worktree of ${repo} at ${tree}`);
       if (parsed.setupCommand !== undefined) {
