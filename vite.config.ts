@@ -19,6 +19,8 @@ export default defineConfig({
       // node:test files CI runs in their own step (ci.yml); vitest reports "No test suite found" and the
       // count-gate reads that as a file that failed to load, which is exit 2 on an unchanged tree.
       "**/.github/**",
+      // Seniors' worktrees (EnterWorktree) live here: other branches, checked out inside this one.
+      "**/.claude/**",
     ],
     hookTimeout: 60_000,
     testTimeout: 60_000,
