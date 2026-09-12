@@ -406,11 +406,13 @@ describe("comms toolkit handlers", () => {
       // TrimmedNonEmptyString and imposes nothing else. Between them they pin
       // that the read path strips LEADING sigils and changes NOTHING else —
       // not case, not a trailing sigil, not internal spacing, and not Unicode
-      // form. The fullwidth B and the composed e each catch one direction of
-      // Unicode normalization (NFKC folds the first, NFD decomposes the
-      // second), because "normalize before comparing" is the most natural
-      // thing in the world to add here and it breaks byte-exact matching
-      // against the aggregate. Every one of those is "one more normalization
+      // form. Three of them cover Unicode, and it takes three: the fullwidth B
+      // catches NFKC and NFKD, the COMPOSED e catches NFD, and the DECOMPOSED
+      // e catches NFC — no single string catches both NFC and NFD, because a
+      // string is stable under one exactly when it moves under the other. NFC
+      // is the one that matters most: "normalize before comparing" is standard
+      // advice and NFC is what people reach for, so the axis most likely to be
+      // added is the axis a composed-only fixture cannot see. Every one of those is "one more normalization
       // step, surely harmless" — the exact shape of the regression this echo
       // already carried once.
       const harness = yield* makeHarness({
@@ -418,6 +420,7 @@ describe("comms toolkit handlers", () => {
           { handle: "@@PM", memberKind: "thread", memberId: "thread-pm" },
           { handle: "Big  \uFF22oss@", memberKind: "human", memberId: "human-big-boss" },
           { handle: "Ren\u00E9e", memberKind: "human", memberId: "human-renee" },
+          { handle: "Rene\u0301a", memberKind: "human", memberId: "human-renea" },
         ],
       });
       const result = yield* harness.call("comms_read_channel", { channel: "seniors" });
@@ -425,7 +428,7 @@ describe("comms toolkit handlers", () => {
       // matched against membership exactly, so a handle tidied on the way out
       // is a handle that resolves to nobody. This echo is the last place that
       // can be reintroduced silently, since nothing downstream reads it back.
-      expect(result.members).toEqual(["@@PM", "Big  \uFF22oss@", "Ren\u00E9e"]);
+      expect(result.members).toEqual(["@@PM", "Big  \uFF22oss@", "Ren\u00E9e", "Rene\u0301a"]);
     }),
   );
 
