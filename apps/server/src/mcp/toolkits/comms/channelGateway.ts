@@ -1,18 +1,19 @@
 /**
  * The seam between the comms toolkit and the channel aggregate.
  *
- * The aggregate — `channel.*` commands, the channel projection, and the id
- * types — is not written yet. This interface is the agreed shape so the
- * toolkit, its capability wiring, and its tests are complete before those
- * symbols exist. `ChannelGatewayUnavailable` is the layer until then; swapping
- * in the live layer changes nothing above this file.
+ * The aggregate exists — `channel.*` commands, the channel projection and the
+ * branded id types are all on `main`. What is still missing is the LAYER:
+ * `ChannelGatewayUnavailable` is what is wired, so every operation dies, and
+ * `t3_bot-0uq` is the change that supplies a live one. Swapping it in changes
+ * nothing above this file.
  *
  * Ids are `string` here, and that is a staged simplification rather than a
- * contained one: when the aggregate brands them, `ChannelMemberHandle` in
- * particular surfaces in `handlers.ts` (mention resolution) and in `tools.ts`
- * (the handles an agent sends and receives), so branding is a change to those
- * files too. The compiler will find every site, but plan the landing for more
- * than this module.
+ * contained one: branding them surfaces `ChannelMemberHandle` in `handlers.ts`
+ * (mention resolution) and in `tools.ts` (the handles an agent sends and
+ * receives), so it is a change to those files too. `ChannelId` and
+ * `ChannelPostId` are now `^[A-Za-z0-9_-]{1,64}$` at the aggregate
+ * (`t3_bot-2d2`), which a `string` here does not say — a caller reading this
+ * file would not know an id cannot carry a space.
  *
  * @module channelGateway
  */
@@ -62,11 +63,25 @@ export interface ChannelMember {
   /**
    * What the agent types to mention this member, without the leading "@".
    *
-   * Trimmed and non-empty, and nothing more: unlike a channel name this is NOT
-   * case-folded, because the aggregate matches it byte-exactly. Canonical
-   * handles are the intended end state (t3_bot-iin); until the aggregate
-   * canonicalizes them, a caller that folds a handle produces one that resolves
-   * to no member.
+   * CANONICAL, by the shared rule with "@" as the sigil
+   * (`@t3tools/shared/channelIdentity`): whitespace collapsed, variation
+   * selectors stripped, leading sigils stripped to a fixpoint, lowercased, NFC
+   * last. The aggregate applies it on every path that stores or compares a
+   * handle, so this is the only form the projection holds.
+   *
+   * MATCHING IS FORGIVING, DELIVERY IS NOT, and that is the half a reader has
+   * to take from this docstring. A caller may fold, strip and normalise to FIND
+   * a member — the toolkit does. What it EMITS must be these bytes, because the
+   * aggregate resolves a mention with an exact comparison, and this is a read
+   * model: it can hold a row written under an older form of the rule, which
+   * canonicalises to something other than itself. Emit the key rather than the
+   * stored value and such a member becomes unmentionable, with the whole post
+   * refused for it.
+   *
+   * That is not hypothetical. It shipped once: the toolkit folded case while
+   * the aggregate compared bytes, a member stored `Boss1` was echoed as
+   * `boss1`, and every post naming it was rejected whole — with an error
+   * telling the agent to consult the tool that had produced the wrong handle.
    */
   readonly handle: string;
   readonly memberKind: "thread" | "human";
@@ -76,9 +91,16 @@ export interface ChannelMember {
 export interface Channel {
   readonly channelId: string;
   /**
-   * Canonical name: lowercase, no leading "#", no surrounding whitespace.
+   * Canonical name, by the shared rule with "#" as the sigil.
    *
-   * The decider canonicalizes on the way in, so this is the only form the
+   * The OPERATION rather than the property, because the property was once
+   * stated for an implementation that did not produce it: a single-pass strip
+   * leaves the second "#" of "# #seniors" in place forever. The strip runs to a
+   * fixpoint now, so "no leading sigil" does hold — verified, not assumed — but
+   * it holds BECAUSE of the operation, and a future single-pass rewrite would
+   * falsify the property while looking like it satisfied it.
+   *
+   * The decider canonicalises on the way in, so this is the only form the
    * projection holds and the only form a lookup can match.
    */
   readonly name: string;
@@ -138,9 +160,11 @@ export interface ChannelGatewayShape {
    * non-member and a non-existent channel are the same answer: an agent must
    * not be able to probe for channels it is not in.
    *
-   * `name` must already be canonical. Matching is exact, so a caller that
-   * passes what the agent typed rather than the canonical form gets `None` —
-   * indistinguishable, by the rule above, from being excluded.
+   * `name` must already be canonical by `canonicalChannelName`. Matching is
+   * exact, so a caller passing what the agent typed rather than the canonical
+   * form gets `None` — indistinguishable, by the rule above, from being
+   * excluded, which is why the live layer treats a non-canonical name as a
+   * DEFECT and dies rather than returning that silence.
    */
   readonly getChannelForMember: (
     name: string,
