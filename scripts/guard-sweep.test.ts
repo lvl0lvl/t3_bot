@@ -20,6 +20,10 @@ import {
 
 const mutation = (overrides: Partial<Mutation> = {}): Mutation => ({
   id: "m",
+  // A default so the existing tests stay about what they were about. The tests
+  // that care about grouping override it — `guard` exists to group rows, so a
+  // fixture where every row shares one guard cannot exercise it.
+  guard: "requireThing",
   axis: "inert",
   file: "src/thing.ts",
   find: "if (guard) {",
@@ -235,25 +239,77 @@ describe("formatReport", () => {
     expect(report).toContain("These are not survivors — no measurement was taken.");
   });
 
-  it("says so when every mutation is on the inert axis", () => {
-    const report = formatReport(run([], 26), [
-      { mutation: mutation({ axis: "inert" }), verdict: { _tag: "killed", by: ["a > b"] } },
-    ]);
-    expect(report).toContain("asked only what the guards exclude");
-  });
-
-  it("stays quiet about the axis when both are present", () => {
+  it("names the guard asked on the inert axis only", () => {
     const report = formatReport(run([], 26), [
       {
-        mutation: mutation({ id: "i", axis: "inert" }),
+        mutation: mutation({ id: "i", guard: "requireThing", axis: "inert" }),
         verdict: { _tag: "killed", by: ["a > b"] },
       },
+    ]);
+    expect(report).toContain("Measured on the `inert` axis only: requireThing");
+  });
+
+  it("names the guard asked on the wider axis only", () => {
+    // The mirror, and it needs its own fixture: a notice that only ever reported
+    // the inert-only case would pass the test above and say nothing about a guard
+    // whose exclude side was never asked.
+    const report = formatReport(run([], 26), [
       {
-        mutation: mutation({ id: "w", axis: "wider" }),
+        mutation: mutation({ id: "w", guard: "requireShape", axis: "wider" }),
         verdict: { _tag: "killed", by: ["a > c"] },
       },
     ]);
-    expect(report).not.toContain("asked only what the guards exclude");
+    expect(report).toContain("Measured on the `wider` axis only: requireShape");
+  });
+
+  it("stays quiet about a guard measured on BOTH axes", () => {
+    const report = formatReport(run([], 26), [
+      {
+        mutation: mutation({ id: "i", guard: "requireThing", axis: "inert" }),
+        verdict: { _tag: "killed", by: ["a > b"] },
+      },
+      {
+        mutation: mutation({ id: "w", guard: "requireThing", axis: "wider" }),
+        verdict: { _tag: "killed", by: ["a > c"] },
+      },
+    ]);
+    expect(report).not.toContain("axis only");
+  });
+
+  it("reports a single-axis guard even when ANOTHER guard covered both", () => {
+    // THE FIXTURE THE OLD NOTICE COULD NOT SEE, and the reason this is per-guard.
+    // The notice used to fire only when NO row anywhere was `wider`, so one
+    // `wider` row silenced it for every guard in the file — and the previous test
+    // for it, "stays quiet about the axis when both are present", asserted
+    // exactly that bug.
+    //
+    // The checked-in config is this shape: ten rows over seven guards, three
+    // measured on both axes and four on one, so the report said both axes had
+    // been asked when four guards had one.
+    const report = formatReport(run([], 26), [
+      {
+        mutation: mutation({ id: "both-i", guard: "requireCovered", axis: "inert" }),
+        verdict: { _tag: "killed", by: ["a > b"] },
+      },
+      {
+        mutation: mutation({ id: "both-w", guard: "requireCovered", axis: "wider" }),
+        verdict: { _tag: "killed", by: ["a > c"] },
+      },
+      {
+        mutation: mutation({ id: "half", guard: "requireHalf", axis: "inert" }),
+        verdict: { _tag: "killed", by: ["a > d"] },
+      },
+    ]);
+    // ASSERTED ON THE NOTICE LINE, not on the whole report. My first attempt used
+    // `expect(report).not.toContain("requireCovered")` and failed — correctly:
+    // the table now has a `guard` column, so every guard's name appears in the
+    // report whatever the notice says. The claim is about the notice.
+    const notice = report
+      .split("\n")
+      .find((line) => line.startsWith("Measured on the `inert` axis only:"));
+    expect(notice).toBe(
+      "Measured on the `inert` axis only: requireHalf. Each was asked what it EXCLUDES; a guard that already excludes too much survives that untouched.",
+    );
   });
 
   it("warns that baseline failures cannot be evidence", () => {

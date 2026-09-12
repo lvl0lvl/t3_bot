@@ -101,6 +101,22 @@ export const Mutation = Schema.Struct({
   /** Short name. It is what the report calls this row. */
   id: Schema.String,
   axis: MutationAxis,
+  /**
+   * WHICH GUARD this row aims at, as a grouping key the report can be held to.
+   *
+   * The axis label cannot be checked — no schema can tell whether a `find`/
+   * `replace` pair makes a guard inert or wider — so the question is what the
+   * report is entitled to CLAIM. Without this, the axis notice could only be an
+   * existential over the whole sweep: one `wider` row anywhere silenced it for
+   * every guard in the file. The checked-in config demonstrated the gap — ten
+   * rows over seven guards, three measured on both axes, three `inert` only and
+   * one `wider` only, and because three rows were `wider` the report said
+   * nothing about the four.
+   *
+   * It also gives the report a unit a reader recognises. `issuer-required-fails-open`
+   * is a mutation id; `requireCommandIssuer` is a guard.
+   */
+  guard: Schema.String,
   /** Repo-relative path of the file to mutate. */
   file: Schema.String,
   /** Text to replace. It MUST occur exactly once in the file. */
@@ -288,22 +304,42 @@ export interface SweptMutation {
  * same in a count and mean opposite things: a survivor is a MEASUREMENT — this
  * guard is pinned by nothing — and a not-run is the ABSENCE of one. Reporting
  * the second as the first is how an unrun experiment becomes a finding.
+ *
+ * IT OPENS WITH PROVENANCE, because the consumer is a merge record read months
+ * later and a table with no commit cannot be distinguished from a stale copy of
+ * itself. The tool knows the repository, the swept commit and the config path,
+ * and used to print none of them: I supplied all three by hand in a PR body and
+ * re-transcribed the table three times in one hour as main moved.
+ *
+ * THE TABLE CARRIES THE VERDICT, NOT THE COUNT, for the same reason. Across
+ * those three re-measurements every verdict held and three of ten counts changed
+ * twice — so the verdict is the durable claim and the count is working detail.
+ * The counts move to the kill list below, which names the tests rather than
+ * counting them, and was always the better evidence.
  */
-export const formatReport = (baseline: RunResult, swept: ReadonlyArray<SweptMutation>): string => {
-  const lines: Array<string> = [
+export const formatReport = (
+  baseline: RunResult,
+  swept: ReadonlyArray<SweptMutation>,
+  provenance?: { readonly repo: string; readonly commit: string; readonly config: string },
+): string => {
+  const lines: Array<string> = [];
+  if (provenance !== undefined) {
+    lines.push(`Swept ${provenance.repo} at ${provenance.commit} with ${provenance.config}.`);
+  }
+  lines.push(
     `Baseline: ${baseline.total} tests, ${baseline.failed.size} already failing.`,
     "",
-    "| axis | mutation | result |",
-    "|---|---|---|",
-  ];
+    "| axis | guard | mutation | result |",
+    "|---|---|---|---|",
+  );
   for (const { mutation, verdict } of swept) {
     const result =
       verdict._tag === "killed"
-        ? `killed by ${verdict.by.length} test${verdict.by.length === 1 ? "" : "s"}`
+        ? "killed"
         : verdict._tag === "survived"
           ? "**SURVIVED**"
           : `**NOT RUN** — ${verdict.reason}`;
-    lines.push(`| ${mutation.axis} | ${mutation.id} | ${result} |`);
+    lines.push(`| ${mutation.axis} | ${mutation.guard} | ${mutation.id} | ${result} |`);
   }
 
   const survivors = swept.filter((entry) => entry.verdict._tag === "survived");
@@ -323,9 +359,33 @@ export const formatReport = (baseline: RunResult, swept: ReadonlyArray<SweptMuta
         .join(", ")}. These are not survivors — no measurement was taken.`,
     );
   }
-  if (!swept.some((entry) => entry.mutation.axis === "wider")) {
+  // PER GUARD, not per sweep. This used to fire only when NO row anywhere was
+  // `wider`, so one `wider` row silenced it for every guard in the file — and
+  // the checked-in config did exactly that, reporting nothing about four of its
+  // seven guards. The property the header asserts is a property OF A GUARD:
+  // making one inert asks what it excludes, and a guard that already excludes
+  // too much survives that untouched.
+  const axesByGuard = new Map<string, Set<string>>();
+  for (const { mutation } of swept) {
+    const seen = axesByGuard.get(mutation.guard) ?? new Set<string>();
+    seen.add(mutation.axis);
+    axesByGuard.set(mutation.guard, seen);
+  }
+  const oneAxis = (axis: string) =>
+    [...axesByGuard.entries()]
+      .filter(([, axes]) => axes.size === 1 && axes.has(axis))
+      .map(([guard]) => guard)
+      .sort();
+  const inertOnly = oneAxis("inert");
+  const widerOnly = oneAxis("wider");
+  if (inertOnly.length > 0) {
     lines.push(
-      "Every mutation here is `inert`, so this sweep asked only what the guards exclude. A guard that already excludes too much survives that axis untouched.",
+      `Measured on the \`inert\` axis only: ${inertOnly.join(", ")}. Each was asked what it EXCLUDES; a guard that already excludes too much survives that untouched.`,
+    );
+  }
+  if (widerOnly.length > 0) {
+    lines.push(
+      `Measured on the \`wider\` axis only: ${widerOnly.join(", ")}. Each was asked what it ADMITS; a guard that admits too much survives that untouched.`,
     );
   }
   if (baseline.failed.size > 0) {
@@ -458,7 +518,11 @@ const runSuite = Effect.fn("guardSweep.runSuite")(function* (config: SweepConfig
   return readVitestJson(stdout);
 });
 
-export const sweep = Effect.fn("guardSweep.sweep")(function* (config: SweepConfig, root: string) {
+export const sweep = Effect.fn("guardSweep.sweep")(function* (
+  config: SweepConfig,
+  root: string,
+  provenance?: { readonly repo: string; readonly commit: string; readonly config: string },
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
@@ -538,7 +602,21 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (config: SweepConfi
       yield* Console.log(`${mutation.id}: NOT RUN — ${reason}`);
       continue;
     }
-    yield* fs.writeFileString(file, outcome.source);
+    // THE WRITE, NARROWED LIKE THE READ. I narrowed the read above and left this
+    // one line unnarrowed, so a target that is READABLE but not WRITABLE aborted
+    // the whole sweep with `PermissionDenied`, exit 1, no report, and every row
+    // already measured discarded. `chmod 444` keeps `git status --porcelain`
+    // empty — git tracks only the exec bit — so refusal 4 passes it through, and
+    // `.repos/` is read-only vendored code in this repo.
+    const written = yield* fs.writeFileString(file, outcome.source).pipe(Effect.result);
+    if (written._tag === "Failure") {
+      swept.push({
+        mutation,
+        verdict: { _tag: "not-run", reason: `could not write ${mutation.file}` },
+      });
+      yield* Console.log(`${mutation.id}: NOT RUN — could not write ${mutation.file}`);
+      continue;
+    }
     const result = yield* runSuite(config, root).pipe(
       // THE RESTORE IS NOT BEST-EFFORT. It used to be `Effect.ignore`, which
       // turned a failed `git checkout` into a mutated file left on disk and a
@@ -583,7 +661,7 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (config: SweepConfi
     );
   }
 
-  return { report: formatReport(baseline, swept), swept };
+  return { report: formatReport(baseline, swept, provenance), swept };
 });
 
 /**
@@ -629,6 +707,14 @@ export const exitCodeFor = (swept: ReadonlyArray<SweptMutation>): 0 | 2 | 3 => {
  * removes the tree, and the process then exits with this status. A tool whose
  * whole subject is destructive side effects does not get to leak a worktree on
  * the paths that matter — which are exactly the non-zero ones.
+ *
+ * IT WORKS BECAUSE THIS LEAVES THE FIBER SUCCESSFUL, and that is load-bearing.
+ * `NodeRuntime`'s only `process.exit` fires from a fiber observer, on completion,
+ * and only when the fiber FAILED or a signal arrived. A reviewer read the runtime
+ * source to establish that. So if a survivor is ever made to fail the effect —
+ * which is a natural-looking refactor, since a survivor is bad news — teardown
+ * yields 1, the runtime calls `process.exit(1)`, and both the verdict and the
+ * report's flush go with it. A verdict is a RESULT, not a failure.
  */
 const exitWith = (code: 0 | 2 | 3) =>
   Effect.sync(() => {
@@ -686,10 +772,15 @@ export const guardSweepCommand = Command.make(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const parsed = yield* decodeSweepConfig(yield* fs.readFileString(config));
+      // RESOLVED ONCE, and `mustSucceed`: a report that quietly names no commit
+      // is the stale-table problem this provenance line exists to end, so a repo
+      // whose HEAD cannot be read fails loudly instead.
+      const commit = (yield* mustSucceed(["git", "rev-parse", "HEAD"], repo)).trim();
+      const provenance = { repo, commit, config };
 
       if (inPlace) {
         yield* Console.log(`sweeping ${repo} IN PLACE — no copy was made`);
-        const outcome = yield* sweep(parsed, repo);
+        const outcome = yield* sweep(parsed, repo, provenance);
         yield* Console.log(outcome.report);
         return yield* exitWith(exitCodeFor(outcome.swept));
       }
@@ -705,7 +796,7 @@ export const guardSweepCommand = Command.make(
           "no setupCommand: a fresh worktree has no node_modules, so the suite will probably fail to load",
         );
       }
-      const outcome = yield* sweep(parsed, tree);
+      const outcome = yield* sweep(parsed, tree, provenance);
       yield* Console.log(outcome.report);
       return yield* exitWith(exitCodeFor(outcome.swept));
     }),
