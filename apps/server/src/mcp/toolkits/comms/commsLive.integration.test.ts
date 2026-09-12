@@ -45,12 +45,8 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { MentionWakeReactor } from "../../../orchestration/Services/MentionWakeReactor.ts";
 import { MentionWakeReactorLive } from "../../../orchestration/Layers/MentionWakeReactor.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import {
-  ChannelGateway,
-  type ChannelMemberRef,
-  refFromMcpCredential,
-  refFromOperatorSession,
-} from "./channelGateway.ts";
+import { refFromOperatorSession } from "@t3tools/contracts";
+import { ChannelGateway, type ChannelMemberRef, refFromMcpCredential } from "./channelGateway.ts";
 import { ChannelGatewayLive } from "./channelGatewayLive.ts";
 import { CommsToolkitHandlersLive } from "./handlers.ts";
 import { CommsToolkit } from "./tools.ts";

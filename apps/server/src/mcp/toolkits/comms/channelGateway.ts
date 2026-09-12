@@ -26,8 +26,8 @@
  *
  * @module channelGateway
  */
-import { HUMAN_OPERATOR_MEMBER_ID } from "@t3tools/contracts";
-import type { ThreadId } from "@t3tools/contracts";
+import { refFromThreadCredential } from "@t3tools/contracts";
+import type { ChannelMemberRef, ThreadId } from "@t3tools/contracts";
 import type * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -179,77 +179,39 @@ export interface ChannelPostRecord {
 }
 
 /**
- * NOT EXPORTED, and a class rather than a symbol brand.
+ * WHO IS ASKING, re-exported from `@t3tools/contracts` rather than declared here.
  *
- * A `unique symbol` property stops an object LITERAL and not a SPREAD: a spread
- * copies the brand along with everything else, so
- * `{ ...someRealRef, memberId: "someone-else" }` typechecks — the exact mistake
- * the brand exists to stop, expressible by copying a legitimate ref and
- * changing one field. A PRIVATE field is the version a spread cannot carry,
- * because spreading an instance yields a plain object without it.
+ * IT MOVED BECAUSE IT HAD GROWN A SECOND SPELLING. This module owned a nominal
+ * class while `ProjectionChannels.ts` declared a structural interface of the
+ * same name, and `ws.ts` could only reach the structural one — so the
+ * unconstructible type guarded the toolkit and nothing guarded the websocket.
+ * One home, one type; the persistence repository now takes the nominal one.
+ *
+ * Why a private field rather than a `unique symbol` brand, and why there is no
+ * `makeChannelMemberRef(kind, id)`: see
+ * `packages/contracts/src/channelMemberRef.ts`. Both arguments live with the
+ * type now instead of beside one of its consumers.
  */
-class MemberRef {
-  private readonly nominal!: void;
-  readonly memberKind: "thread" | "human";
-  readonly memberId: string;
-  constructor(memberKind: "thread" | "human", memberId: string) {
-    this.memberKind = memberKind;
-    this.memberId = memberId;
-  }
-}
-
-/**
- * WHO IS ASKING. Derived from the caller's own credential, NEVER from a request
- * field.
- *
- * UNCONSTRUCTIBLE OUTSIDE THIS FILE, and that is a type error rather than a
- * convention: it is a class with a PRIVATE field, not exported, so neither an
- * object literal nor a SPREAD of a real ref satisfies the type elsewhere. The
- * spread mattered — a symbol brand admitted
- * `{ ...someRealRef, memberId: "someone-else" }`, which is the mistake this
- * exists to stop, written by copying a legitimate ref. An earlier version of this docstring asserted that property
- * over a plain interface which was built inline five times in its own tests —
- * documenting a guard is not having one, and three review lanes said so.
- *
- * WHY IT MATTERS MORE HERE THAN ON THE WRITE SIDE: the decider refuses a channel
- * command that arrives without an issuer, so a gateway that forgot one fails
- * loudly. Nothing refuses a wrong ref. A read handler that passed an
- * agent-supplied member would return the right answer for the wrong member,
- * successfully, forever.
- *
- * DO NOT ADD `makeChannelMemberRef(kind, id)`. It accepts the same two fields
- * from anywhere, so a handler passing `payload.memberId` through it is
- * indistinguishable from one passing the session's. The constructors below are
- * named for their SOURCE because that is the whole mechanism: taking the id
- * from a request is then not expressible without visibly going around the
- * function, and going around it is a thing a reviewer sees in a diff. The
- * property is not validation — nothing here validates anything. It is that the
- * WRONG thing is conspicuous.
- */
-export type ChannelMemberRef = MemberRef;
+export type { ChannelMemberRef } from "@t3tools/contracts";
 
 /**
  * The member an MCP tool call acts as: the credential's own thread.
  *
- * Takes the invocation SCOPE, not a thread id, so there is no parameter an
+ * TAKES THE INVOCATION SCOPE, not a thread id, so there is no parameter an
  * agent-supplied value fits. The tool's arguments are not in scope here and
- * cannot be passed by mistake.
+ * cannot be passed by mistake. `refFromThreadCredential` in contracts takes a
+ * branded `ThreadId` and is the general form; this is the one handlers import,
+ * because a scope is a credential and an id is merely a string that typechecks.
+ *
+ * WHY IT MATTERS MORE HERE THAN ON THE WRITE SIDE: the decider refuses a channel
+ * command that arrives without an issuer, so a gateway that forgot one fails
+ * loudly. Nothing refuses a wrong ref on the read side. A read handler that
+ * passed an agent-supplied member would return the right answer for the wrong
+ * member, successfully, forever.
  */
 export const refFromMcpCredential = (
   scope: McpInvocationContext.McpInvocationScope,
-): ChannelMemberRef => new MemberRef("thread", scope.threadId);
-
-/**
- * The member a browser request acts as: the operator.
- *
- * TAKES NO ARGUMENT, deliberately. The RPC layer has no session type carrying an
- * operator identity yet, so any parameter would be a string — and a string
- * parameter here is the payload mistake with a function around it, which is
- * exactly what the first version of this was. When a real session type exists,
- * this signature changes in one place and every caller inherits it.
- */
-export const refFromOperatorSession = (): ChannelMemberRef =>
-  new MemberRef("human", HUMAN_OPERATOR_MEMBER_ID);
+): ChannelMemberRef => refFromThreadCredential(scope.threadId);
 
 export type ReadDirection = "forward" | "backward";
 

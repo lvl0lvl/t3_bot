@@ -29,7 +29,7 @@ import {
   CommandId,
   type DiscoveredLocalServerList,
   EventId,
-  HUMAN_OPERATOR_CHANNEL_MEMBER,
+  refFromOperatorSession,
   type EditorId,
   type FileManagerRevealKind,
   type OrchestrationClientOrigin,
@@ -520,7 +520,7 @@ const makeWsRpcLayer = (
        * authenticated session and not from a payload field. A member id arriving
        * from a client is the bug, not the shape of it.
        */
-      const connectionMember = HUMAN_OPERATOR_CHANNEL_MEMBER;
+      const connectionMember = refFromOperatorSession();
       const threadDeletionReactor = yield* ThreadDeletionReactor;
       const analytics = yield* AnalyticsService.AnalyticsService;
       // Every command dispatched on this connection carries the connecting

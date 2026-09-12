@@ -52,19 +52,19 @@ export const ProjectionChannelWithActivity = Schema.Struct({
 export type ProjectionChannelWithActivity = typeof ProjectionChannelWithActivity.Type;
 
 /**
- * Who is asking. The same two fields `ChannelMember` carries and the decider's
- * issuer uses, so this is not a new vocabulary.
+ * Who is asking, re-exported from `@t3tools/contracts`.
  *
- * DERIVED FROM THE CALLER'S OWN CREDENTIAL, NEVER FROM A REQUEST FIELD. It is a
- * parameter where the caller's own thread used to be hardcoded, so "read as
- * someone else" is one argument away and there is no decider on the read side to
- * refuse it. Every caller owes a test that its ref comes from the credential and
- * not from the payload.
+ * IT WAS A STRUCTURAL INTERFACE HERE and a nominal class in the comms gateway —
+ * one identity with two spellings, and only this one reachable from `ws.ts`. So
+ * the type that could not be forged guarded the MCP toolkit while the websocket
+ * took any object with the right two fields. The docstring this replaces said
+ * "DERIVED FROM THE CALLER'S OWN CREDENTIAL, NEVER FROM A REQUEST FIELD" and
+ * "every caller owes a test" — both true, and neither enforceable by a shape
+ * every literal satisfies. The nominal one makes the first a type error; the
+ * second is still owed.
  */
-export interface ChannelMemberRef {
-  readonly memberKind: "thread" | "human";
-  readonly memberId: string;
-}
+import type { ChannelMemberRef } from "@t3tools/contracts";
+export type { ChannelMemberRef };
 
 export const ProjectionChannelPost = Schema.Struct({
   postId: ChannelPostId,
