@@ -65,6 +65,7 @@ function makeReadModel(
         session,
       },
     ],
+    channels: [],
     updatedAt: NOW,
   };
 }

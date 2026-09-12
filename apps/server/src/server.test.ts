@@ -311,6 +311,7 @@ const makeDefaultOrchestrationReadModel = () => {
   const now = "2026-01-01T00:00:00.000Z";
   return {
     snapshotSequence: 0,
+    channels: [],
     updatedAt: now,
     projects: [
       {
@@ -8108,6 +8109,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const now = "2026-01-01T00:00:00.000Z";
       const snapshot = {
         snapshotSequence: 1,
+        channels: [],
         updatedAt: now,
         projects: [
           {

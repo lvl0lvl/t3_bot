@@ -3,6 +3,9 @@ import {
   ApprovalRequestId,
   ChatAttachment,
   CheckpointRef,
+  ChannelId,
+  ChannelMember,
+  ChannelMemberHandle,
   IsoDateTime,
   MessageId,
   NonNegativeInt,
@@ -516,6 +519,90 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ]),
     );
   });
+
+  const listChannelRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({
+      channelId: ChannelId,
+      name: Schema.String,
+      archivedAt: Schema.NullOr(IsoDateTime),
+      createdAt: IsoDateTime,
+      updatedAt: IsoDateTime,
+    }),
+    execute: () =>
+      sql`
+        SELECT
+          channel_id AS "channelId",
+          name,
+          archived_at AS "archivedAt",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM projection_channels
+        ORDER BY created_at ASC
+      `,
+  });
+
+  const listChannelMemberRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({
+      channelId: ChannelId,
+      handle: ChannelMemberHandle,
+      memberKind: Schema.Literals(["thread", "human"]),
+      memberId: Schema.String,
+    }),
+    execute: () =>
+      sql`
+        SELECT
+          channel_id AS "channelId",
+          handle,
+          member_kind AS "memberKind",
+          member_id AS "memberId"
+        FROM projection_channel_members
+        ORDER BY handle ASC
+      `,
+  });
+
+  /**
+   * Both read-model producers need channels, and a producer that forgets them
+   * is not a type error — `getSnapshot` assembles its object dynamically and
+   * only fails when the schema decode runs. Sharing one reader is what keeps
+   * the two from drifting.
+   */
+  const readChannels = Effect.gen(function* () {
+    const [channelRows, memberRows] = yield* Effect.all([
+      listChannelRows(undefined),
+      listChannelMemberRows(undefined),
+    ]);
+    const membersByChannel = new Map<string, ChannelMember[]>();
+    for (const row of memberRows) {
+      const member: ChannelMember = {
+        handle: row.handle,
+        memberKind: row.memberKind,
+        memberId: row.memberId,
+      };
+      const existing = membersByChannel.get(row.channelId);
+      if (existing === undefined) {
+        membersByChannel.set(row.channelId, [member]);
+      } else {
+        existing.push(member);
+      }
+    }
+    return channelRows.map((row) => ({
+      id: row.channelId,
+      name: row.name,
+      members: membersByChannel.get(row.channelId) ?? [],
+      archivedAt: row.archivedAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+  }).pipe(
+    Effect.mapError(
+      toPersistenceSqlOrDecodeError(
+        "ProjectionSnapshotQuery.readChannels:query",
+        "ProjectionSnapshotQuery.readChannels:decodeRows",
+      ),
+    ),
+  );
 
   const listProjectRows = SqlSchema.findAll({
     Request: Schema.Void,
@@ -2255,6 +2342,7 @@ pending_approval_requests AS (
                 snapshotSequence: computeSnapshotSequence(stateRows),
                 projects,
                 threads,
+                channels: yield* readChannels,
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
               };
 
@@ -2500,6 +2588,7 @@ pending_approval_requests AS (
                 snapshotSequence: computeSnapshotSequence(stateRows),
                 projects,
                 threads,
+                channels: yield* readChannels,
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
               } satisfies OrchestrationReadModel;
             }),

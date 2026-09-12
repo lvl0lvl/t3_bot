@@ -796,8 +796,7 @@ export const OrchestrationReadModel = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   projects: Schema.Array(OrchestrationProject),
   threads: Schema.Array(OrchestrationThread),
-  // Optional on the wire so snapshots cached by pre-channel servers still decode.
-  channels: Schema.optional(Schema.Array(OrchestrationChannel)),
+  channels: Schema.Array(OrchestrationChannel),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationReadModel = typeof OrchestrationReadModel.Type;
