@@ -18,6 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
+import { isOrchestrationCommandRejection } from "../../../orchestration/Errors.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import {
   ProjectionChannelRepository,
@@ -180,15 +181,23 @@ const make = Effect.gen(function* () {
         .pipe(
           Effect.mapError(
             (error) =>
-              // Every refusal the toolkit pre-checked arrives here only as a
-              // RACE — membership revoked or a mention removed between the
-              // check and the write. They are not told apart, because telling
-              // them apart means matching on the decider's message text, and a
-              // gateway coupled to another module's prose is a gateway that
-              // breaks when someone improves an error. The detail is carried
-              // through so the agent sees the aggregate's own words.
+              // TOLD APART BY TAG, not by prose. The dispatch error union has
+              // the decider's own refusals as one member, and a refusal is
+              // PERMANENT for the same input: a revoked membership, a mention
+              // that no longer resolves. Everything else is infrastructure and
+              // is worth trying again.
+              //
+              // An earlier version mapped all of it to retryable, on the
+              // argument that telling them apart would mean matching the
+              // decider's message text — true, and it stopped me looking for
+              // the discriminator that was already exported. The result was an
+              // agent told to "try again" on a post that could never land.
+              //
+              // The detail carries the aggregate's own words either way, so
+              // the agent sees WHY rather than only whether.
               new ChannelWriteConflict({
                 detail: "message" in error ? String(error.message) : "the post was refused",
+                retryable: !isOrchestrationCommandRejection(error),
               }),
           ),
         );

@@ -667,11 +667,18 @@ describe("comms toolkit gateway failure mapping", () => {
     }),
   );
 
-  it.effect("marks a write conflict retryable and a store failure not", () =>
+  it.effect("carries the refusal's own retryability rather than deciding it", () =>
     Effect.gen(function* () {
+      // RETRYABILITY IS A PROPERTY OF THE REFUSAL, not of the tag. The layer
+      // that saw the failure knows whether trying again could work; this one
+      // would be guessing, and guessing "yes" is an instruction to loop on a
+      // post that can never land.
       const conflicted = yield* makeHarness({
         failures: {
-          createPost: new ChannelGateway.ChannelWriteConflict({ detail: "append raced" }),
+          createPost: new ChannelGateway.ChannelWriteConflict({
+            detail: "append raced",
+            retryable: true,
+          }),
         },
       });
       const retryable = yield* conflicted
@@ -688,6 +695,23 @@ describe("comms toolkit gateway failure mapping", () => {
         .call("comms_post", { channel: "seniors", body: "x" })
         .pipe(Effect.flip);
       expect(terminal).toMatchObject({ _tag: "CommsPostFailedError", retryable: false });
+
+      // The same tag, the other way: a conflict the layer knows is permanent
+      // must not tell the agent to try again. Without this the mapping could
+      // hardcode `true` and both assertions above would still pass.
+      const permanent = yield* makeHarness({
+        failures: {
+          createPost: new ChannelGateway.ChannelWriteConflict({
+            detail: "Mentions do not resolve to members of channel 'channel-seniors': ghost.",
+            retryable: false,
+          }),
+        },
+      });
+      const noRetry = yield* permanent
+        .call("comms_post", { channel: "seniors", body: "x" })
+        .pipe(Effect.flip);
+      expect(noRetry).toMatchObject({ _tag: "CommsPostFailedError", retryable: false });
+      expect((noRetry as { message: string }).message).not.toContain("Try again");
     }),
   );
 

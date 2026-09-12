@@ -161,7 +161,9 @@ const make = Effect.gen(function* () {
       ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
         Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: false })),
       ChannelWriteConflict: (error: ChannelGateway.ChannelWriteConflict) =>
-        Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: true })),
+        // Carried through, not decided here. Whether a retry could work is
+        // known where the failure happened; this layer would be guessing.
+        Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: error.retryable })),
       ChannelMembershipRevoked: () => Effect.fail(new CommsMembershipLostError()),
       ChannelMentionUnresolvable: (error: ChannelGateway.ChannelMentionUnresolvable) =>
         Effect.fail(new CommsMemberNotFoundError({ handles: error.handles })),

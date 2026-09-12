@@ -1,19 +1,28 @@
 /**
  * The seam between the comms toolkit and the channel aggregate.
  *
- * The aggregate exists — `channel.*` commands, the channel projection and the
- * branded id types are all on `main`. What is still missing is the LAYER:
- * `ChannelGatewayUnavailable` is what is wired, so every operation dies, and
- * `t3_bot-0uq` is the change that supplies a live one. Swapping it in changes
- * nothing above this file.
+ * `ChannelGatewayLive` implements it over the orchestration engine. The seam
+ * stays because the toolkit's tests drive a fake through it, and because the
+ * errors below are the vocabulary the toolkit translates for an agent — a
+ * caller above this file cannot tell the two implementations apart.
  *
  * Ids are `string` here, and that is a staged simplification rather than a
  * contained one: branding them surfaces `ChannelMemberHandle` in `handlers.ts`
  * (mention resolution) and in `tools.ts` (the handles an agent sends and
- * receives), so it is a change to those files too. `ChannelId` and
- * `ChannelPostId` are now `^[A-Za-z0-9_-]{1,64}$` at the aggregate
- * (`t3_bot-2d2`), which a `string` here does not say — a caller reading this
- * file would not know an id cannot carry a space.
+ * receives), so it is a change to those files too.
+ *
+ * IDS ARE IDENTIFIERS, NOT TEXT, and `string` here understates them.
+ * `ChannelId` and `ChannelPostId` are branded through `makeOpaqueEntityId`
+ * (`packages/contracts/src/baseSchemas.ts`), which refuses anything outside
+ * `^[A-Za-z0-9_-]{1,64}$` — no space, no colon, no line break, no emoji.
+ *
+ * On the BRAND rather than in a decider guard, which is the part worth knowing:
+ * the refusal holds wherever the type is constructed, so a malformed id cannot
+ * enter through a command NOR come back out of a persisted event. A consumer
+ * that interpolates an id into a framed or delimited string is therefore
+ * defended twice, and `MentionWakeReactor` still escapes its own — a charset
+ * is a decision someone can relax later without revisiting every renderer that
+ * inherited its safety from it.
  *
  * @module channelGateway
  */
@@ -30,10 +39,18 @@ export class ChannelStoreUnavailable extends Schema.TaggedError<ChannelStoreUnav
   { detail: Schema.String },
 ) {}
 
-/** The append lost a race and the caller may retry. */
+/**
+ * The append did not land. `retryable` says whether trying the same post again
+ * could ever work — and it is a property of the REFUSAL, not of this tag.
+ *
+ * An infrastructure failure is worth retrying; the aggregate REFUSING the post
+ * is not, for the same input. Telling an agent to "try again" on a membership
+ * that was revoked or a mention that no longer resolves is an instruction to
+ * loop, and the agent has no other information to act on.
+ */
 export class ChannelWriteConflict extends Schema.TaggedError<ChannelWriteConflict>()(
   "ChannelWriteConflict",
-  { detail: Schema.String },
+  { detail: Schema.String, retryable: Schema.Boolean },
 ) {}
 
 /**

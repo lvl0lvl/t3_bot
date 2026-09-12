@@ -30,6 +30,11 @@ import * as Stream from "effect/Stream";
 import type { Tool } from "effect/unstable/ai";
 
 import { OrchestrationLayerLive } from "../../../orchestration/runtimeLayer.ts";
+import type { OrchestrationDispatchError } from "../../../orchestration/Errors.ts";
+import {
+  OrchestrationCommandInvariantError,
+  OrchestrationCommandIdConflictError,
+} from "../../../orchestration/Errors.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { makeSqlitePersistenceLive } from "../../../persistence/Layers/Sqlite.ts";
 import { ProjectionChannelRepository } from "../../../persistence/Services/ProjectionChannels.ts";
@@ -51,6 +56,14 @@ const CHANNEL_ID = ChannelId.make("channel-seniors-live");
 const NOW = "2026-01-01T00:00:00.000Z";
 const ADMIN = { memberKind: "human", memberId: "human-walt" } as const;
 
+/** Everything under the gateway, so a test can rebuild it over a tapped engine. */
+const BaseLayer = OrchestrationLayerLive.pipe(
+  Layer.provide(RepositoryIdentityResolver.layer),
+  Layer.provideMerge(makeSqlitePersistenceLive(":memory:")),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-comms-live-" })),
+  Layer.provideMerge(NodeServices.layer),
+);
+
 const TestLayer = CommsToolkitHandlersLive.pipe(
   Layer.provideMerge(ChannelGatewayLive),
   Layer.provideMerge(MentionWakeReactorLive),
@@ -60,6 +73,39 @@ const TestLayer = CommsToolkitHandlersLive.pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-comms-live-" })),
   Layer.provideMerge(NodeServices.layer),
 );
+
+/**
+ * The real engine, with `dispatch` made to fail.
+ *
+ * A TAP rather than a stand-in: the gateway also reads the projection the real
+ * engine's pipeline maintains, so replacing the service would replace the
+ * thing under test. It exists because the gateway's conflict branch cannot be
+ * reached end to end - the toolkit pre-checks everything the decider would
+ * refuse, so a state the aggregate can be put into is caught before any
+ * dispatch happens.
+ */
+const dispatchFailsWith = (error: OrchestrationDispatchError) =>
+  Layer.effect(
+    OrchestrationEngineService,
+    Effect.gen(function* () {
+      const real = yield* OrchestrationEngineService;
+      return {
+        ...real,
+        dispatch: (
+          command: Parameters<typeof real.dispatch>[0],
+          options?: Parameters<typeof real.dispatch>[1],
+        ) =>
+          // Only the post fails. The seeding dispatches have to land or there
+          // is no channel to post into, and the failure under test is never
+          // reached - which is exactly what happened on the first attempt,
+          // silently, because the post SUCCEEDED and the assertion was about
+          // the failure's shape.
+          command.type === "channel.post.create"
+            ? Effect.fail(error)
+            : real.dispatch(command, options),
+      };
+    }),
+  );
 
 const invocation = (threadId: ThreadId): McpInvocationContext.McpInvocationScope => ({
   environmentId: EnvironmentId.make("environment-1"),
@@ -241,6 +287,202 @@ describe("the comms toolkit on the live gateway", () => {
               .filter((text) => text.startsWith("[comms]"));
         expect(ownWakes).toEqual([]);
       }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "replies to a parent, and refuses one that is not there",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const parent = yield* call(
+          "comms_post",
+          { channel: "seniors", body: "the question" },
+          BOSS1,
+        );
+
+        // comms_reply had NO live coverage. Found by widening rather than by
+        // reading: making getPost answer NONE for every post kills every reply
+        // with "post not found", and the whole suite stayed green. A guard that
+        // excludes too much is a feature that quietly does not work.
+        const reply = yield* call(
+          "comms_reply",
+          { channel: "seniors", parentPostId: parent.postId, body: "the answer" },
+          BOSS3,
+        );
+        expect(reply.postId).not.toBe(parent.postId);
+
+        const channels = yield* ProjectionChannelRepository;
+        const stored = yield* channels.listPosts({
+          channelId: CHANNEL_ID,
+          limit: 10,
+          afterSequence: undefined,
+        });
+        // Threading is a FIELD on the post, not a second command - so the
+        // assertion is on what the aggregate stored rather than on the tool's
+        // own echo.
+        expect(stored.map((post) => post.parentPostId)).toEqual([null, parent.postId]);
+        expect(stored.map((post) => post.authorHandle)).toEqual(["boss1", "boss3"]);
+
+        // And a parent that does not exist is refused BEFORE anything is
+        // written, with the id the agent supplied - so it can tell which of
+        // several replies failed.
+        const missing = yield* call(
+          "comms_reply",
+          { channel: "seniors", parentPostId: "post-does-not-exist", body: "into the void" },
+          BOSS3,
+        ).pipe(Effect.flip);
+        expect(missing).toMatchObject({
+          _tag: "CommsPostNotFoundError",
+          postId: "post-does-not-exist",
+        });
+        const after = yield* channels.listPosts({
+          channelId: CHANNEL_ID,
+          limit: 10,
+          afterSequence: undefined,
+        });
+        expect(after).toHaveLength(2);
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "pages a channel, and says when there is more",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        for (const body of ["first", "second", "third"]) {
+          yield* call("comms_post", { channel: "seniors", body }, BOSS1);
+        }
+
+        // nextCursor had no coverage either: returning null always left the
+        // suite green, and an agent tailing a channel would simply never see a
+        // second page. Nothing about that looks like a failure from the
+        // agent's side - the channel just appears to stop.
+        const firstPage = yield* call(
+          "comms_read_channel",
+          { channel: "seniors", limit: 2 },
+          BOSS3,
+        );
+        expect(firstPage.posts.map((post) => post.body)).toEqual(["first", "second"]);
+        expect(firstPage.nextCursor).not.toBeNull();
+
+        const secondPage = yield* call(
+          "comms_read_channel",
+          { channel: "seniors", limit: 2, cursor: firstPage.nextCursor! },
+          BOSS3,
+        );
+        // The cursor points AFTER the last post returned, so the next page
+        // starts at the one following it rather than repeating it.
+        expect(secondPage.posts.map((post) => post.body)).toEqual(["third"]);
+        // And the end of the channel says so, which is what lets an agent stop
+        // rather than poll forever.
+        expect(secondPage.nextCursor).toBeNull();
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "does not tell an agent to retry a post that can never land",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const engine = yield* OrchestrationEngineService;
+        // A member removed between the toolkit's check and the write is the
+        // race the gateway's conflict branch exists for - but the refusal that
+        // comes back is the DECIDER's, and it is permanent for this input.
+        yield* engine.dispatch(
+          {
+            type: "channel.member.remove",
+            commandId: CommandId.make("cmd-remove-boss1-retry"),
+            channelId: CHANNEL_ID,
+            handle: ChannelMemberHandle.make("boss1"),
+          },
+          { issuer: ADMIN },
+        );
+
+        const error = yield* call(
+          "comms_post",
+          { channel: "seniors", body: "still there?", mentions: ["boss1"] },
+          BOSS3,
+        ).pipe(Effect.flip);
+
+        // Whatever the agent is told, it must not be "try again" - retrying
+        // this post refuses identically, forever, and the agent has nothing
+        // else to act on.
+        expect((error as { message: string }).message).not.toContain("Try again");
+
+        // AND IT IS THE TOOLKIT THAT REFUSES, not the gateway - which is why
+        // this test does NOT pin the gateway's retryable discriminator, and
+        // says so rather than implying it does. The toolkit pre-checks mentions
+        // against membership, so a removed member is caught before any dispatch
+        // and the conflict branch is never reached. Hardcoding the gateway back
+        // to `retryable: true` leaves this green. Measured, not assumed.
+        //
+        // The gateway's branch is reachable only on a genuine race or an
+        // infrastructure failure, so pinning it needs an injected dispatch
+        // failure rather than a state the aggregate can be put into.
+        expect((error as { _tag: string })._tag).toBe("CommsMemberNotFoundError");
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "says retry only for a failure that retrying could fix",
+    () =>
+      Effect.gen(function* () {
+        // The tap is UNDER the gateway, not beside it: a gateway built over the
+        // real engine has already closed over it, and providing a failing one
+        // afterwards changes nothing. The first version of this test did that
+        // and the post SUCCEEDED - which the assertion read as a mismatched
+        // object rather than as "the injection never happened".
+        const attempt = (error: OrchestrationDispatchError) =>
+          Effect.gen(function* () {
+            yield* seed();
+            const gateway = yield* ChannelGateway;
+            return yield* gateway
+              .createPost({
+                channelId: CHANNEL_ID,
+                threadId: BOSS3,
+                body: "into a failing dispatch",
+                mentions: [],
+                parentPostId: null,
+              })
+              .pipe(Effect.flip);
+          }).pipe(
+            Effect.provide(
+              ChannelGatewayLive.pipe(
+                Layer.provide(dispatchFailsWith(error)),
+                Layer.provideMerge(BaseLayer),
+              ),
+            ),
+          );
+
+        // THE DECIDER'S OWN REFUSAL is permanent for this input. Retrying the
+        // same post refuses identically, forever, and "try again" is then an
+        // instruction to loop with nothing else to act on.
+        const rejected = yield* attempt(
+          new OrchestrationCommandInvariantError({
+            commandType: "channel.post.create",
+            detail: "Mentions do not resolve to members of channel 'x': ghost.",
+          }),
+        );
+        expect(rejected).toMatchObject({ _tag: "ChannelWriteConflict", retryable: false });
+
+        // ANYTHING ELSE is infrastructure and is worth trying again. Both
+        // directions, because a discriminator asserted in one direction is
+        // satisfied by a constant.
+        const infrastructure = yield* attempt(
+          new OrchestrationCommandIdConflictError({
+            commandId: "comms-post:whatever",
+            receiptAggregateKind: "channel",
+            receiptAggregateId: "channel-other",
+            commandAggregateKind: "channel",
+            commandAggregateId: CHANNEL_ID,
+          }),
+        );
+        expect(infrastructure).toMatchObject({ _tag: "ChannelWriteConflict", retryable: true });
+      }),
     30_000,
   );
 
