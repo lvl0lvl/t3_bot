@@ -10,7 +10,7 @@ import type { Tool } from "effect/unstable/ai";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ChannelGateway from "./channelGateway.ts";
 import { CommsToolkitHandlersLive, canonicalChannelName, resolveMentions } from "./handlers.ts";
-import { CommsToolkit } from "./tools.ts";
+import { CommsToolkit, CURSOR_PATTERN } from "./tools.ts";
 
 const THREAD_ID = ThreadId.make("thread-boss3");
 const OTHER_THREAD_ID = ThreadId.make("thread-boss1");
@@ -76,19 +76,34 @@ interface HarnessOptions {
 }
 
 /**
- * A cursor's two halves, or `[cursor, null]` when the sequence half is not one.
+ * A cursor's THREE parts, or nulls where a part is not one.
  *
  * Deliberately as strict as the live layer's `decodeCursor` about the digits:
  * `Number("")` is 0 and `Number("0x2")` is 2, so a fake that used `Number`
  * directly would answer a page for a cursor the real gateway refuses - which is
  * the divergence this whole fake is written to avoid.
+ *
+ * THE DIRECTION IS THE THIRD PART (`t3_bot-2oh`). A cursor points AFTER its
+ * page going forward and BEFORE it going backward, so the live layer refuses
+ * one used in the other direction; a fake that still parsed two parts would
+ * answer a page for exactly that cursor, which is the divergence above with a
+ * different field in it.
  */
-const splitCursor = (cursor: string | undefined): readonly [string | null, number | null] => {
-  if (cursor === undefined) return [null, null];
+const splitCursor = (
+  cursor: string | undefined,
+): readonly [string | null, string | null, number | null] => {
+  if (cursor === undefined) return [null, null, null];
   const boundary = cursor.indexOf(":");
-  if (boundary === -1) return [cursor, null];
-  const digits = cursor.slice(boundary + 1);
-  return [cursor.slice(0, boundary), /^[0-9]+$/.test(digits) ? Number(digits) : null];
+  if (boundary === -1) return [cursor, null, null];
+  const rest = cursor.slice(boundary + 1);
+  const directionBoundary = rest.indexOf(":");
+  if (directionBoundary === -1) return [cursor.slice(0, boundary), null, null];
+  const digits = rest.slice(directionBoundary + 1);
+  return [
+    cursor.slice(0, boundary),
+    rest.slice(0, directionBoundary),
+    /^[0-9]+$/.test(digits) ? Number(digits) : null,
+  ];
 };
 
 const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: HarnessOptions = {}) {
@@ -184,8 +199,11 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
             // `t3_bot-e60` fixed in the live layer, still live in the fake that
             // 43 tests run against. The refusal branch the handlers gained for
             // it was unreachable in this file.
-            const [issuedBy, digits] = splitCursor(input.cursor);
-            if (input.cursor !== undefined && (issuedBy !== input.channelId || digits === null)) {
+            const [issuedBy, issuedFor, digits] = splitCursor(input.cursor);
+            if (
+              input.cursor !== undefined &&
+              (issuedBy !== input.channelId || issuedFor !== input.direction || digits === null)
+            ) {
               return Effect.fail(
                 new ChannelGateway.ChannelCursorUnusable({
                   cursor: input.cursor,
@@ -207,7 +225,7 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
             const exhausted = backward ? boundary <= 0 : boundary >= allPosts.length;
             return Effect.succeed({
               posts: page,
-              nextCursor: exhausted ? null : `${input.channelId}:${boundary}`,
+              nextCursor: exhausted ? null : `${input.channelId}:${input.direction}:${boundary}`,
             } satisfies ChannelGateway.ChannelPage);
           }),
         ),
@@ -708,7 +726,12 @@ describe("comms toolkit handlers", () => {
       // cursor is opaque to the agent, and asserting the exact string here
       // pinned this fake's convention rather than the contract. The proof it
       // is usable is that the next call below is made with it.
-      expect(first.nextCursor).toMatch(/^[A-Za-z0-9_-]{1,64}:[0-9]{1,15}$/);
+      //
+      // THE TOOL'S OWN PATTERN, not a copy of it. This was a hand-written
+      // duplicate, and when `t3_bot-2oh` added a direction segment the copy
+      // kept asserting the old two-part shape — a test pinning "what the tool
+      // accepts" against a regex the tool no longer uses.
+      expect(first.nextCursor).toMatch(CURSOR_PATTERN);
 
       const second = yield* harness.call("comms_read_channel", {
         channel: "seniors",
@@ -740,7 +763,10 @@ describe("comms toolkit handlers", () => {
       // first page, which is the very defect `t3_bot-e60` fixes in the live
       // layer. 43 tests ran against that fake. Found by a verifier, not by
       // reading the comment directly above it saying fakes must not diverge.
-      const foreign = "channel-somewhere-else:2";
+      // THREE PARTS, because the tool schema refuses anything else since
+      // `t3_bot-2oh` and a two-part value would be rejected a layer above this
+      // branch — making the test pass on the wrong error.
+      const foreign = "channel-somewhere-else:forward:2";
       const refused = yield* harness
         .call("comms_read_channel", { channel: "seniors", cursor: foreign })
         .pipe(Effect.flip);

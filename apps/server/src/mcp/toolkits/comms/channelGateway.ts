@@ -232,15 +232,22 @@ export interface ChannelPage {
    * Null means there is nothing further IN THAT DIRECTION — the newest post
    * going forward, the beginning of history going backward.
    *
-   * IT DOES NOT RECORD THE DIRECTION THAT ISSUED IT, and that is the same lie
-   * this cursor's channel half was introduced to end, one axis over: a forward
-   * cursor read backward answers with the oldest page and `nextCursor: null`,
-   * which is byte for byte "you are caught up" while everything after it is
-   * unread. Measured, not reasoned about - the numbers are on `t3_bot-2oh`,
-   * which carries encoding the direction into the value so the mismatch becomes
-   * a refusal. Until then, keep a cursor with the direction you obtained it
-   * from. Unreachable from production today only because the sole caller
-   * hardcodes forward.
+   * IT RECORDS THE DIRECTION THAT ISSUED IT, and a cursor used in the other
+   * one is REFUSED (`t3_bot-2oh`). It did not, and that was the same lie the
+   * channel half was introduced to end, one axis over — a forward cursor read
+   * backward answered with the oldest page and `nextCursor: null`, byte for
+   * byte "you are caught up", while everything after it was unread. Measured on
+   * the live gateway over six posts rather than reasoned about:
+   *
+   *   forward page1                     = [p1,p2]  cursor=<channel>:forward:6
+   *   that forward cursor, read BACKWARD = [p1]      cursor=null
+   *   backward page1                    = [p5,p6]  cursor=<channel>:backward:9
+   *   that backward cursor, read FORWARD = [p6]      cursor=null
+   *
+   * Four unread posts behind the first `null` and four behind the second. It
+   * was never reachable from production — the only caller hardcodes forward —
+   * and it would have become reachable the day a second caller chose, which is
+   * a UI opening a channel on its newest page.
    */
   readonly nextCursor: string | null;
 }

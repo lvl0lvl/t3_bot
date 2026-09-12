@@ -699,7 +699,13 @@ describe("the comms toolkit on the live gateway", () => {
         // layer up, so it never reaches the handler branch under test - which
         // is exactly how this half stayed untested while four mutations of it
         // passed the suite.
-        const foreign = "channel-project-live:3";
+        //
+        // IT CARRIES A DIRECTION because `t3_bot-2oh` added one to the format,
+        // and a two-segment cursor no longer passes the schema. Without this
+        // segment the value stops being schema-valid, the refusal moves a layer
+        // up, and this test starts asserting the wrong branch while still
+        // passing for the wrong reason.
+        const foreign = "channel-project-live:forward:3";
         const error = yield* call(
           "comms_read_channel",
           { channel: "seniors", cursor: foreign },
@@ -739,6 +745,82 @@ describe("the comms toolkit on the live gateway", () => {
           BOSS3,
         );
         expect(second.posts.map((post) => post.body)).toEqual(["two"]);
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "refuses a cursor from the OTHER DIRECTION instead of reporting it as caught up",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const gateway = yield* ChannelGateway;
+
+        // THE SAME LIE AS THE CHANNEL HALF, ONE AXIS OVER (`t3_bot-2oh`). A
+        // cursor points AFTER its page going forward and BEFORE it going
+        // backward, so the same number means opposite things; handed to the
+        // other direction it named a window the caller had already read and the
+        // read answered `nextCursor: null`, which is byte for byte "you are
+        // caught up" over posts nobody had seen.
+        //
+        // SIX POSTS, because the window has to be small enough to leave unread
+        // posts on BOTH sides of a two-post page. With four, a forward cursor
+        // read backward returns the whole remainder and the lie is invisible.
+        for (const body of ["p1", "p2", "p3", "p4", "p5", "p6"]) {
+          yield* call("comms_post", { channel: "seniors", body }, BOSS1);
+        }
+
+        const forward = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 2,
+          cursor: undefined,
+          direction: "forward",
+        });
+        expect(forward.posts.map((post) => post.body)).toEqual(["p1", "p2"]);
+        const backward = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 2,
+          cursor: undefined,
+          direction: "backward",
+        });
+        expect(backward.posts.map((post) => post.body)).toEqual(["p5", "p6"]);
+
+        // EACH CURSOR IN THE WRONG DIRECTION, refused. Measured before the fix:
+        // the forward cursor read backward returned ["p1"] with nextCursor
+        // null, leaving p3-p6 unread behind a "caught up"; the backward cursor
+        // read forward returned ["p6"], leaving p1-p4 unread behind one.
+        for (const [cursor, direction] of [
+          [forward.nextCursor!, "backward"],
+          [backward.nextCursor!, "forward"],
+        ] as const) {
+          const refused = yield* gateway
+            .readPosts({ channelId: CHANNEL_ID, limit: 10, cursor, direction })
+            .pipe(Effect.flip);
+          expect(refused._tag).toBe("ChannelCursorUnusable");
+          // The payload carries what the caller SENT, never this channel's own
+          // position — the same rule the foreign-cursor refusal follows.
+          expect(refused).toMatchObject({ cursor, channelId: CHANNEL_ID });
+        }
+
+        // AND BOTH DIRECTIONS STILL PAGE WITH THEIR OWN CURSORS, which is what
+        // separates this from a guard that refuses every cursor. Without these
+        // four assertions the two refusals above are satisfied by
+        // `readPosts` failing unconditionally, and paging would be broken in
+        // exactly the way nothing else here would notice.
+        const forwardNext = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 2,
+          cursor: forward.nextCursor!,
+          direction: "forward",
+        });
+        expect(forwardNext.posts.map((post) => post.body)).toEqual(["p3", "p4"]);
+        const backwardNext = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 2,
+          cursor: backward.nextCursor!,
+          direction: "backward",
+        });
+        expect(backwardNext.posts.map((post) => post.body)).toEqual(["p3", "p4"]);
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );

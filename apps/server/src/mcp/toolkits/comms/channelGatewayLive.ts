@@ -187,7 +187,7 @@ const make = Effect.gen(function* () {
       const decoded =
         input.cursor === undefined
           ? Option.some(undefined)
-          : decodeCursor(input.channelId, input.cursor);
+          : decodeCursor(input.channelId, input.direction, input.cursor);
       if (Option.isNone(decoded)) {
         return Effect.fail<ChannelCursorUnusable | ChannelStoreUnavailable>(
           // `input.cursor` is defined on this branch: an absent cursor took the

@@ -150,7 +150,7 @@ const resolveCursor = (
   if (cursor === undefined) {
     return Effect.succeed(Option.none<number>());
   }
-  const decoded = decodeChannelCursor(channelId, cursor);
+  const decoded = decodeChannelCursor(channelId, direction, cursor);
   return Option.isNone(decoded)
     ? Effect.fail(new ChannelCursorRejected({ channelId, cursor }))
     : Effect.succeed(decoded);

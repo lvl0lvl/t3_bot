@@ -225,8 +225,26 @@ export type ChannelPost = typeof ChannelPost.Type;
  * every other check; the gateway now REFUSES such a cursor rather than
  * defecting on it, so widening this costs a typed refusal rather than a crash -
  * but it still means handing an agent a cursor the server can never honour.
+ *
+ * THE DIRECTION HALF IS A CLOSED SET OF TWO WORDS, spelled out rather than
+ * abbreviated: the value is opaque to the agent but not to whoever reads a log
+ * or a failing assertion, and `f`/`b` costs six characters to save nothing. It
+ * is `t3_bot-2oh`: a cursor points AFTER its page going forward and BEFORE it
+ * going backward, so the same number means opposite things and the read has to
+ * be told which it was handed.
+ *
+ * A CURSOR ISSUED BEFORE THIS FIELD has two segments and no longer matches, so
+ * the tool refuses it at the schema rather than the gateway. That is the right
+ * door: the agent is told its cursor is not a cursor and re-reads from the
+ * start, which is what it would have to do anyway.
  */
-const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:[0-9]{1,15}$/;
+/**
+ * EXPORTED FOR THE TESTS, which asserted a hand-copied duplicate of this regex
+ * until the format changed under it and the copy went on passing for the shape
+ * it used to be. A test that pins "the shape the tool accepts" has to read the
+ * shape the tool accepts.
+ */
+export const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:(?:forward|backward):[0-9]{1,15}$/;
 
 export const ReadChannelResult = Schema.Struct({
   channel: Schema.String,
@@ -320,7 +338,7 @@ const ReadChannelTool = Tool.make("comms_read_channel", {
       // and cursors are both bare strings in the result.
       Schema.String.check(Schema.isPattern(CURSOR_PATTERN)).annotate({
         description:
-          "nextCursor from a previous read OF THIS CHANNEL, to get the posts after that page. Omit for the oldest posts. Pass it back exactly as given; a cursor from another channel is refused rather than answered.",
+          "nextCursor from a previous read OF THIS CHANNEL, to get the posts after that page. Omit for the oldest posts. Pass it back exactly as given; a cursor from another channel, or from a read in the other direction, is refused rather than answered.",
       }),
     ),
   }),

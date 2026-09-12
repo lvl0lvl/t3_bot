@@ -30,11 +30,24 @@
  */
 import * as Option from "effect/Option";
 
-/** A cursor carries the channel that issued it, which is what makes one from
- * elsewhere refusable. Paired with `decodeChannelCursor`; neither is meaningful
- * without the other, so they live together. */
-export const encodeChannelCursor = (channelId: string, sequence: number): string =>
-  `${channelId}:${sequence}`;
+/**
+ * Which way a page reads, and therefore which way its cursor points.
+ *
+ * Named here because the cursor carries it: the format, the codec and the paging
+ * arithmetic all have to agree about the two words, and this module is the one
+ * home for the format (`t3_bot-2oh`).
+ */
+export type ChannelPostDirection = "forward" | "backward";
+
+/** A cursor carries the channel AND THE DIRECTION that issued it, which is what
+ * makes one from elsewhere — or from the other direction — refusable. Paired with
+ * `decodeChannelCursor`; neither is meaningful without the other, so they live
+ * together. */
+export const encodeChannelCursor = (
+  channelId: string,
+  direction: ChannelPostDirection,
+  sequence: number,
+): string => `${channelId}:${direction}:${sequence}`;
 
 /**
  * A cursor names the channel it came from, and one from elsewhere is REFUSED.
@@ -58,13 +71,31 @@ export const encodeChannelCursor = (channelId: string, sequence: number): string
  * re-deciding the format, and `CURSOR_PATTERN` in the comms `tools.ts` is where
  * the assumption is checkable.
  */
-export const decodeChannelCursor = (channelId: string, cursor: string): Option.Option<number> => {
+export const decodeChannelCursor = (
+  channelId: string,
+  direction: ChannelPostDirection,
+  cursor: string,
+): Option.Option<number> => {
   const boundary = cursor.indexOf(":");
   if (boundary === -1) {
     return Option.none<number>();
   }
   const issuedBy = cursor.slice(0, boundary);
-  const digits = cursor.slice(boundary + 1);
+  const rest = cursor.slice(boundary + 1);
+  // THE SECOND COLON, on the same argument as the first: a `ChannelId` cannot
+  // contain ":" and a direction is one of two literal words, so the boundaries
+  // are unambiguous. A cursor issued before this field has ONE colon and lands
+  // here with no direction — refused rather than assumed forward, because the
+  // assumption is unverifiable at the point of use. Every cursor anyone holds
+  // today IS a forward cursor, so assuming would be right every time and wrong
+  // never; a guard that is correct only by appeal to a caller's current
+  // behaviour is the defect class this module exists for.
+  const directionBoundary = rest.indexOf(":");
+  if (directionBoundary === -1) {
+    return Option.none<number>();
+  }
+  const issuedFor = rest.slice(0, directionBoundary);
+  const digits = rest.slice(directionBoundary + 1);
   // DIGITS BEFORE `Number()`, because `Number()` is laxer than any schema that
   // feeds this and this function is also the door a direct caller uses.
   // `Number("")` is 0, `Number("0x2")` is 2, `Number(" 3 ")` is 3,
@@ -81,7 +112,24 @@ export const decodeChannelCursor = (channelId: string, cursor: string): Option.O
   // the wrong reason has learned nothing. Compared EXACTLY — a length or prefix
   // comparison passes every obvious fixture and pages the wrong channel on a
   // seeded install, where two channel ids share a prefix and a length.
-  if (issuedBy !== channelId || !Number.isSafeInteger(sequence) || sequence < 0) {
+  // THE DIRECTION IS THE OTHER AXIS OF THE SAME LIE (`t3_bot-2oh`). A cursor
+  // points AFTER its page going forward and BEFORE it going backward, so the
+  // same number means opposite things and neither read could tell which it was
+  // handed. Measured on the live gateway over six posts, before the fix:
+  //
+  //   forward page1                      = [p1,p2]  cursor=<channel>:6
+  //   that forward cursor, read BACKWARD = [p1]      cursor=null
+  //   backward page1                     = [p5,p6]  cursor=<channel>:9
+  //   that backward cursor, read FORWARD = [p6]      cursor=null
+  //
+  // Both answered `null`, the wire shape of "you are caught up", over four
+  // unread posts each time.
+  if (
+    issuedBy !== channelId ||
+    issuedFor !== direction ||
+    !Number.isSafeInteger(sequence) ||
+    sequence < 0
+  ) {
     return Option.none<number>();
   }
   return Option.some(sequence);
@@ -116,7 +164,7 @@ export const channelPostOverFetch = (limit: number): number => limit + 1;
  */
 export const resolveChannelPostPage = <A extends { readonly sequence: number }>(input: {
   readonly channelId: string;
-  readonly direction: "forward" | "backward";
+  readonly direction: ChannelPostDirection;
   readonly limit: number;
   readonly rows: ReadonlyArray<A>;
 }): { readonly rows: ReadonlyArray<A>; readonly nextCursor: string | null } => {
@@ -134,6 +182,8 @@ export const resolveChannelPostPage = <A extends { readonly sequence: number }>(
   return {
     rows,
     nextCursor:
-      more && edge !== undefined ? encodeChannelCursor(input.channelId, edge.sequence) : null,
+      more && edge !== undefined
+        ? encodeChannelCursor(input.channelId, input.direction, edge.sequence)
+        : null,
   };
 };
