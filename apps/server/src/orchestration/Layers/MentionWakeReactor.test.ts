@@ -17,6 +17,7 @@ import {
   DEFAULT_RUNTIME_MODE,
   type OrchestrationCommand,
   ProjectId,
+  MessageId,
   ProviderInstanceId,
   ThreadId,
   TurnId,
@@ -2035,6 +2036,62 @@ describe("MentionWakeReactor", () => {
       const woken = await wakeMessages(system, WOKEN);
       expect(woken.filter((text) => text.includes('post "post-first"'))).toHaveLength(1);
       expect(woken.filter((text) => text.includes('post "post-second"'))).toHaveLength(1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("links nothing for an ordinary user turn, which stages a row like a wake does", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+
+      // THE MOST ORDINARY THING IN THE PRODUCT, and no test here had one: a
+      // human starts a turn. It stages a pending row under a plain message id
+      // exactly as a wake does, and the next session-set consumes it exactly
+      // as it consumes a wake's. A capture that fired for every pending row
+      // would link this turn to a post that does not exist — and a sweep found
+      // that doing so red nothing, because every staged row in this file was
+      // a wake's.
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-human-turn"),
+          threadId: WOKEN,
+          message: {
+            messageId: MessageId.make("message-from-a-human"),
+            role: "user",
+            text: "a question typed by hand",
+            attachments: [],
+          },
+          runtimeMode: WOKEN_RUNTIME_MODE,
+          interactionMode: WOKEN_INTERACTION_MODE,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      await setSession(system, {
+        label: "human-start",
+        activeTurnId: TurnId.make("turn-human"),
+        updatedAt: "2026-01-01T00:00:30.000Z",
+      });
+
+      // NO LINK, under any post id — including the message id, which a parser
+      // that did not check the prefix might have split into channel-and-post
+      // halves of nothing.
+      const links = await system.run(
+        system.wakes.listByPostIds({
+          channelId: CHANNEL_ID,
+          postIds: ["message-from-a-human", "a-human", ""],
+        }),
+      );
+      expect(links).toEqual([]);
+      // And the turn itself is unremarkable: it holds its own message id, as
+      // every human turn does.
+      const rows = await system.run(system.turns.listByThreadId({ threadId: WOKEN }));
+      expect(rows.map((row) => row.pendingMessageId)).toEqual(["message-from-a-human"]);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
