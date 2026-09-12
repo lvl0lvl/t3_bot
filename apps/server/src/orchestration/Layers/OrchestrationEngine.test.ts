@@ -2241,4 +2241,66 @@ describe("OrchestrationEngine", () => {
       await NodeFSP.rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("a duplicate channel name fails one command, not the engine", async () => {
+    // The decider validates channel existence by id, so a duplicate NAME reaches
+    // the projection and fails there on the unique index. All projectors share
+    // one transaction, so that write rolls back every projector's cursor for
+    // this event. The question this pins is the blast radius: a typed
+    // persistence error should fail THIS command and leave the engine serving,
+    // the same way an unroutable command does. If the engine wedged instead,
+    // one duplicate name would take down the environment.
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-channel-dupname-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    const system = await createOrchestrationSystem(databasePath);
+
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "channel.create",
+          commandId: CommandId.make("cmd-dup-first"),
+          channelId: ChannelId.make("channel-dup-a"),
+          name: "seniors",
+          members: [],
+          createdAt: now(),
+        }),
+      );
+
+      // Same name, different id: the decider accepts it, the projection refuses.
+      const duplicate = await system.run(
+        Effect.exit(
+          system.engine.dispatch({
+            type: "channel.create",
+            commandId: CommandId.make("cmd-dup-second"),
+            channelId: ChannelId.make("channel-dup-b"),
+            name: "seniors",
+            members: [],
+            createdAt: now(),
+          }),
+        ),
+      );
+      expect(duplicate._tag).toBe("Failure");
+
+      // The engine must still be serving. This is the assertion that matters.
+      await system.run(
+        system.engine.dispatch({
+          type: "channel.create",
+          commandId: CommandId.make("cmd-dup-after"),
+          channelId: ChannelId.make("channel-dup-c"),
+          name: "project",
+          members: [],
+          createdAt: now(),
+        }),
+      );
+
+      const snapshot = await system.readModel();
+      expect(snapshot.channels.map((channel) => channel.name).sort()).toEqual([
+        "project",
+        "seniors",
+      ]);
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
 });
