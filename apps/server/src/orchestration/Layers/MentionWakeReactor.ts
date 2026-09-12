@@ -200,9 +200,19 @@ const framed = (value: string) => JSON.stringify(value.replace(FRAMING_UNSAFE, "
  * `^[A-Za-z0-9_-]{1,64}$`, so once that lands this escape is pure defence.
  */
 const framedId = (value: string) =>
+  // CODE UNITS, not code points, and the missing `u` flag is the whole of it.
+  // `\uXXXX` is a UTF-16 escape: an astral character needs a surrogate PAIR,
+  // and escaping it as one code point emits five hex digits - `\u1f525` - which
+  // is not a JSON escape at all. A post id of "post-🔥" came back out of the
+  // header as "post-ὒ5": `\u1f52` then a literal `5`. Silent corruption in the
+  // correlation path, which is worse than the injection this escape exists for,
+  // and it defeats the stated reason for escaping rather than stripping - that
+  // an agent has to copy a post id back verbatim.
+  //
+  // JSON.stringify's own escaper emits surrogate pairs. Matching it is the fix.
   framed(value).replace(
-    /[^\x20-\x7E]/gu,
-    (character) => `\\u${character.codePointAt(0)?.toString(16).padStart(4, "0")}`,
+    /[^\x20-\x7E]/g,
+    (unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
 
 export const wakeMessageText = (input: {
@@ -224,8 +234,23 @@ export const wakeMessageText = (input: {
   // the quote looking like punctuation the reader may skip.
   const channel = framed(`#${input.channelName}`);
   const author = framed(`@${input.authorHandle}`);
-  // Bare for the call, which takes the name rather than the display form.
-  const channelArgument = framed(input.channelName);
+  // Bare for the call, which takes the name rather than the display form - and
+  // ESCAPED like an id, because this one sits in the instruction line.
+  //
+  // The boundary that lets a name stay readable elsewhere is real: a name can
+  // only be set through channel.create or channel.member.add, both of which
+  // require a human or system issuer. It is also the shape this file already
+  // warns about - "safe because of a rule somewhere else is how the post id
+  // came to be the field nobody was protecting" - and the rule in question is
+  // in another file, about a different command, enforced at a different time.
+  // "A human issued it" is not "a human authored it": an agent asking a human
+  // to create a channel named X is the designed workflow here, not an exotic
+  // compromise.
+  //
+  // So the argument is not made at all where it would matter. The display name
+  // in the header stays readable, an emoji handle included; the value inside
+  // the call is inert.
+  const channelArgument = framedId(input.channelName);
   const postId = framedId(input.postId);
   const inReplyTo =
     input.parentPostId === null ? "" : ` · in reply to ${framedId(input.parentPostId)}`;
