@@ -711,6 +711,31 @@ describe("the comms toolkit on the live gateway", () => {
           expect(String(refused)).toContain("ChannelWriteConflict");
           expect(String(refused)).not.toContain("SchemaIssue");
         }
+
+        // THE MENTIONS ARRAY IS NOT THE SAME SITE, and it is worth the four
+        // lines to say why rather than leaving the next reader to re-derive it.
+        // `ChannelMemberHandle` is a trimmed non-empty string, so a handle of
+        // only whitespace LOOKS like it should throw - but `.make` checks
+        // `isNonEmpty` against the untrimmed value, which has length 3, so it
+        // constructs fine and the DECIDER refuses it by canonicalising. The
+        // result is a typed `ChannelWriteConflict`, which is what this asserts.
+        //
+        // So this is not provenance and not luck: the value is genuinely
+        // handled. The assertion exists because that is a chain of three
+        // non-obvious facts, and a defect appearing here later would mean one
+        // of them changed.
+        const blankHandle = yield* gateway
+          .createPost({
+            channelId: CHANNEL_ID,
+            threadId: BOSS3,
+            body: "mentioning nobody in particular",
+            mentions: ["   "],
+            parentPostId: null,
+          })
+          .pipe(Effect.exit);
+        expect(blankHandle._tag).toBe("Failure");
+        expect(String(blankHandle)).toContain("ChannelWriteConflict");
+        expect(String(blankHandle)).not.toContain("SchemaIssue");
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );
