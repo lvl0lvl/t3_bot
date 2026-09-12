@@ -195,7 +195,11 @@ describe("comms toolkit handlers", () => {
         capability: "comms",
         threadId: THREAD_ID,
       });
-      // The refusal must happen before the write, not after it.
+      // Before the LOOKUP, not merely before the write. A credential without
+      // the comms capability that still reaches the channel store has probed
+      // it — asserting only on `created` passes whether the check runs first
+      // or last, because a refused call writes nothing either way.
+      expect(yield* Ref.get(harness.channelLookups)).toEqual([]);
       expect(yield* Ref.get(harness.created)).toEqual([]);
     }),
   );
