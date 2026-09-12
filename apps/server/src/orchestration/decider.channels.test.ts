@@ -288,6 +288,162 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
     }),
   );
 
+  // canonicalChannelName.test.ts pins the rule itself. These two prove it is
+  // WIRED on both write paths — the rename is the one most easily left behind,
+  // and an unchecked rename can retire a reachable name to "" just as a create can.
+  it.effect("refuses to create a channel whose name has no canonical form", () =>
+    Effect.gen(function* () {
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-sigil"),
+          channelId: ChannelId.make("channel-sigil"),
+          // Passes TrimmedNonEmptyString, canonicalises to "".
+          name: "#",
+          members: [{ handle: PM, memberKind: "thread", memberId: "thread-pm" }],
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("no canonical form");
+      }
+    }),
+  );
+
+  it.effect("refuses to rename a channel to a name with no canonical form", () =>
+    Effect.gen(function* () {
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.meta.update",
+          commandId: CommandId.make("cmd-meta-sigil"),
+          channelId: CHANNEL,
+          name: "##",
+        },
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("no canonical form");
+      }
+    }),
+  );
+
+  it.effect("strips every leading sigil, not just the first", () =>
+    Effect.gen(function* () {
+      // "##seniors" is a fat-finger that must reach the existing channel rather
+      // than create a second one the toolkit can never look up.
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-sigils"),
+          channelId: ChannelId.make("channel-sigils"),
+          name: "  ##SENIORS  ",
+          members: [{ handle: PM, memberKind: "thread", memberId: "thread-pm" }],
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      if (events[0]?.type === "channel.created") {
+        expect(events[0].payload.name).toBe("seniors");
+      }
+    }),
+  );
+
+  // The handle fold has to be on EVERY write path, not just create: the toolkit
+  // resolves a mention by folding "@Boss1" to "boss1" and matching it against
+  // stored membership, so one unfolded path stores a handle no mention reaches.
+  it.effect("stores member handles canonically when a channel is created", () =>
+    Effect.gen(function* () {
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-handles"),
+          channelId: ChannelId.make("channel-handles"),
+          name: "project",
+          members: [
+            {
+              handle: ChannelMemberHandle.make("@PM"),
+              memberKind: "thread",
+              memberId: "thread-pm",
+            },
+          ],
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      if (events[0]?.type === "channel.created") {
+        expect(events[0].payload.members[0]?.handle).toBe(PM);
+      }
+    }),
+  );
+
+  it.effect("collides two handles that differ only by case", () =>
+    Effect.gen(function* () {
+      // "Boss1" and "boss1" are two rows but one mention key, which is exactly
+      // the ambiguity the uniqueness check exists to prevent. Comparing raw
+      // handles would admit both and make "@boss1" wake an arbitrary one.
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-case-handles"),
+          channelId: ChannelId.make("channel-case-handles"),
+          name: "project",
+          members: [
+            {
+              handle: ChannelMemberHandle.make("Boss1"),
+              memberKind: "thread",
+              memberId: "thread-a",
+            },
+            { handle: BOSS1, memberKind: "thread", memberId: "thread-b" },
+          ],
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is used twice");
+      }
+    }),
+  );
+
+  it.effect("removes the member a differently-cased handle names", () =>
+    Effect.gen(function* () {
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.remove",
+          commandId: CommandId.make("cmd-remove-case"),
+          channelId: CHANNEL,
+          handle: ChannelMemberHandle.make("@Boss1"),
+        },
+        readModel: makeReadModel(),
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events[0]?.type).toBe("channel.member-removed");
+      if (events[0]?.type === "channel.member-removed") {
+        expect(events[0].payload.handle).toBe(BOSS1);
+      }
+    }),
+  );
+
+  it.effect("resolves a mention written with a sigil and the wrong case", () =>
+    Effect.gen(function* () {
+      const decided = yield* decideOrchestrationCommand({
+        command: postCommand({ mentions: ["@Boss1"] }),
+        readModel: makeReadModel(),
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events[0]?.type).toBe("channel.post-created");
+      if (events[0]?.type === "channel.post-created") {
+        expect(events[0].payload.mentions).toEqual([BOSS1]);
+      }
+    }),
+  );
+
   it.effect("creates a channel and stamps createdAt and updatedAt together", () =>
     Effect.gen(function* () {
       const decided = yield* decideOrchestrationCommand({

@@ -35,6 +35,14 @@ export default Effect.gen(function* () {
   yield* sql`
     CREATE TABLE IF NOT EXISTS projection_channel_members (
       channel_id TEXT NOT NULL,
+      -- Canonical for the same reason and by the same rule as a channel name,
+      -- with "@" as the sigil: the decider folds before this row is written, so
+      -- byte comparison is correct here and in the mention lookup that reads it.
+      -- Without the fold "Boss1" and "boss1" are two rows and one mention key.
+      --
+      -- The fold ships WITH this table, so no row predates it and there is no
+      -- in-place case collision to resolve. Folding a column that already holds
+      -- both spellings would need one, since they collapse to a single key.
       handle TEXT NOT NULL,
       member_kind TEXT NOT NULL,
       member_id TEXT NOT NULL,

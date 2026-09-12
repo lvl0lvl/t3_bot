@@ -37,7 +37,9 @@ import {
 import {
   listThreadsByProjectId,
   requireActiveProjectWorkspaceRootAbsent,
-  canonicalChannelName,
+  requireCanonicalChannelHandle,
+  requireCanonicalChannelMember,
+  requireCanonicalChannelName,
   requireChannel,
   requireChannelAbsent,
   requireChannelAuthorIsMember,
@@ -2025,7 +2027,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "channel.create": {
       yield* requireChannelAbsent({ readModel, command, channelId: command.channelId });
-      yield* requireChannelHandlesUnique({ command, members: command.members });
+      // Canonicalise before the uniqueness check, not after: "Boss1" and "boss1"
+      // are one mention key to every reader, so they must collide here.
+      const members = yield* Effect.forEach(command.members, (member) =>
+        requireCanonicalChannelMember({ command, member }),
+      );
+      yield* requireChannelHandlesUnique({ command, members });
+      const name = yield* requireCanonicalChannelName({ command, name: command.name });
       return {
         ...(yield* withEventBase({
           aggregateKind: "channel",
@@ -2036,8 +2044,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "channel.created",
         payload: {
           channelId: command.channelId,
-          name: canonicalChannelName(command.name),
-          members: command.members,
+          name,
+          members,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -2046,6 +2054,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "channel.meta.update": {
       yield* requireChannel({ readModel, command, channelId: command.channelId });
+      // A rename carries the same empty-canonical hole as a create, so it runs
+      // the same check rather than trusting the schema that passed the raw name.
+      const renamed =
+        command.name === undefined
+          ? undefined
+          : yield* requireCanonicalChannelName({ command, name: command.name });
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -2057,7 +2071,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "channel.meta-updated",
         payload: {
           channelId: command.channelId,
-          ...(command.name !== undefined ? { name: canonicalChannelName(command.name) } : {}),
+          ...(renamed !== undefined ? { name: renamed } : {}),
           updatedAt: occurredAt,
         },
       };
@@ -2102,9 +2116,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "channel.member.add": {
       const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
+      const member = yield* requireCanonicalChannelMember({ command, member: command.member });
       yield* requireChannelHandlesUnique({
         command,
-        members: [...channel.members, command.member],
+        members: [...channel.members, member],
       });
       const occurredAt = yield* nowIso;
       return {
@@ -2117,7 +2132,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "channel.member-added",
         payload: {
           channelId: command.channelId,
-          member: command.member,
+          member,
           updatedAt: occurredAt,
         },
       };
@@ -2125,10 +2140,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "channel.member.remove": {
       const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
-      if (!channel.members.some((member) => member.handle === command.handle)) {
+      // Canonical on both sides, or "@Boss1" fails to remove the member it names.
+      const handle = yield* requireCanonicalChannelHandle({ command, handle: command.handle });
+      if (!channel.members.some((member) => member.handle === handle)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: `Handle '${command.handle}' is not a member of channel '${command.channelId}'.`,
+          detail: `Handle '${handle}' is not a member of channel '${command.channelId}'.`,
         });
       }
       const occurredAt = yield* nowIso;
@@ -2142,7 +2159,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "channel.member-removed",
         payload: {
           channelId: command.channelId,
-          handle: command.handle,
+          handle,
           updatedAt: occurredAt,
         },
       };
@@ -2158,7 +2175,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         channel,
         authorRef: command.authorRef,
       });
-      yield* requireChannelMentionsResolve({ command, channel, mentions: command.mentions });
+      // After the author check, never before: canonicalising can itself fail on
+      // a handle of only sigils, and a guard that fires earlier would let a
+      // non-member tell a malformed mention from being excluded.
+      const mentions = yield* Effect.forEach(command.mentions, (handle) =>
+        requireCanonicalChannelHandle({ command, handle }),
+      );
+      yield* requireChannelMentionsResolve({ command, channel, mentions });
       return {
         ...(yield* withEventBase({
           aggregateKind: "channel",
@@ -2174,7 +2197,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           // Resolved from membership so the reactor never joins to find it.
           authorHandle: author.handle,
           body: command.body,
-          mentions: command.mentions,
+          mentions,
           parentPostId: command.parentPostId,
           createdAt: command.createdAt,
         },

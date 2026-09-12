@@ -45,7 +45,7 @@ export function listThreadsByProjectId(
 }
 
 /**
- * The canonical form of a channel name: lowercase, no leading sigil, trimmed.
+ * The canonical form of a channel name: lowercase, no leading sigils, trimmed.
  *
  * Applied in the decider so the projection only ever holds canonical names and
  * a plain byte comparison is correct. The comms toolkit normalises too, for a
@@ -53,9 +53,60 @@ export function listThreadsByProjectId(
  * one typing "seniors" must reach the same channel, and a failed name lookup
  * is deliberately indistinguishable from "you are not a member", so a case
  * mismatch would otherwise be unreportable.
+ *
+ * Every leading sigil goes, not just one: the sigil is decoration, so "##general"
+ * is a fat-finger that must resolve rather than create a second channel. The
+ * exact rule is pinned as a table in `canonicalChannelName.test.ts`, which the
+ * toolkit's normaliser asserts against too — the two have diverged once already.
  */
 export function canonicalChannelName(name: string): string {
-  return name.trim().replace(/^#/, "").trim().toLowerCase();
+  return canonicalise(name, /^#+/);
+}
+
+/**
+ * The same rule for a member handle, with "@" as the sigil.
+ *
+ * Handles carry the name rule's failure one level down: the toolkit resolves a
+ * mention by folding "@Boss1" to "boss1" and matching it against the stored
+ * membership, so a handle stored as typed makes every capitalised mention
+ * unresolvable — and the post is refused whole. Folding here also makes "Boss1"
+ * and "boss1" collide in the uniqueness check, which is the point of that check:
+ * stored apart, they are one ambiguous mention key to every reader.
+ */
+export function canonicalChannelHandle(handle: string): string {
+  return canonicalise(handle, /^@+/);
+}
+
+/** One rule, two sigils, so a name and a handle cannot drift apart. */
+function canonicalise(value: string, sigil: RegExp): string {
+  return value.trim().replace(sigil, "").trim().toLowerCase();
+}
+
+/**
+ * The canonical name to store, refusing one that canonicalises to empty.
+ *
+ * The command schema validates the RAW name, so a name of only sigils and
+ * spaces passes `TrimmedNonEmptyString` and canonicalises to "" — the value
+ * validated is not the value stored. Such a channel is unreachable through the
+ * toolkit, which rejects an empty lookup before it calls the gateway, while it
+ * holds the empty-string slot against every later creation. Callers take the
+ * name from here rather than from `canonicalChannelName` so the check cannot
+ * be skipped.
+ */
+export function requireCanonicalChannelName(input: {
+  readonly command: OrchestrationCommand;
+  readonly name: string;
+}): Effect.Effect<string, OrchestrationCommandInvariantError> {
+  const canonical = canonicalChannelName(input.name);
+  if (canonical.length > 0) {
+    return Effect.succeed(canonical);
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `Channel name '${input.name}' is only sigils and whitespace and has no canonical form.`,
+    ),
+  );
 }
 
 function findChannelById(
@@ -99,8 +150,49 @@ export function requireChannelAbsent(input: {
 }
 
 /**
+ * The canonical handle to store, refusing one that canonicalises to empty.
+ *
+ * Carries the same hole as a name: `ChannelMemberHandle` validates the RAW
+ * handle, so "@" passes and would be stored as "". Callers take the handle from
+ * here rather than from `canonicalChannelHandle` so the check cannot be skipped.
+ */
+export function requireCanonicalChannelHandle(input: {
+  readonly command: OrchestrationCommand;
+  readonly handle: string;
+}): Effect.Effect<ChannelMemberHandle, OrchestrationCommandInvariantError> {
+  const canonical = canonicalChannelHandle(input.handle);
+  if (canonical.length === 0) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        `Handle '${input.handle}' is only sigils and whitespace and has no canonical form.`,
+      ),
+    );
+  }
+  // The brand's own predicate is "trimmed and non-empty", which the line above
+  // has just established. Constructing through the schema would throw on
+  // failure, and this runs inside the single command-worker fiber.
+  return Effect.succeed(canonical as ChannelMemberHandle);
+}
+
+/** A member with its handle canonicalised, refusing one with no canonical form. */
+export function requireCanonicalChannelMember(input: {
+  readonly command: OrchestrationCommand;
+  readonly member: ChannelMember;
+}): Effect.Effect<ChannelMember, OrchestrationCommandInvariantError> {
+  return requireCanonicalChannelHandle({
+    command: input.command,
+    handle: input.member.handle,
+  }).pipe(Effect.map((handle) => ({ ...input.member, handle })));
+}
+
+/**
  * A handle is the mention key, so it must be unique within its channel.
  * Duplicates would make a mention ambiguous and wake the wrong member.
+ *
+ * Run this on canonical handles: "Boss1" and "boss1" are two rows here and one
+ * mention key everywhere else, so comparing raw handles admits exactly the
+ * ambiguity this exists to prevent.
  */
 export function requireChannelHandlesUnique(input: {
   readonly command: OrchestrationCommand;
