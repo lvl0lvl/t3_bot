@@ -18,8 +18,13 @@ import { readChannelPostPage } from "./channelPosts.ts";
  * repository, so no test at either door can see the `LIMIT` or the `ORDER BY`
  * that decide what a reader is sent — and `listChannelsForMember`'s membership
  * filter came to have five surviving mutants for exactly that reason, one of
- * which returned every channel to every client while 198 tests stayed green. The
- * paging arithmetic here has the same exposure.
+ * which returned every channel to every client and no test in the suite went red.
+ * The paging arithmetic here has the same exposure.
+ *
+ * NO PASS COUNT, per the rule beside the door tests in `server.test.ts`: an absolute
+ * count decays as the file grows, so a reader re-running it cannot tell a grown
+ * population from a surviving mutant. The emptiness of the red set is the whole point
+ * and the population is not part of it.
  */
 const NOW = "2026-01-01T00:00:00.000Z";
 const PM = ChannelMemberHandle.make("pm");
@@ -141,7 +146,7 @@ layer("readChannelPostPage", (it) => {
       // ONE WHOLE POST, because `ids` pins one field of eight. Measured before this
       // existed: blanking `body`, emptying `mentions`, nulling `parentPostId` and
       // freezing `createdAt` in the projection each survived this file AND both
-      // doors' tests — 201 tests green while every post arrived empty.
+      // doors' tests — nothing went red while every post arrived empty.
       assert.deepStrictEqual(page.posts[1], {
         id: ChannelPostId.make(`post-${channelId}-5`),
         channelId,

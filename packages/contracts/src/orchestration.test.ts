@@ -1722,9 +1722,8 @@ it.effect("drops an issuer a client tries to supply", () =>
  * The page limit's ceiling and its floor, asserted as NUMBERS.
  *
  * `CHANNEL_POST_PAGE_LIMIT_MAX` was raised from 200 to 2,000,000 at its own
- * definition and 201 tests stayed green, because nothing anywhere compared the
- * ceiling to a literal — every mention of it was the symbol, which moves with it
- * (`TEST-25-03`). "Too much data over a websocket" is the regression this repository
+ * definition and NOTHING WENT RED, because nothing anywhere compared the ceiling to a
+ * literal — every mention of it was the symbol, which moves with it (`TEST-25-03`). "Too much data over a websocket" is the regression this repository
  * names first, and this limit is the only thing between a client and it.
  *
  * The same four numbers are asserted through the HTTP door in `server.test.ts`. That

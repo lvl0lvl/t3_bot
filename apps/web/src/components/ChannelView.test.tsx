@@ -8,8 +8,8 @@ import { describe, expect, it, vi } from "vite-plus/test";
  * The post region's behaviour, because nothing imported this component.
  *
  * `TEST-25-01`: `ChannelView.tsx` was reachable from no test at all, so its
- * live-arrival effect could be DELETED with 2481 tests green, and the channel
- * switch leaked one channel's posts into another under the same silence. A
+ * live-arrival effect could be DELETED without a single test going red, and the
+ * channel switch leaked one channel's posts into another under the same silence. A
  * component holding four pieces of state and three effects had the same coverage
  * as a component that did not exist.
  *
