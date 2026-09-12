@@ -673,6 +673,15 @@ describe("the comms toolkit on the live gateway", () => {
           cursor: undefined,
         });
         expect(page.posts).toEqual([]);
+
+        // THE SAME PROPERTY FOR `getPost`, which brands a channelId the caller
+        // supplies. `Effect.exit` can only produce a Failure VALUE if the
+        // Effect was built at all - a throw while the function is being called
+        // never reaches it, and fails the test uncatchably instead. That
+        // distinction is the whole of what the suspends buy and it is invisible
+        // to any assertion that only checks THAT it failed.
+        const unbrandable = yield* gateway.getPost("not a channel id", "post-1").pipe(Effect.exit);
+        expect(unbrandable._tag).toBe("Failure");
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );

@@ -139,14 +139,24 @@ const make = Effect.gen(function* () {
   const decodePostId = Schema.decodeUnknownOption(ChannelPostId);
 
   const getPost = (channelId: string, postId: string) =>
-    Option.match(decodePostId(postId), {
-      onNone: () => Effect.succeedNone,
-      onSome: (id) =>
-        channels.getPost({ channelId: ChannelId.make(channelId), postId: id }).pipe(
-          Effect.map(Option.map(toPost)),
-          Effect.mapError(() => storeUnavailable("getPost")),
-        ),
-    });
+    // SUSPENDED for the same reason `readPosts` is: `Option.match` runs
+    // `onSome` immediately, so `ChannelId.make` would be evaluated while this
+    // function is being CALLED and its throw would escape before any Effect
+    // existed. The toolkit's channelId comes from a resolved `Channel` and is
+    // safe by provenance - but this signature takes a bare `string`, the seam
+    // is written for callers that do not exist yet, and the next one holds
+    // values from a browser. "Every caller passes something safe" is the
+    // ordering argument wearing a different coat.
+    Effect.suspend(() =>
+      Option.match(decodePostId(postId), {
+        onNone: () => Effect.succeedNone,
+        onSome: (id) =>
+          channels.getPost({ channelId: ChannelId.make(channelId), postId: id }).pipe(
+            Effect.map(Option.map(toPost)),
+            Effect.mapError(() => storeUnavailable("getPost")),
+          ),
+      }),
+    );
 
   /**
    * A cursor this layer did not issue is a DEFECT, not an empty page.
