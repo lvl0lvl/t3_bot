@@ -45,12 +45,31 @@ const decodeProjectRefCollectionKey = Schema.decodeUnknownSync(
   Schema.Array(Schema.Tuple([Schema.String, Schema.String])),
 );
 
+/**
+ * The separator every scoped key in this module is built from and parsed with.
+ *
+ * NUL because no id can contain it, so two different refs cannot produce one
+ * key — the wake key hit exactly that with a colon and had to escape both
+ * halves.
+ *
+ * ONE CONSTANT because a writer and a reader of the same convention, each
+ * spelling it out, are free to disagree. It was written twice and read twice
+ * here. The sibling `channelKey` had the same split and the mention boundary had
+ * the same shape in a different guise, where an opener set and a terminator set
+ * did drift and silently dropped mentions.
+ *
+ * Written as the ESCAPE, never typed: a hand-typed separator in this position
+ * has twice landed as a literal NUL BYTE in source, which renders as a space,
+ * typechecks, passes every test, and makes git report the file as binary.
+ */
+const KEY_SEPARATOR = "\u0000";
+
 export function projectKey(ref: ScopedProjectRef): string {
-  return `${ref.environmentId}\u0000${ref.projectId}`;
+  return `${ref.environmentId}${KEY_SEPARATOR}${ref.projectId}`;
 }
 
 export function threadKey(ref: ScopedThreadRef): string {
-  return `${ref.environmentId}\u0000${ref.threadId}`;
+  return `${ref.environmentId}${KEY_SEPARATOR}${ref.threadId}`;
 }
 
 export function projectRefCollectionKey(refs: ReadonlyArray<ScopedProjectRef>): string {
@@ -58,7 +77,7 @@ export function projectRefCollectionKey(refs: ReadonlyArray<ScopedProjectRef>): 
 }
 
 export function parseProjectKey(key: string): ScopedProjectRef {
-  const separator = key.indexOf("\u0000");
+  const separator = key.indexOf(KEY_SEPARATOR);
   if (separator < 0) {
     throw new InvalidScopedProjectKeyError({ key });
   }
@@ -82,7 +101,7 @@ export function parseProjectRefCollectionKey(key: string): ReadonlyArray<ScopedP
 }
 
 export function parseThreadKey(key: string): ScopedThreadRef {
-  const separator = key.indexOf("\u0000");
+  const separator = key.indexOf(KEY_SEPARATOR);
   if (separator < 0) {
     throw new InvalidScopedThreadKeyError({ key });
   }

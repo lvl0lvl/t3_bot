@@ -33,6 +33,39 @@ export const ProjectionChannel = Schema.Struct({
 });
 export type ProjectionChannel = typeof ProjectionChannel.Type;
 
+/**
+ * A channel plus the one thing a sidebar needs from its history.
+ *
+ * `latestPostAt` is the last POST's time, not the channel's `updatedAt`: a
+ * membership edit is not activity, and a sidebar ordered by `updatedAt` reorders
+ * itself when someone joins.
+ */
+export const ProjectionChannelWithActivity = Schema.Struct({
+  channelId: ChannelId,
+  name: Schema.String,
+  members: Schema.Array(ChannelMember),
+  archivedAt: Schema.NullOr(IsoDateTime),
+  latestPostAt: Schema.NullOr(IsoDateTime),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type ProjectionChannelWithActivity = typeof ProjectionChannelWithActivity.Type;
+
+/**
+ * Who is asking. The same two fields `ChannelMember` carries and the decider's
+ * issuer uses, so this is not a new vocabulary.
+ *
+ * DERIVED FROM THE CALLER'S OWN CREDENTIAL, NEVER FROM A REQUEST FIELD. It is a
+ * parameter where the caller's own thread used to be hardcoded, so "read as
+ * someone else" is one argument away and there is no decider on the read side to
+ * refuse it. Every caller owes a test that its ref comes from the credential and
+ * not from the payload.
+ */
+export interface ChannelMemberRef {
+  readonly memberKind: "thread" | "human";
+  readonly memberId: string;
+}
+
 export const ProjectionChannelPost = Schema.Struct({
   postId: ChannelPostId,
   channelId: ChannelId,
@@ -91,6 +124,35 @@ export interface ProjectionChannelRepositoryShape {
     readonly channelId: ChannelId;
     readonly postId: ChannelPostId;
   }) => Effect.Effect<Option.Option<ProjectionChannelPost>, ProjectionRepositoryError>;
+
+  /**
+   * One channel with its activity aggregate, by id, membership NOT filtered.
+   *
+   * The sibling of `listChannelsForMember` for the refetch-one case, and it must
+   * return the SAME shape — including `latestPostAt`. A refetch that returned a
+   * channel without its activity would let a live update overwrite a snapshot's
+   * real value with a null, which is worse than sending nothing: the sidebar
+   * would reorder to the bottom and show "No posts yet" over a channel that had
+   * just received a post.
+   *
+   * Membership is not filtered, for the reason `getChannelByName`'s docstring
+   * above gives: the conflation belongs where the caller's identity is known,
+   * and the projector has to see rows it must update.
+   */
+  readonly getChannelWithActivityById: (
+    channelId: ChannelId,
+  ) => Effect.Effect<Option.Option<ProjectionChannelWithActivity>, ProjectionRepositoryError>;
+
+  /**
+   * Every channel this member belongs to, most recently active first.
+   *
+   * MEMBERSHIP IS THE FILTER, in the query rather than above it. A caller that
+   * received every channel would know the names of channels it cannot read, and
+   * "the caller does not show them" is a rule in a file that cannot enforce it.
+   */
+  readonly listChannelsForMember: (
+    member: ChannelMemberRef,
+  ) => Effect.Effect<ReadonlyArray<ProjectionChannelWithActivity>, ProjectionRepositoryError>;
 
   /** Oldest first, ascending by sequence. */
   readonly listPosts: (

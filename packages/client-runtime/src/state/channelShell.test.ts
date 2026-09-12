@@ -1,0 +1,283 @@
+import {
+  ChannelId,
+  EnvironmentId,
+  type OrchestrationChannelShell,
+  type OrchestrationShellSnapshot,
+} from "@t3tools/contracts";
+import { describe, expect, it } from "@effect/vitest";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
+
+import { PrimaryConnectionTarget } from "../connection/model.ts";
+import { channelKey, createEnvironmentChannelShellAtoms } from "./channelShell.ts";
+import type { EnvironmentShellState } from "./shell.ts";
+import { createEnvironmentSnapshotAtom } from "./snapshots.ts";
+
+const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
+const OTHER_ENVIRONMENT_ID = EnvironmentId.make("environment-2");
+
+const channel = (
+  id: string,
+  fields: Partial<OrchestrationChannelShell> = {},
+): OrchestrationChannelShell => ({
+  id: ChannelId.make(id),
+  name: id,
+  archivedAt: null,
+  latestPostAt: null,
+  createdAt: "2026-04-01T00:00:00.000Z",
+  updatedAt: "2026-04-01T00:00:00.000Z",
+  ...fields,
+});
+
+const snapshot = (
+  channels: ReadonlyArray<OrchestrationChannelShell> | undefined,
+): OrchestrationShellSnapshot => ({
+  snapshotSequence: 1,
+  updatedAt: "2026-04-01T00:00:00.000Z",
+  projects: [],
+  threads: [],
+  ...(channels === undefined ? {} : { channels }),
+});
+
+/**
+ * `snapshots` maps an environment to its snapshot, or to `PENDING` for one whose
+ * shell has NOT ARRIVED.
+ *
+ * That second case is the whole reason this parameter is not just a Map of
+ * snapshots. Every earlier version of this harness built `AsyncResult.success`
+ * only, so "no snapshot yet" was unreachable from the suite — which is exactly
+ * how a boolean over a three-state fact passed every test here while the route
+ * told operators to update a working server.
+ */
+const PENDING = Symbol("shell has not arrived");
+
+function makeHarness(
+  snapshots: ReadonlyArray<readonly [EnvironmentId, OrchestrationShellSnapshot | typeof PENDING]>,
+) {
+  const byEnvironment = new Map(snapshots);
+  const shellStateAtoms = Atom.family((environmentId: EnvironmentId) => {
+    const found = byEnvironment.get(environmentId);
+    if (found === PENDING) {
+      return Atom.make(AsyncResult.initial<EnvironmentShellState>());
+    }
+    return Atom.make(
+      AsyncResult.success<EnvironmentShellState>({
+        snapshot: found === undefined ? Option.none() : Option.some(found),
+        status: "live",
+        error: Option.none(),
+      }),
+    );
+  });
+  const catalogValueAtom = Atom.make({
+    isReady: true,
+    entries: new Map(
+      snapshots.map(([environmentId]) => [
+        environmentId,
+        {
+          target: new PrimaryConnectionTarget({
+            environmentId,
+            label: "Environment",
+            httpBaseUrl: "https://example.test",
+            wsBaseUrl: "wss://example.test",
+          }),
+          profile: Option.none(),
+        },
+      ]),
+    ),
+  });
+
+  return {
+    registry: AtomRegistry.make(),
+    channels: createEnvironmentChannelShellAtoms({
+      catalogValueAtom,
+      snapshotAtom: createEnvironmentSnapshotAtom(shellStateAtoms),
+    }),
+  };
+}
+
+describe("channelKey", () => {
+  it("separates the two ids with NUL rather than a printable character", () => {
+    // The escape, not a typed separator. The first version of the React key over
+    // this list spelled it inline and put a literal NUL BYTE in the source file,
+    // where it renders as a space and git reports the file as binary. Asserting
+    // the produced string is what catches that — reading the source does not.
+    expect(
+      channelKey({ environmentId: ENVIRONMENT_ID, channelId: ChannelId.make("seniors") }),
+    ).toBe("environment-1\u0000seniors");
+  });
+
+  it("does not let two different refs share one key", () => {
+    // The pair that collides under any printable separator: with "-" both of
+    // these are "a-b-c". A key collision here hands two channels one atom, so
+    // opening one renders the other.
+    expect(
+      channelKey({
+        environmentId: EnvironmentId.make("a"),
+        channelId: ChannelId.make("b-c"),
+      }),
+    ).not.toBe(
+      channelKey({
+        environmentId: EnvironmentId.make("a-b"),
+        channelId: ChannelId.make("c"),
+      }),
+    );
+  });
+});
+
+describe("channel shell atoms", () => {
+  it("orders by latest post, not by creation", () => {
+    // The two orderings are OPPOSITE in this fixture, which is the only kind of
+    // fixture that can tell them apart: "quiet" was created later but its last
+    // post is older, and "busy" was created first and has a post from today. A
+    // list sorted by createdAt puts quiet first; the sidebar has to put busy
+    // first, because the channel with new traffic is the one an operator wants.
+    const harness = makeHarness([
+      [
+        ENVIRONMENT_ID,
+        snapshot([
+          channel("busy", {
+            createdAt: "2026-04-01T00:00:00.000Z",
+            latestPostAt: "2026-04-09T00:00:00.000Z",
+          }),
+          channel("quiet", {
+            createdAt: "2026-04-05T00:00:00.000Z",
+            latestPostAt: "2026-04-06T00:00:00.000Z",
+          }),
+        ]),
+      ],
+    ]);
+
+    const ids = harness.registry.get(harness.channels.channelsAtom).map((c) => c.id);
+
+    expect(ids).toEqual(["busy", "quiet"]);
+  });
+
+  it("sorts a channel nobody has posted in by when it was created", () => {
+    // `latestPostAt` is null for a channel with no posts. Treating null as the
+    // epoch buries a channel created a minute ago underneath one whose last post
+    // was a week ago — so "new-empty", created today and never posted in, sorts
+    // ABOVE "old-busy", whose only post is from last week.
+    const harness = makeHarness([
+      [
+        ENVIRONMENT_ID,
+        snapshot([
+          channel("old-busy", {
+            createdAt: "2026-04-01T00:00:00.000Z",
+            latestPostAt: "2026-04-02T00:00:00.000Z",
+          }),
+          channel("new-empty", {
+            createdAt: "2026-04-08T00:00:00.000Z",
+            latestPostAt: null,
+          }),
+        ]),
+      ],
+    ]);
+
+    const ids = harness.registry.get(harness.channels.channelsAtom).map((c) => c.id);
+
+    expect(ids).toEqual(["new-empty", "old-busy"]);
+  });
+
+  it("breaks a tie on id rather than on the order the server happened to send", () => {
+    // Both channels have the same effective timestamp, so the comparator has
+    // nothing to separate them and a stable sort would keep the snapshot's
+    // order. The snapshot here lists them in the REVERSE of id order, so a
+    // comparator that returns 0 on a tie renders "b" above "a" — and the point of
+    // sorting in the atom is that every consumer agrees, which requires the order
+    // not to depend on what the server happened to send.
+    const harness = makeHarness([
+      [
+        ENVIRONMENT_ID,
+        snapshot([
+          channel("b", { latestPostAt: "2026-04-09T00:00:00.000Z" }),
+          channel("a", { latestPostAt: "2026-04-09T00:00:00.000Z" }),
+        ]),
+      ],
+    ]);
+
+    const ids = harness.registry.get(harness.channels.channelsAtom).map((c) => c.id);
+
+    expect(ids).toEqual(["a", "b"]);
+  });
+
+  it("keeps two channels with the same id apart by environment", () => {
+    // A client connected to two servers sees two `#seniors`. They are different
+    // channels and the id alone cannot say which is which, so the list carries
+    // the environment and the point read is keyed on it.
+    const harness = makeHarness([
+      [ENVIRONMENT_ID, snapshot([channel("seniors")])],
+      [OTHER_ENVIRONMENT_ID, snapshot([channel("seniors", { name: "seniors (other)" })])],
+    ]);
+
+    const both = harness.registry.get(harness.channels.channelsAtom);
+    const fromOther = harness.registry.get(
+      harness.channels.channelAtom({
+        environmentId: OTHER_ENVIRONMENT_ID,
+        channelId: ChannelId.make("seniors"),
+      }),
+    );
+
+    expect(both.map((c) => c.environmentId)).toEqual([ENVIRONMENT_ID, OTHER_ENVIRONMENT_ID]);
+    expect(fromOther?.name).toBe("seniors (other)");
+  });
+
+  it("hands the list and the point read the same object", () => {
+    // A component reading one channel and a list rendering the same channel must
+    // not get two objects that compare unequal, or the two rerender out of step.
+    const harness = makeHarness([[ENVIRONMENT_ID, snapshot([channel("seniors")])]]);
+
+    const fromList = harness.registry.get(harness.channels.channelsAtom)[0];
+    const fromPoint = harness.registry.get(
+      harness.channels.channelAtom({
+        environmentId: ENVIRONMENT_ID,
+        channelId: ChannelId.make("seniors"),
+      }),
+    );
+
+    expect(fromPoint).toBe(fromList);
+  });
+
+  it("reports a shell that has not arrived as unknown, not as unsupported", () => {
+    // THE STATE THE SUITE COULD NOT BUILD. `createEnvironmentSnapshotAtom`
+    // returns null until a snapshot lands, so a boolean
+    // `snapshot?.channels !== undefined` computed false — indistinguishable
+    // from a server that has no channels. The route then rendered "This server
+    // has no channels. Update the server on that machine to use them." on every
+    // reload while sitting on a channel URL.
+    //
+    // All THREE values in one test, because the pair alone cannot show that
+    // three are distinguished: two of them would pass for any two-valued
+    // implementation.
+    const harness = makeHarness([
+      [ENVIRONMENT_ID, PENDING],
+      [OTHER_ENVIRONMENT_ID, snapshot(undefined)],
+    ]);
+
+    expect(
+      harness.registry.get(harness.channels.environmentChannelSupportAtom(ENVIRONMENT_ID)),
+    ).toBe("unknown");
+    expect(
+      harness.registry.get(harness.channels.environmentChannelSupportAtom(OTHER_ENVIRONMENT_ID)),
+    ).toBe("unsupported");
+  });
+
+  it("tells an empty channel list apart from a server that has no channels", () => {
+    // `[]` means "you are in no channels" and is fixed by joining one. An absent
+    // field means the server predates channels, or no snapshot has arrived, and
+    // joining a channel would not change it. The list is `[]` in both cases, so
+    // the distinction has to live somewhere else or the UI tells an operator to
+    // join a channel on a server that cannot have them.
+    const harness = makeHarness([
+      [ENVIRONMENT_ID, snapshot([])],
+      [OTHER_ENVIRONMENT_ID, snapshot(undefined)],
+    ]);
+
+    expect(
+      harness.registry.get(harness.channels.environmentChannelSupportAtom(ENVIRONMENT_ID)),
+    ).toBe("supported");
+    expect(
+      harness.registry.get(harness.channels.environmentChannelSupportAtom(OTHER_ENVIRONMENT_ID)),
+    ).toBe("unsupported");
+    expect(harness.registry.get(harness.channels.channelsAtom)).toEqual([]);
+  });
+});

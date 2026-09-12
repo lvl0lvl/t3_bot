@@ -1,5 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
+  ChannelSupport,
+  EnvironmentChannelShell,
   EnvironmentProject,
   EnvironmentThread,
   EnvironmentThreadShell,
@@ -9,7 +11,7 @@ import {
   mergeEnvironmentThread,
 } from "@t3tools/client-runtime/state/threads";
 import type { ScopedProjectRef, ScopedThreadRef, ServerConfig } from "@t3tools/contracts";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { ChannelId, EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 import { useMemo } from "react";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -19,7 +21,11 @@ import {
   allEnvironmentProjectSnapshotsReadyAtom,
   allEnvironmentShellsBootstrappedAtom,
 } from "./shell";
-import { environmentThreadDetails, environmentThreadShells } from "./threads";
+import {
+  environmentChannelShells,
+  environmentThreadDetails,
+  environmentThreadShells,
+} from "./threads";
 
 const EMPTY_THREAD_REFS: ReadonlyArray<ScopedThreadRef> = Object.freeze([]);
 
@@ -37,6 +43,15 @@ const EMPTY_THREAD_DETAIL_ATOM = Atom.make<EnvironmentThread | null>(null).pipe(
 );
 const EMPTY_THREAD_STATUS_ATOM = Atom.make<EnvironmentThreadStatus>("empty").pipe(
   Atom.withLabel("web-thread-status:empty"),
+);
+
+const EMPTY_CHANNEL_ATOM = Atom.make<EnvironmentChannelShell | null>(null).pipe(
+  Atom.withLabel("web-channel-shell:empty"),
+);
+// A null environment is not a server without channels — it is no server yet,
+// which is exactly the distinction the boolean form got wrong.
+const UNKNOWN_CHANNEL_SUPPORT_ATOM = Atom.make<ChannelSupport>("unknown").pipe(
+  Atom.withLabel("web-channel-support:unknown"),
 );
 
 const activeEnvironmentIdAtom = Atom.make<EnvironmentId | null>(null).pipe(
@@ -63,6 +78,51 @@ export function useEnvironmentThreadRefs(
     environmentId === null
       ? EMPTY_THREAD_REFS_ATOM
       : environmentThreadShells.environmentThreadRefsAtom(environmentId),
+  );
+}
+
+/**
+ * The channels this client's member is in, most recently active first.
+ *
+ * The ORDER comes from the atom rather than from a component: two components
+ * sorting the same list two ways is how a sidebar and a command palette come to
+ * disagree about which channel is first.
+ */
+export function useChannels(): ReadonlyArray<EnvironmentChannelShell> {
+  return useAtomValue(environmentChannelShells.channelsAtom);
+}
+
+/**
+ * One channel, or null when this client does not hold it.
+ *
+ * Null covers both "no such channel" and "you are not a member", deliberately:
+ * the server only ever sends the channels the member is in, so a client cannot
+ * tell those apart and should not pretend to.
+ */
+export function useChannel(
+  ref: { readonly environmentId: EnvironmentId; readonly channelId: ChannelId } | null,
+): EnvironmentChannelShell | null {
+  return useAtomValue(
+    ref === null ? EMPTY_CHANNEL_ATOM : environmentChannelShells.channelAtom(ref),
+  );
+}
+
+/**
+ * What this environment has said about channels: unknown, unsupported, or
+ * supported.
+ *
+ * Distinct from "the list is empty" on purpose. An older server sends no
+ * channels field, and telling an operator "no channels yet" about a server that
+ * cannot have them is a lie the list alone cannot avoid.
+ *
+ * Three values rather than a boolean, because a snapshot that has not arrived is
+ * not an old server — and while this was a boolean the route said it was.
+ */
+export function useChannelSupport(environmentId: EnvironmentId | null): ChannelSupport {
+  return useAtomValue(
+    environmentId === null
+      ? UNKNOWN_CHANNEL_SUPPORT_ATOM
+      : environmentChannelShells.environmentChannelSupportAtom(environmentId),
   );
 }
 

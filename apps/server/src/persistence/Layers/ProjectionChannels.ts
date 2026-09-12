@@ -25,6 +25,16 @@ const ProjectionChannelRow = Schema.Struct({
 });
 type ProjectionChannelRow = typeof ProjectionChannelRow.Type;
 
+/**
+ * The same row plus the aggregate. `members` is not here: it comes from a second
+ * query per channel rather than a second join, because joining membership as
+ * well would multiply the post rows by the member rows and turn MAX into a
+ * correct answer computed the expensive way.
+ */
+const ProjectionChannelWithActivityRow = ProjectionChannelRow.mapFields(
+  Struct.assign({ latestPostAt: Schema.NullOr(IsoDateTime) }),
+);
+
 const ProjectionChannelMemberRow = Schema.Struct({
   handle: ChannelMemberHandle,
   memberKind: Schema.Literals(["thread", "human"]),
@@ -100,6 +110,69 @@ const makeProjectionChannelRepository = Effect.gen(function* () {
         FROM projection_channel_members
         WHERE channel_id = ${channelId}
         ORDER BY handle ASC
+      `,
+  });
+
+  /**
+   * The member's channels, with the last post's time, in one statement.
+   *
+   * A LEFT JOIN so a channel with no posts still comes back — a channel the
+   * sidebar cannot see is indistinguishable from one that does not exist, and an
+   * inner join would hide every freshly created channel until someone spoke.
+   *
+   * Ordered here rather than by the caller: the ordering is "most recent
+   * activity, then oldest channel", and NULLs sort last under `DESC` in SQLite,
+   * which is the wrong end. `COALESCE` to the channel's own creation time makes
+   * an empty channel sort by when it appeared.
+   */
+  const listChannelRowsForMember = SqlSchema.findAll({
+    Request: Schema.Struct({ memberKind: Schema.String, memberId: Schema.String }),
+    Result: ProjectionChannelWithActivityRow,
+    execute: (member) =>
+      sql`
+        SELECT
+          c.channel_id AS "channelId",
+          c.name,
+          c.archived_at AS "archivedAt",
+          MAX(p.created_at) AS "latestPostAt",
+          c.created_at AS "createdAt",
+          c.updated_at AS "updatedAt"
+        FROM projection_channels c
+        JOIN projection_channel_members m ON m.channel_id = c.channel_id
+        LEFT JOIN projection_channel_posts p ON p.channel_id = c.channel_id
+        WHERE m.member_kind = ${member.memberKind} AND m.member_id = ${member.memberId}
+        GROUP BY c.channel_id
+        ORDER BY COALESCE(MAX(p.created_at), c.created_at) DESC, c.channel_id ASC
+      `,
+  });
+
+  /**
+   * The same projection as `listChannelRowsForMember`, for one channel and
+   * without the membership join.
+   *
+   * The two share their SELECT shape deliberately: a refetch must produce the
+   * same fields as the snapshot, or a live update overwrites a real value with
+   * a missing one. They are two statements rather than one because the filters
+   * differ — `MAX` over a LEFT JOIN needs the GROUP BY either way, and
+   * parameterising the WHERE across "by member" and "by id" would make one
+   * query that answers neither question clearly.
+   */
+  const findChannelWithActivityById = SqlSchema.findOneOption({
+    Request: Schema.String,
+    Result: ProjectionChannelWithActivityRow,
+    execute: (channelId) =>
+      sql`
+        SELECT
+          c.channel_id AS "channelId",
+          c.name,
+          c.archived_at AS "archivedAt",
+          MAX(p.created_at) AS "latestPostAt",
+          c.created_at AS "createdAt",
+          c.updated_at AS "updatedAt"
+        FROM projection_channels c
+        LEFT JOIN projection_channel_posts p ON p.channel_id = c.channel_id
+        WHERE c.channel_id = ${channelId}
+        GROUP BY c.channel_id
       `,
   });
 
@@ -223,6 +296,35 @@ const makeProjectionChannelRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("ProjectionChannelRepository.getPost:query")),
     );
 
+  const getChannelWithActivityById: ProjectionChannelRepositoryShape["getChannelWithActivityById"] =
+    (channelId) =>
+      findChannelWithActivityById(channelId).pipe(
+        Effect.flatMap((found) =>
+          Option.isNone(found)
+            ? Effect.succeed(Option.none())
+            : listMemberRows(found.value.channelId).pipe(
+                Effect.map((members) => Option.some({ ...found.value, members })),
+              ),
+        ),
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionChannelRepository.getChannelWithActivityById:query"),
+        ),
+      );
+
+  const listChannelsForMember: ProjectionChannelRepositoryShape["listChannelsForMember"] = (
+    member,
+  ) =>
+    listChannelRowsForMember(member).pipe(
+      Effect.flatMap((rows) =>
+        Effect.forEach(rows, (row) =>
+          listMemberRows(row.channelId).pipe(Effect.map((members) => ({ ...row, members }))),
+        ),
+      ),
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionChannelRepository.listChannelsForMember:query"),
+      ),
+    );
+
   const listPosts: ProjectionChannelRepositoryShape["listPosts"] = (input) =>
     listPostRows({
       channelId: input.channelId,
@@ -238,6 +340,8 @@ const makeProjectionChannelRepository = Effect.gen(function* () {
     replaceMembers,
     insertPost,
     getPost,
+    getChannelWithActivityById,
+    listChannelsForMember,
     listPosts,
   } satisfies ProjectionChannelRepositoryShape;
 });

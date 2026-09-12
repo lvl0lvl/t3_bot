@@ -535,6 +535,7 @@ const buildAppUnderTest = (options?: {
     >;
     terminalManager?: Partial<TerminalManager.TerminalManager["Service"]>;
     orchestrationEngine?: Partial<OrchestrationEngine.OrchestrationEngineService["Service"]>;
+    projectionChannels?: Partial<ProjectionChannelRepository["Service"]>;
     threadDeletionReactor?: Partial<ThreadDeletionReactor["Service"]>;
     analyticsService?: Partial<AnalyticsService.AnalyticsService["Service"]>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
@@ -968,15 +969,38 @@ const buildAppUnderTest = (options?: {
             latestSequence: Effect.succeed(0),
             ...options?.layers?.orchestrationEngine,
           }),
-          // The comms toolkit is registered on the real server layer now, and
-          // its live gateway reads the channel projection. This harness mocks
-          // the engine, so it mocks the repository beside it rather than
-          // building a database for a router test that never touches a channel.
+          /**
+           * ONE MOCK OF THIS SERVICE, at the level the app actually sees.
+           *
+           * There were two, at two levels of the layer graph, after the comms
+           * toolkit's harness mock met the shell stream's. The OUTER one wins,
+           * so the inner one's `options` override never reached the app and the
+           * shell snapshot path found no `listChannelsForMember` — which the
+           * suite reported as a parse error on a duplicate import, hiding it.
+           *
+           * READS ANSWER EMPTY, WRITES STILL DIE, because a router test that
+           * reaches a write has moved off its subject.
+           *
+           * Two of those reads are NOT the toolkit's, and the distinction cost
+           * something: `getChannelWithActivityById` and `listChannelsForMember`
+           * are the SHELL path's, and answering them empty by default is the
+           * mechanism by which the membership filter was unpinnable from this
+           * file at all — every channel test here stubs them, so no test in this
+           * file can see the query that decides what a client is sent. The
+           * real-database tests in `persistence/Layers/ProjectionChannels.test.ts`
+           * are where that guard is held.
+           */
           Layer.mock(ProjectionChannelRepository)({
+            upsertChannel: () => Effect.die("unused"),
             getChannelByName: () => Effect.succeedNone,
             getChannelById: () => Effect.succeedNone,
+            getChannelWithActivityById: () => Effect.succeedNone,
+            replaceMembers: () => Effect.die("unused"),
+            insertPost: () => Effect.die("unused"),
             getPost: () => Effect.succeedNone,
+            listChannelsForMember: () => Effect.succeed([]),
             listPosts: () => Effect.succeed([]),
+            ...options?.layers?.projectionChannels,
           }),
           Layer.mock(ThreadDeletionReactor)({
             start: () => Effect.void,
@@ -991,42 +1015,44 @@ const buildAppUnderTest = (options?: {
         ),
       ),
       Layer.provide(
-        Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
-          getUserInputActivity: () => Effect.die("unused"),
-          getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: "1970-01-01T00:00:00.000Z",
-            }),
-          getArchivedShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: "1970-01-01T00:00:00.000Z",
-            }),
-          searchThreads: () => Effect.succeed({ matches: [] }),
-          getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
-          getProjectShellById: () => Effect.succeed(Option.none()),
-          getThreadShellById: () => Effect.succeed(Option.none()),
-          getThreadDetailById: () => Effect.succeed(Option.none()),
-          getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
-          getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
-          getEventReplayStats: ({ fromSequenceExclusive, toSequenceInclusive }) =>
-            Effect.succeed({
-              eventCount: Math.max(0, toSequenceInclusive - fromSequenceExclusive),
-              payloadBytes: 0,
-            }),
-          getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
-          getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
-          getImportedAgentSessionSources: () => Effect.succeed([]),
-          getThreadCheckpointContext: () => Effect.succeed(Option.none()),
-          ...options?.layers?.projectionSnapshotQuery,
-        }),
+        Layer.mergeAll(
+          Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+            getUserInputActivity: () => Effect.die("unused"),
+            getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
+            getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 0,
+                projects: [],
+                threads: [],
+                updatedAt: "1970-01-01T00:00:00.000Z",
+              }),
+            getArchivedShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 0,
+                projects: [],
+                threads: [],
+                updatedAt: "1970-01-01T00:00:00.000Z",
+              }),
+            searchThreads: () => Effect.succeed({ matches: [] }),
+            getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
+            getProjectShellById: () => Effect.succeed(Option.none()),
+            getThreadShellById: () => Effect.succeed(Option.none()),
+            getThreadDetailById: () => Effect.succeed(Option.none()),
+            getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
+            getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
+            getEventReplayStats: ({ fromSequenceExclusive, toSequenceInclusive }) =>
+              Effect.succeed({
+                eventCount: Math.max(0, toSequenceInclusive - fromSequenceExclusive),
+                payloadBytes: 0,
+              }),
+            getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+            getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+            getImportedAgentSessionSources: () => Effect.succeed([]),
+            getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+            ...options?.layers?.projectionSnapshotQuery,
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({
@@ -8477,6 +8503,462 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(items[1]?.kind, "thread-removed");
       assert.deepEqual(items[2], { kind: "synchronized" });
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  /**
+   * THE MEASUREMENT THE DELETED POST EVENT RESTS ON.
+   *
+   * There used to be a `channel-post-appended` shell event. It was deleted
+   * because shell events are coalesced to one per aggregate per window, so a
+   * per-post event naming one post would silently drop the rest of a burst. The
+   * replacement argument is that a post moves `latestPostAt` on the channel
+   * shell and `channel-upserted` carries it.
+   *
+   * That argument is a claim about a path, and this is the test of it. Without
+   * it, a `channel.post-created` that never reaches the shell stream — a wrong
+   * `aggregateKind`, a switch branch that drops it, a refetch that sends null —
+   * leaves the message view silently quiet, and the reason it is quiet is a
+   * sentence in a docstring rather than a failing test.
+   */
+  const channelPostEvent = {
+    sequence: 2,
+    eventId: EventId.make("event-channel-post"),
+    aggregateKind: "channel",
+    aggregateId: ChannelId.make("channel-project"),
+    occurredAt: "2026-01-01T00:00:01.000Z",
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "channel.post-created",
+    payload: {
+      channelId: ChannelId.make("channel-project"),
+      postId: ChannelPostId.make("post-1"),
+      authorRef: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+      authorHandle: ChannelMemberHandle.make("walt"),
+      body: "what is 2+2",
+      mentions: [ChannelMemberHandle.make("boss1")],
+      parentPostId: null,
+      createdAt: "2026-01-01T00:00:01.000Z",
+    },
+  } satisfies Extract<OrchestrationEvent, { type: "channel.post-created" }>;
+
+  const channelRow = (input: {
+    readonly latestPostAt: string | null;
+    readonly members: ReadonlyArray<{
+      readonly handle: string;
+      readonly memberKind: "thread" | "human";
+      readonly memberId: string;
+    }>;
+  }) => ({
+    channelId: ChannelId.make("channel-project"),
+    name: "project",
+    members: input.members.map((member) => ({
+      ...member,
+      handle: ChannelMemberHandle.make(member.handle),
+    })),
+    archivedAt: null,
+    latestPostAt: input.latestPostAt,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:01.000Z",
+  });
+
+  it.effect("a post reaches the shell stream as a channel upsert carrying latestPostAt", () =>
+    Effect.gen(function* () {
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [
+                    {
+                      handle: "walt",
+                      memberKind: "human",
+                      memberId: HUMAN_OPERATOR_MEMBER_ID,
+                    },
+                  ],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, channelPostEvent);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "snapshot");
+      const upserted = items[1];
+      assert.equal(upserted?.kind, "channel-upserted");
+      if (upserted?.kind !== "channel-upserted") {
+        throw new Error("the shell stream did not report the post");
+      }
+
+      // THE FIELD, not merely the event. A refetch that sent null here would
+      // overwrite the snapshot's value on every update, and this test would pass
+      // on the event's presence alone while the sidebar reordered to the bottom
+      // and showed "No posts yet" over a channel that had just been posted in.
+      assert.equal(upserted.channel.latestPostAt, "2026-01-01T00:00:01.000Z");
+      assert.equal(upserted.channel.id, "channel-project");
+      assert.deepEqual(items[2], { kind: "synchronized" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("a post in a channel this connection is not in reports a removal", () =>
+    Effect.gen(function* () {
+      // The admitting test above passes for a stream that ignores membership
+      // entirely, so this is the half that makes the filter load-bearing. A
+      // client whose view is "the channels I am in" must be told the channel is
+      // not in its set — the same answer as "the channel is gone", deliberately,
+      // because both mean the same thing to that client.
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [{ handle: "pm", memberKind: "thread", memberId: "thread-pm" }],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, channelPostEvent);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.equal(items[1]?.kind, "channel-removed");
+      assert.deepEqual(items[2], { kind: "synchronized" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("a THREAD member carrying the operator's id is not the operator", () =>
+    Effect.gen(function* () {
+      // THE FIXTURE COMES FROM THE PROPERTY, not from a plausible-looking row.
+      // The two tests above differ in BOTH fields — human/human-walt against
+      // thread/thread-pm — so a membership test that compared memberId alone and
+      // ignored memberKind passed both. Named rather than counted: mutating
+      // `rowHasMember` to compare `memberId` alone reds THIS test and only this
+      // one. An absolute pass count decays as the file grows — the earlier
+      // version of this comment said "all 185 green" and the count has moved
+      // twice since, so a reader re-running it could not tell a grown
+      // population from a surviving mutant — which is exactly why no number
+      // appears here now. The input that separates them is a member whose id
+      // MATCHES and whose kind does not.
+      //
+      // It is the same impersonation route `requireChannelMemberShape` refuses
+      // at the decider, and the same reason the mention-wake reactor keeps its
+      // own kind check: that invariant runs on COMMANDS, and this is a read path
+      // replaying EVENTS, so a row written before the invariant reaches here
+      // untouched.
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [
+                    {
+                      handle: "impostor",
+                      memberKind: "thread",
+                      memberId: HUMAN_OPERATOR_MEMBER_ID,
+                    },
+                  ],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, channelPostEvent);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.equal(items[1]?.kind, "channel-removed");
+      assert.deepEqual(items[2], { kind: "synchronized" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  /**
+   * The channel list for a member, keyed on WHO ASKED.
+   *
+   * The stub answers differently per member rather than returning a fixed list,
+   * because a fixed list passes for a caller that hands `listChannelsForMember`
+   * the wrong member — or no member at all, which is what a snapshot that
+   * ignored membership would look like. It also records the refs it was asked
+   * for, so a test can assert the operator's own ref reached the query instead
+   * of asserting only that some channels came back.
+   */
+  const channelsByMember = (input: {
+    readonly asked: Array<{ readonly memberKind: string; readonly memberId: string }>;
+  }) => ({
+    listChannelsForMember: (member: { memberKind: string; memberId: string }) => {
+      input.asked.push(member);
+      return Effect.succeed(
+        member.memberKind === "human" && member.memberId === HUMAN_OPERATOR_MEMBER_ID
+          ? [
+              channelRow({
+                latestPostAt: "2026-01-01T00:00:01.000Z",
+                members: [
+                  { handle: "walt", memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+                ],
+              }),
+            ]
+          : [
+              {
+                ...channelRow({ latestPostAt: null, members: [] }),
+                channelId: ChannelId.make("channel-someone-else"),
+                name: "someone-else",
+              },
+            ],
+      );
+    },
+  });
+
+  it.effect("reads the snapshot BEFORE the channels, so one created in the gap still lands", () =>
+    Effect.gen(function* () {
+      // THE ORDER, pinned by its consequence rather than by a call sequence.
+      // Reversing the two reads passes every other test in this file, and the
+      // order is the thing three docstrings call load-bearing.
+      //
+      // The hazard it prevents: a channel created BETWEEN the two reads. Read
+      // the snapshot first and the later channel read sees the new channel, so
+      // it reaches the client. Read channels FIRST and the channel is absent
+      // from the list while its `channel.created` event sequence is already at
+      // or below the snapshot cursor the client then resumes from — so the
+      // upsert is deduped away as well, and the channel stays invisible until
+      // something unrelated changes it. That is the exact defect this PR
+      // exists to fix, arriving from the other side.
+      //
+      // The stub models "created in the gap" the only way a repository can: the
+      // channel exists for the channel read only once the snapshot read has
+      // happened.
+      let snapshotRead = false;
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionChannels: {
+            listChannelsForMember: () =>
+              Effect.succeed(
+                snapshotRead
+                  ? [
+                      channelRow({
+                        latestPostAt: null,
+                        members: [
+                          {
+                            handle: "walt",
+                            memberKind: "human",
+                            memberId: HUMAN_OPERATOR_MEMBER_ID,
+                          },
+                        ],
+                      }),
+                    ]
+                  : [],
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.sync(() => {
+                snapshotRead = true;
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
+            Stream.take(1),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      const first = items[0];
+      assert.equal(first?.kind, "snapshot");
+      if (first?.kind !== "snapshot") {
+        throw new Error("the shell stream did not open with a snapshot");
+      }
+      // Reversed, this is `[]` — the channel is lost with nothing going red.
+      assert.deepEqual(
+        first.snapshot.channels?.map((channel) => channel.id),
+        ["channel-project"],
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("the socket's shell snapshot carries the operator's channels", () =>
+    Effect.gen(function* () {
+      // The snapshot, not the live stream. `channel-upserted` fires only when a
+      // channel CHANGES, so channels that exist and sit still reach a client
+      // through the snapshot or not at all — which is exactly how the sidebar
+      // came to be empty against a real server while every stream test passed.
+      const asked: Array<{ readonly memberKind: string; readonly memberId: string }> = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionChannels: channelsByMember({ asked }),
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 1,
+                projects: [],
+                threads: [],
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
+            Stream.take(1),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      const first = items[0];
+      assert.equal(first?.kind, "snapshot");
+      if (first?.kind !== "snapshot") {
+        throw new Error("the shell stream did not open with a snapshot");
+      }
+      assert.deepEqual(
+        first.snapshot.channels?.map((channel) => channel.id),
+        ["channel-project"],
+      );
+      // `latestPostAt` on the SNAPSHOT too, not just on the live upsert: it is
+      // what the sidebar orders by, and a snapshot that dropped it would order
+      // every channel by creation until something happened to move it.
+      assert.equal(first.snapshot.channels?.[0]?.latestPostAt, "2026-01-01T00:00:01.000Z");
+      // WHICH MEMBER WAS ASKED. Without this the assertion above is satisfied by
+      // a handler that hands the query a member it invented, as long as the stub
+      // happens to answer for it.
+      assert.deepEqual(asked, [{ memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID }]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("the HTTP shell route carries the operator's channels", () =>
+    Effect.gen(function* () {
+      // THE DOOR THAT WAS BROKEN, and the one the socket test cannot cover. A
+      // browser bootstraps its shell over HTTP and then resumes the socket with
+      // `afterSequence`, so a snapshot without channels here leaves the sidebar
+      // empty forever: the resume path sends events rather than a snapshot, and
+      // there are no events for channels that have not changed.
+      const asked: Array<{ readonly memberKind: string; readonly memberId: string }> = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionChannels: channelsByMember({ asked }),
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 1,
+                projects: [],
+                threads: [],
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              }),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/shell"), {
+        headers: { cookie: yield* getAuthenticatedSessionCookieHeader() },
+      });
+      const snapshot = yield* responseJsonEffect<{
+        readonly channels?: ReadonlyArray<{ readonly id: string; readonly latestPostAt: unknown }>;
+      }>(response);
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(
+        snapshot.channels?.map((channel) => channel.id),
+        ["channel-project"],
+      );
+      assert.equal(snapshot.channels?.[0]?.latestPostAt, "2026-01-01T00:00:01.000Z");
+      assert.deepEqual(asked, [{ memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID }]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("buffers thread events published while the initial snapshot loads", () =>

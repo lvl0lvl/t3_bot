@@ -1,12 +1,18 @@
 /**
  * The canonical form of a channel name and of a member handle.
  *
- * The one place this rule is allowed to live, and both sides import it: the
- * decider through `commandInvariants.ts`, the MCP toolkit through
+ * The one place this rule is allowed to live, and every side imports it: the
+ * decider through `commandInvariants.ts`; the MCP toolkit through
  * `toolkits/comms/handlers.ts`, which RE-EXPORTS it so a test can assert one
- * implementation by reference rather than by behaviour. A behavioural
- * comparison passes the moment two copies happen to agree, which was true at
- * most moments while they were diverging.
+ * implementation by reference rather than by behaviour; and the web composer
+ * through `client-runtime/src/channelMentions.ts`, which canonicalises the
+ * handles it parses out of a post body. A behavioural comparison passes the
+ * moment two copies happen to agree, which was true at most moments while they
+ * were diverging.
+ *
+ * The list is not load-bearing and will go stale again — the RULE is that there
+ * is one implementation and callers import it. Count the importers with a grep
+ * rather than trusting this sentence.
  *
  * It lives here rather than next to either side because a second copy is the
  * actual defect — the two diverged three times in one

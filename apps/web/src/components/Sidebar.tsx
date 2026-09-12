@@ -226,6 +226,7 @@ import {
   ComboboxTrigger,
   useComboboxFilter,
 } from "./ui/combobox";
+import { SidebarChannels } from "./SidebarChannels";
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
@@ -4610,6 +4611,15 @@ export default function Sidebar() {
               </p>
             )
           ) : null}
+          {/*
+            Above the threads and outside the sortable list: channels are not
+            reorderable and never take part in a thread drag, so putting them
+            inside the DndContext would only give the drag machinery rows it has
+            no meaning for. Hidden while searching, because the search box
+            searches threads and leaving an unfiltered list above the results
+            would read as matches.
+          */}
+          {!isSearchingThreads ? <SidebarChannels /> : null}
           {!isSearchingThreads ? (
             <TooltipProvider
               key="sidebar-thread-tooltips-150"

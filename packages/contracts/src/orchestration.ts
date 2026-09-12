@@ -536,6 +536,41 @@ export type CommandIssuer = typeof CommandIssuer.Type;
 export const HUMAN_OPERATOR_MEMBER_ID = "human-walt";
 
 /**
+ * The operator, as a channel member: the identity every read AND write on a
+ * client connection is performed as.
+ *
+ * ONE VALUE, NOT A FACTORY, and the difference matters. A
+ * `makeChannelMemberRef(kind, id)` accepts the same two fields from anywhere, so
+ * a handler passing a request payload's `memberId` through it is
+ * indistinguishable in a diff from one passing the operator's. There is exactly
+ * one operator on a server, so a CONSTANT makes the right thing the only easy
+ * thing: taking the id from a request is then not expressible without visibly
+ * going around this, and going around it is a thing a reviewer sees.
+ *
+ * It is here beside `HUMAN_OPERATOR_MEMBER_ID` rather than in the socket because
+ * TWO entry points need it: the websocket's shell subscription and the HTTP
+ * shell snapshot the client actually bootstraps from. The socket half alone was
+ * the bug — a client bootstrapping over HTTP and resuming by sequence saw no
+ * channels at all, and nothing about the socket's own correctness could reveal
+ * it.
+ *
+ * THE SEEDER IS NOT A CONSUMER, though it writes this same member into the
+ * seeded rosters. It hand-spells `{ memberKind: "human", memberId:
+ * WALT_MEMBER_ID }` from `HUMAN_OPERATOR_MEMBER_ID` instead. That is the third
+ * spelling of one identity and it is the drift this constant exists to stop, so
+ * it is a gap rather than a design — an earlier version of this docstring
+ * claimed the seeder as a consumer, which was simply false.
+ *
+ * Replace it when accounts exist. At that point the operator arrives on an
+ * authenticated session and this becomes a function of that session — never of a
+ * payload field, which is the bug rather than the shape of it.
+ */
+export const HUMAN_OPERATOR_CHANNEL_MEMBER = {
+  memberKind: "human",
+  memberId: HUMAN_OPERATOR_MEMBER_ID,
+} as const;
+
+/**
  * A channel as the decider sees it. Membership is here because every write
  * invariant needs it; posts are not, because this model is rebuilt on every
  * event and a channel's history is unbounded. Post bodies live in the
@@ -933,10 +968,53 @@ export const OrchestrationThreadShell = Schema.Struct({
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 
+/**
+ * A channel as the sidebar needs it: enough to list and open, and no posts.
+ *
+ * POSTS ARE NOT HERE, and that is the shape rather than an omission. A channel's
+ * history is unbounded and this snapshot is what a reconnecting client refetches
+ * whole, so posts come from a paged read instead. `latestPostAt` is the one thing
+ * the sidebar needs from the history — order by recency, and say "nothing yet"
+ * about an empty channel — and it is the last POST's time rather than the
+ * channel's `updatedAt`, because a membership edit is not activity.
+ *
+ * MEMBERS ARE NOT HERE EITHER, for a different reason: payload. This shape
+ * reaches every connected client on every channel change, and carrying full
+ * membership multiplies that by membership size for data only an OPEN channel
+ * needs — which `getChannelForMember` already returns. Too much data over a
+ * websocket is the regression this repo names first, and a sidebar is where it
+ * would go unnoticed, because it looks correct and merely costs.
+ *
+ * The server still READS membership to decide whether to send this at all. That
+ * is the point: membership decides, and does not travel.
+ */
+export const OrchestrationChannelShell = Schema.Struct({
+  id: ChannelId,
+  name: TrimmedNonEmptyString,
+  archivedAt: Schema.NullOr(IsoDateTime),
+  latestPostAt: Schema.NullOr(IsoDateTime),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationChannelShell = typeof OrchestrationChannelShell.Type;
+
 export const OrchestrationShellSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   projects: Schema.Array(OrchestrationProjectShell),
   threads: Schema.Array(OrchestrationThreadShell),
+  /**
+   * ONLY the channels this client's member is in.
+   *
+   * Filtered at the source rather than in the UI. A client that received every
+   * channel would know the names of channels it cannot read, and "the sidebar
+   * does not render them" is a decision in the wrong place — it is one careless
+   * component away from being untrue, and it puts the membership rule in a file
+   * that cannot enforce it.
+   *
+   * Optional on the wire so a cached snapshot from a server without channels
+   * still decodes.
+   */
+  channels: Schema.optional(Schema.Array(OrchestrationChannelShell)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationShellSnapshot = typeof OrchestrationShellSnapshot.Type;
@@ -961,6 +1039,33 @@ export const OrchestrationShellStreamEvent = Schema.Union([
     kind: Schema.Literal("thread-removed"),
     sequence: NonNegativeInt,
     threadId: ThreadId,
+  }),
+  /**
+   * A channel the client's member is in, changed. Refetch it.
+   *
+   * THERE IS NO SEPARATE "A POST LANDED" EVENT, and that is a consequence of
+   * how this stream is delivered rather than a gap. Shell events are coalesced
+   * by aggregate over a short window and only the LATEST survives per
+   * `(aggregateKind, aggregateId)` — the semantics being "this aggregate
+   * changed, refetch it". A per-post event would be coalesced by the same rule,
+   * so three posts in one window would deliver one event naming one post id and
+   * silently drop the other two. Exempting it from coalescing instead would put
+   * unbounded per-post traffic on a stream every connected client holds.
+   *
+   * A post already moves `latestPostAt` on the shell, so this event carries the
+   * fact that a post landed, in the field the sidebar orders by. A client with
+   * the channel open compares `latestPostAt` against what it holds and refetches
+   * the newest page.
+   */
+  Schema.Struct({
+    kind: Schema.Literal("channel-upserted"),
+    sequence: NonNegativeInt,
+    channel: OrchestrationChannelShell,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("channel-removed"),
+    sequence: NonNegativeInt,
+    channelId: ChannelId,
   }),
 ]);
 export type OrchestrationShellStreamEvent = typeof OrchestrationShellStreamEvent.Type;
