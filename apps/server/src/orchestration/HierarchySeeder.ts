@@ -54,7 +54,6 @@ const SEED_ISSUER: CommandIssuer = { memberKind: "system", memberId: "hierarchy-
  * generated. A fresh id per boot would create a second hierarchy on every
  * restart and every invariant would be satisfied while doing it.
  */
-const PROJECT_ID = ProjectId.make("project-t3bot");
 const PM_THREAD = ThreadId.make("thread-pm");
 const BOSS1_THREAD = ThreadId.make("thread-boss1");
 const BOSS3_THREAD = ThreadId.make("thread-boss3");
@@ -79,36 +78,34 @@ const SEEDED_THREADS = [
 ] as const;
 
 /**
- * Seed the hierarchy, or do nothing because it is already seeded.
+ * Seed the hierarchy into an EXISTING project, or do nothing because it is
+ * already seeded.
  *
- * `workspaceRoot` is the path the seeded project points at. It is a parameter
- * rather than a constant because the seeder cannot know it: the server has no
- * environment-level notion of "its own repository", and inventing one here would
- * create a second project for a path nobody chose.
+ * IT DOES NOT CREATE THE PROJECT, and that is the correction that matters. The
+ * server already bootstraps one from its cwd — `autoBootstrapProjectFromCwd`
+ * resolves `getActiveProjectByWorkspaceRoot(serverConfig.cwd)` and creates one
+ * with a generated id when absent. A seeder creating its own would be a SECOND
+ * project for the same path, which `requireActiveProjectWorkspaceRootAbsent`
+ * refuses outright — so the version of this that created one passed its test and
+ * would have failed on the first real boot.
+ *
+ * The caller supplies the project, because the caller is the only thing that
+ * knows which one this environment bootstrapped.
  */
 export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
-  readonly workspaceRoot: string;
+  readonly projectId: ProjectId;
   readonly createdAt: string;
 }) {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const dispatch = (command: Parameters<typeof engine.dispatch>[0]) =>
     engine.dispatch(command, { issuer: SEED_ISSUER });
 
-  yield* dispatch({
-    type: "project.create",
-    commandId: CommandId.make("seed-project"),
-    projectId: PROJECT_ID,
-    title: "t3_bot",
-    workspaceRoot: input.workspaceRoot,
-    createdAt: input.createdAt,
-  });
-
   for (const thread of SEEDED_THREADS) {
     yield* dispatch({
       type: "thread.create",
       commandId: CommandId.make(`seed-thread-${thread.handle}`),
       threadId: thread.id,
-      projectId: PROJECT_ID,
+      projectId: input.projectId,
       title: thread.title,
       modelSelection: {
         instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("claude")),
@@ -154,7 +151,6 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
 });
 
 export const __testing = {
-  PROJECT_ID,
   SENIORS_CHANNEL,
   PROJECT_CHANNEL,
   SEEDED_THREADS,

@@ -2205,8 +2205,12 @@ describe("OrchestrationEngine", () => {
     const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-hierarchy-seed-"));
     const databasePath = NodePath.join(directory, "state.sqlite");
     const workspaceRoot = NodePath.join(directory, "repo");
+    // The project the server's own cwd bootstrap would have created. The seeder
+    // deliberately does NOT create one: a second project for the same workspace
+    // root is refused by requireActiveProjectWorkspaceRootAbsent, so a seeder
+    // that created its own passed this test and failed on the first real boot.
+    const seededProjectId = asProjectId("project-bootstrapped-from-cwd");
     const seedCommandIds = [
-      "seed-project",
       "seed-thread-pm",
       "seed-thread-boss1",
       "seed-thread-boss3",
@@ -2230,7 +2234,19 @@ describe("OrchestrationEngine", () => {
 
     let system = await createOrchestrationSystem(databasePath);
     try {
-      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-bootstrap-project"),
+          projectId: seededProjectId,
+          title: "t3_bot",
+          workspaceRoot,
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        HierarchySeeder.seedHierarchy({ projectId: seededProjectId, createdAt: now() }),
+      );
 
       const seeded = await system.readModel();
       expect(seeded.projects.filter((project) => project.deletedAt === null)).toHaveLength(1);
@@ -2271,8 +2287,11 @@ describe("OrchestrationEngine", () => {
       await system.dispose();
       system = await createOrchestrationSystem(databasePath);
 
-      // Boot 2: the same commands, same ids.
-      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
+      // Boot 2: the same commands, same ids. The project is already there, as it
+      // would be on a real restart.
+      await system.run(
+        HierarchySeeder.seedHierarchy({ projectId: seededProjectId, createdAt: now() }),
+      );
 
       const reseeded = await system.readModel();
       expect(reseeded.projects.filter((project) => project.deletedAt === null)).toHaveLength(1);
