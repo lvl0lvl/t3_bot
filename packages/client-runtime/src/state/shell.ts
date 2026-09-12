@@ -422,6 +422,7 @@ export function createEnvironmentShellAtoms<R, E>(
 }
 
 export * from "./models.ts";
+export * from "./channelCommands.ts";
 export * from "./channelShell.ts";
 export * from "./shellCommands.ts";
 export * from "./shellReducer.ts";

@@ -1,5 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
-import { createEnvironmentChannelShellAtoms } from "@t3tools/client-runtime/state/shell";
+import {
+  createChannelEnvironmentAtoms,
+  createEnvironmentChannelShellAtoms,
+} from "@t3tools/client-runtime/state/shell";
 import {
   createEnvironmentThreadDetailAtoms,
   createEnvironmentThreadShellAtoms,
@@ -32,6 +35,8 @@ export const environmentChannelShells = createEnvironmentChannelShellAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   snapshotAtom: environmentSnapshotAtom,
 });
+
+export const channelEnvironment = createChannelEnvironmentAtoms(connectionAtomRuntime);
 
 const EMPTY_THREAD_STATE_ATOM = Atom.make(AsyncResult.success(EMPTY_ENVIRONMENT_THREAD_STATE)).pipe(
   Atom.withLabel("web-environment-thread:empty"),
