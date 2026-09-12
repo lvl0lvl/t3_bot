@@ -3,7 +3,7 @@
  * projection and the orchestration engine.
  *
  * Everything above this file is written against `channelGateway.ts` and does
- * not change when this layer replaces `ChannelGatewayUnavailable`. What is here
+ * not change when this layer is swapped for another. What is here
  * is translation and nothing else — no rule of its own, because a rule that
  * lives in an interface's implementation is a rule that exists once per
  * implementer, in the layer least able to notice when the copies drift.
@@ -151,10 +151,19 @@ const make = Effect.gen(function* () {
   /**
    * A cursor this layer did not issue is a DEFECT, not an empty page.
    *
-   * The toolkit's schema refuses a non-numeric cursor before the call, so
-   * anything arriving here malformed is a caller bug. Dying says so; coercing
-   * with `Number()` answered it with the wire shape of "you are caught up",
-   * which is the one wrong answer an agent cannot detect - it stops reading.
+   * The toolkit's schema admits only 1-15 digits, so a cursor arriving here
+   * that is not a safe non-negative integer is a caller bug. Dying says so;
+   * coercing with `Number()` answered it with the wire shape of "you are caught
+   * up", which is the one wrong answer an agent cannot detect - it stops
+   * reading.
+   *
+   * THE DIGIT BOUND IS WHAT MAKES THIS UNREACHABLE, and it was not there at
+   * first: `^[0-9]+$` admitted "9007199254740993", which is numeric, reached
+   * this function, and threw while the argument to `listPosts` was being built
+   * - before `Effect.catchCause(readDefect)` had anything to attach to. Agent
+   * input became a server defect. If the bound in `tools.ts` is ever widened,
+   * this throw becomes agent-reachable again and has to become a typed refusal
+   * instead.
    */
   const requireSequence = (cursor: string) => {
     const sequence = Number(cursor);
@@ -245,17 +254,23 @@ const make = Effect.gen(function* () {
               // the discriminator that was already exported. The result was an
               // agent told to "try again" on a post that could never land.
               //
-              // The detail carries the aggregate's own words either way, so
-              // the agent sees WHY rather than only whether.
+              // THE DETAIL IS A CONSTANT, and the agent is told only WHETHER
+              // rather than why. That is the trade and it is deliberate: the
+              // decider's prose carried the internal channelId - "Author is not
+              // a member of channel 'channel-seniors-t'" - which the tool
+              // surface otherwise never hands an agent, since
+              // `PostResult.channel` and `ReadChannelResult.channel` are both
+              // the NAME. It also carried the phrase "Orchestration command
+              // invariant failed". An agent can act on `retryable`; it can act
+              // on neither of those, and a reader of the channel name it was
+              // never given can.
               //
-              // The detail names the OPERATION and not the cause's text, the
-              // way `storeUnavailable` already does. The decider's prose
-              // carried the internal channelId - "Author is not a member of
-              // channel 'channel-seniors-t'" - and the tool surface otherwise
-              // never hands an agent that value: `PostResult.channel` and
-              // `ReadChannelResult.channel` are both the NAME. It also leaked
-              // the phrase "Orchestration command invariant failed". An agent
-              // can act on retryable; it cannot act on either of those.
+              // What it COSTS is real and should not be read as free: a
+              // membership revoked between the check and the write now reaches
+              // the agent as "the channel refused the post", permanently, with
+              // no reason. `t3_bot-dnz` is where the decider gains a
+              // machine-readable reason so this can say why without quoting
+              // English.
               new ChannelWriteConflict({
                 detail: "the channel refused the post",
                 retryable: !isOrchestrationCommandRejection(error),
@@ -268,5 +283,5 @@ const make = Effect.gen(function* () {
   return ChannelGateway.of({ getChannelForMember, getPost, readPosts, createPost });
 });
 
-/** The live layer. Replaces `ChannelGatewayUnavailable` in the merged server layer. */
+/** The live layer, and the only implementation the server builds. */
 export const ChannelGatewayLive = Layer.effect(ChannelGateway, make);

@@ -29,7 +29,6 @@
 import type { ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import type * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -285,23 +284,3 @@ export interface ChannelGatewayShape {
 export class ChannelGateway extends Context.Service<ChannelGateway, ChannelGatewayShape>()(
   "t3/mcp/toolkits/comms/channelGateway",
 ) {}
-
-/**
- * Defect rather than a typed failure: reaching this means the live layer was
- * not wired, which is a build mistake, not a condition an agent can cause or an
- * operator can fix by retrying. Keeping it out of the typed error channel also
- * keeps "not implemented" from masquerading as "store unavailable".
- */
-const notWired = (operation: string) =>
-  Effect.die(new Error(`ChannelGateway.${operation} called before the channel aggregate landed.`));
-
-/** Stands in until the channel aggregate lands. */
-export const ChannelGatewayUnavailable = Layer.succeed(
-  ChannelGateway,
-  ChannelGateway.of({
-    getChannelForMember: () => notWired("getChannelForMember"),
-    getPost: () => notWired("getPost"),
-    readPosts: () => notWired("readPosts"),
-    createPost: () => notWired("createPost"),
-  }),
-);

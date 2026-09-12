@@ -644,8 +644,9 @@ export const layer = Layer.mergeAll(
   // the note that used to sit here asked for. Before that, these three tools
   // would have been offered to every agent and died on every call — a surface
   // an agent has to spend a call to discover is dead, and it has no way to
-  // learn that from the tool list. `ChannelGatewayUnavailable` dies rather than
-  // failing precisely so the deadness cannot be mistaken for a typed refusal,
-  // so the cost was always the wasted call rather than a confusing one.
+  // learn that from the tool list. The stand-in died rather than failing, so
+  // the deadness could not be mistaken for a typed refusal and the cost was
+  // always the wasted call rather than a confusing one. It is deleted now that
+  // there is an implementation.
   CommsToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

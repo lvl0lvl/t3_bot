@@ -65,13 +65,12 @@ const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
 // cannot be constructed without them, which is the compiler saying the wiring
 // is real.
 //
-// `ChannelGatewayUnavailable` used to be provided here and is not any more: the
+// A `ChannelGatewayUnavailable` stand-in used to be provided here. The
 // registration supplies `ChannelGatewayLive` itself, so the layer built without
-// it and the provide was answering a question nobody asked. Its capability
-// assertion still holds for the reason it always did - the refusal happens
-// before any gateway call - but a dead provide dressed as the proof of that was
-// telling the reader the tools run on an unavailable gateway, which is the
-// opposite of what runs.
+// it and the provide was answering a question nobody asked - while telling the
+// reader the tools run on an unavailable gateway, which is the opposite of what
+// runs. The capability assertion below still holds for the reason it always
+// did: the refusal happens before any gateway call.
 const CommsTestLayer = McpHttpServer.CommsToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provide(OrchestrationLayerLive),

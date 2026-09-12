@@ -163,10 +163,18 @@ export type ChannelPost = typeof ChannelPost.Type;
 /**
  * A cursor is the `nextCursor` of an earlier read, handed back verbatim.
  *
- * Opaque to the agent and a decimal sequence underneath, so the check is the
- * narrowest thing that admits every value this server issues.
+ * Opaque to the agent and a decimal sequence underneath.
+ *
+ * BOUNDED AT FIFTEEN DIGITS, and the bound is not decoration.
+ * `Number.MAX_SAFE_INTEGER` is 9007199254740991 - sixteen digits - and the
+ * gateway turns this string into a number. An unbounded `^[0-9]+$` admits
+ * "9007199254740993", which is numeric, passes every check here, and then
+ * throws in the gateway while the query argument is being built, where no
+ * guard is attached yet: agent input crossing into a server defect. Fifteen
+ * digits is the widest bound that cannot overflow, and an event sequence
+ * reaching 10^15 is not a thing this server will see.
  */
-const CURSOR_PATTERN = /^[0-9]+$/;
+const CURSOR_PATTERN = /^[0-9]{1,15}$/;
 
 export const ReadChannelResult = Schema.Struct({
   channel: Schema.String,

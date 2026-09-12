@@ -444,7 +444,25 @@ describe("the comms toolkit on the live gateway", () => {
         // unread posts behind a successful reply, on the feature whose entire
         // purpose is catching up. A post id is the likely wrong value to send,
         // since posts and cursors are both bare strings in the result.
-        for (const notACursor of ["post-2", "abc", "  ", "-1", "1.5", "0x2", "1e999"]) {
+        // "9007199254740993" is the one that matters, and it is the defect the
+        // FIRST version of this fix introduced. It is DIGITS, so an unbounded
+        // `^[0-9]+$` admitted it; it then exceeded Number.MAX_SAFE_INTEGER and
+        // threw inside the gateway while the query argument was being built -
+        // before the read's `catchCause` had anything to attach to. Agent input
+        // became a server defect, and it was a regression in KIND: before the
+        // cursor was validated at all, that same value coerced silently and
+        // returned a page.
+        for (const notACursor of [
+          "post-2",
+          "abc",
+          "  ",
+          "-1",
+          "1.5",
+          "0x2",
+          "1e999",
+          "9007199254740993",
+          "99999999999999999999",
+        ]) {
           const refused = yield* call(
             "comms_read_channel",
             { channel: "seniors", limit: 2, cursor: notACursor },

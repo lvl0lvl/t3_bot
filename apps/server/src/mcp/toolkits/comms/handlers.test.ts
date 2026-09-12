@@ -260,11 +260,15 @@ describe("comms toolkit handlers", () => {
 
   it.effect("says a channel is ARCHIVED rather than missing, to a member who can see it", () =>
     Effect.gen(function* () {
+      // NO GATEWAY FAILURE in this fixture. `publish` decides archived from
+      // the channel it already proved membership on, so the gateway is never
+      // reached - and a `failures.createPost` here would be dead weight that
+      // made this test look like it covered the gateway branch too. It does
+      // not; the test below does.
       const harness = yield* makeHarness({
         channels: [
           { name: "seniors", archivedAt: "2026-09-11T00:00:00.000Z", memberThreadIds: [THREAD_ID] },
         ],
-        failures: { createPost: new ChannelGateway.ChannelArchived() },
       });
       const error = yield* harness
         .call("comms_post", { channel: "seniors", body: "anyone still here" })
@@ -286,6 +290,30 @@ describe("comms toolkit handlers", () => {
       // worth having rather than a nicer word for the same refusal.
       const read = yield* harness.call("comms_read_channel", { channel: "seniors" });
       expect(read.channel).toBe("seniors");
+    }),
+  );
+
+  it.effect("maps the gateway's ARCHIVED refusal, for the race the pre-check cannot see", () =>
+    Effect.gen(function* () {
+      // NOT archived in the read model, so `publish`'s pre-check passes and the
+      // gateway is actually called. That is the only fixture that reaches
+      // `onCreateFailure.ChannelArchived`, and it is the real state: a channel
+      // archived between the membership read and the dispatch.
+      //
+      // It exists because adding the pre-check disarmed the test that used to
+      // cover this. That fixture set archivedAt AND a gateway failure, so the
+      // pre-check short-circuited and the mapping could be pointed at any error
+      // in the union with all 65 comms tests still green.
+      const harness = yield* makeHarness({
+        channels: [{ name: "seniors", memberThreadIds: [THREAD_ID] }],
+        failures: { createPost: new ChannelGateway.ChannelArchived() },
+      });
+      const error = yield* harness
+        .call("comms_post", { channel: "seniors", body: "lost the race" })
+        .pipe(Effect.flip);
+
+      expect(error).toMatchObject({ _tag: "CommsChannelArchivedError", channel: "seniors" });
+      expect((error as { message: string }).message).toContain("archived");
     }),
   );
 
