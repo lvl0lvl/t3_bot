@@ -1764,7 +1764,7 @@ describe("MentionWakeReactor", () => {
     }
   }, 30_000);
 
-  it("leaves a post able to find its turn, with no id stored anywhere to link them", async () => {
+  it("stores the derived key where a reader holding only the post can find it", async () => {
     const { directory, databasePath } = await makeDatabasePath();
     const system = await makeSystem(databasePath);
     try {
@@ -1776,11 +1776,15 @@ describe("MentionWakeReactor", () => {
       );
 
       // `t3_bot-75k` CRITERION 3 asks that a cancelled turn reach the post, and
-      // the first thing that needs is a way to get from one to the other. There
-      // is no join table and no column linking them, by design: the messageId
-      // is DERIVED, so the link is arithmetic a reader can do with the post in
-      // its hand. This asserts that the derivation actually lands where a
-      // reader would look for it.
+      // the first thing that needs is a way to get from one to the other.
+      //
+      // THERE IS NO COLUMN HOLDING THE POST ID, which is the true claim. An
+      // earlier title here said "no id stored anywhere to link them" and that
+      // was simply false: `projection_turns.pending_message_id` is a stored id
+      // and production already joins on it (`ProjectionSnapshotQuery.ts:1738`).
+      // What is derived is the VALUE — `wakeKey(channelId, postId, threadId)` —
+      // so a reader holding the post can compute the key without being given
+      // one. This asserts that the derivation lands in that column.
       //
       // The reactor's own tests assert what it DISPATCHED. That is a different
       // claim: a dispatched messageId that the projector dropped, renamed, or
@@ -1872,10 +1876,26 @@ describe("MentionWakeReactor", () => {
       // `t3_bot-j6o`'s hazard arriving one layer lower than j6o describes it,
       // in the projection rather than in the adapter.
       //
-      // Whoever builds criterion 3's surfacing half will reach for this row. It
-      // answers for the LATEST wake only, and a reader that assumed otherwise
-      // would report the second post's failure against the first. Stated here
-      // so that assumption fails a test rather than a user.
+      // WHOEVER BUILDS CRITERION 3 MUST NOT REACH FOR THIS ROW, which is the
+      // opposite of what this comment said before a review lane probed it.
+      // Two corrections, both measured:
+      //
+      // IT IS A STAGING ROW AND IT IS DELETED IN EXACTLY THE CASES THE FEATURE
+      // REPORTS. `ProjectionPipeline.ts` removes it on turn-start failure, on
+      // compaction, and on a session going error/stopped/interrupted
+      // (:1482, :1496, :1510) — which is criterion 3's cancellation list
+      // verbatim. So for a turn that started and was then cancelled, this
+      // lookup answers `None`. The tests here cannot see that: the harness has
+      // no provider layer, so no session ever starts or dies.
+      //
+      // THE DURABLE LINK IS ON THE TURN ROW, and it retains the OPPOSITE post.
+      // At turn start the projector copies the pending messageId onto the turn
+      // (`ProjectionPipeline.ts:1580`) as
+      // `existingTurn.value.pendingMessageId ?? …` — `??` never overwrites, so
+      // the turn keeps the FIRST post's key while this pending row keeps the
+      // LATEST. A reader who followed the old version of this comment would
+      // attribute a cancelled turn to the wrong post, which is the exact defect
+      // criterion 3 exists to prevent.
       const pending = await system.run(
         system.turns.getPendingTurnStartByThreadId({ threadId: WOKEN }),
       );
