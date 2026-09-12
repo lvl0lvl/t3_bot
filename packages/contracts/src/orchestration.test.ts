@@ -1594,26 +1594,14 @@ it("isProviderSendTurnSupportedImageMimeType accepts raster formats and rejects 
 });
 
 /**
- * The wire BOUNDARY, asserted rather than assumed, in both directions.
+ * The administrative channel commands, written out rather than derived as
+ * "every channel command except the one".
  *
- * It used to assert that no channel command decodes from a client. That was the
- * only thing preventing forged channel authorship before the issuer landed, and
- * nothing recorded it — so adding one of these to ClientOrchestrationCommand to
- * "finish the integration" would have opened the hole with every test green.
- *
- * `t3_bot-zuy` needs exactly one of them on the wire, so the assertion becomes
- * the line rather than the absence: `channel.post.create` MUST decode, and the
- * six administrative commands MUST NOT, by name. Both halves matter and for
- * different reasons. Without the first, the web composer silently stops working
- * and the failure is "the server did not understand that". Without the second,
- * every browser session can create and archive channels and edit membership,
- * because an RPC client is issued as `human` and `requireIssuerCanAdminister`
- * admits `human`.
- *
- * The names are written out rather than derived as "everything except the one".
- * A derived list grows on its own: a seventh administrative command added to the
- * union would be covered by a derived list and invisible in a written one, and
- * invisible is what a reviewer needs to see.
+ * A derived list absorbs new members silently: add a seventh administrative
+ * command to `OrchestrationCommand` and a derived list would cover it without
+ * anyone deciding that it should be covered. A written list does not — the set
+ * assertion below goes red, and putting it right is an edit a reviewer sees in
+ * the diff. That visibility is the point.
  */
 const ADMINISTRATIVE_CHANNEL_COMMANDS = [
   "channel.archive",
@@ -1624,6 +1612,30 @@ const ADMINISTRATIVE_CHANNEL_COMMANDS = [
   "channel.unarchive",
 ] as const;
 
+/**
+ * The wire BOUNDARY, asserted rather than assumed, in both directions.
+ *
+ * It used to assert that no channel command decodes from a client. That was the
+ * only thing preventing forged channel authorship before the issuer landed, and
+ * nothing recorded it — so adding one of these to `ClientOrchestrationCommand`
+ * to "finish the integration" would have opened the hole with every test green.
+ *
+ * `t3_bot-zuy` needs exactly one of them on the wire, so the assertion is the
+ * line rather than the absence: `channel.post.create` MUST decode, and the six
+ * administrative commands MUST NOT, by name. Both halves matter, for different
+ * reasons. Without the first, the web composer silently stops working and the
+ * failure reads as "the server did not understand that". Without the second,
+ * every browser session can create and archive channels and edit membership,
+ * because an RPC client is issued as `human` and `requireIssuerCanAdminister`
+ * admits `human`.
+ *
+ * The admitting half is also what stops this test measuring its own payload. Its
+ * predecessor sent ONE probe shape for all seven commands — `channel.create`'s
+ * shape — and `channel.post.create` cannot decode as that shape, so the test
+ * recorded "did not decode" for a schema reason and would have passed with the
+ * command on the wire. Measured, on the union that has it: the old probe does
+ * not decode.
+ */
 it.effect("decodes channel.post.create from a client and nothing else channel-shaped", () =>
   Effect.gen(function* () {
     const groups: ReadonlyArray<{

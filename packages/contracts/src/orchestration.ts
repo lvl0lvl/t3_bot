@@ -518,8 +518,8 @@ export type CommandIssuer = typeof CommandIssuer.Type;
  * as this member.
  *
  * IT IS A CONSTANT IN CONTRACTS RATHER THAN ONE PER CALLER because two callers
- * are already using it — the hierarchy seeder writes it into `#project`'s
- * membership and the WebSocket layer stamps it onto every command. If those two
+ * are already using it: the hierarchy seeder writes it into the seeded channels'
+ * membership, and the WebSocket layer stamps it onto every command. If those two
  * strings ever differ, the operator is a member of a channel they cannot post
  * to, and `requireChannelAuthorIsMember` refuses with a message about
  * membership that is true and useless. One definition cannot drift.
