@@ -337,6 +337,14 @@ describe("the gate refuses rather than measuring nothing", () => {
       {
         cwd: REPO,
         encoding: "utf8",
+        // BOUNDED, because every case here is meant to refuse BEFORE the
+        // expensive work. If a refusal is ever removed the gate walks on into a
+        // cold base worktree and a full install — minutes, not seconds — so a
+        // regression would surface as a hung suite rather than a red one. That
+        // happened during this PR's own mutation run: two mutants turned a
+        // two-second assertion into a base-tree build. The timeout turns it back
+        // into a failure.
+        timeout: 60_000,
         env:
           target === undefined ? process.env : { ...process.env, TEST_COUNT_GATE_TARGET: target },
       },
