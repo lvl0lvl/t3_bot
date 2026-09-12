@@ -220,6 +220,49 @@ describe("MentionWakeReactor", () => {
       expect(messages[0]).toContain("[comms] #seniors · @walt mentioned you · post post-1");
       expect(messages[0]).toContain("have a look at this");
       expect(messages[0]).toContain("Do not answer here");
+
+      // Restarting with nothing new must not wake the thread a second time.
+      //
+      // Read what this actually proves, because it is NOT that the cursor
+      // advanced: deleting the cursor write entirely leaves this green. The
+      // deterministic commandId means a replayed dispatch is absorbed by the
+      // engine's receipt check, so the EFFECT is exactly-once however many
+      // times the post is replayed. That is the guarantee worth having and it
+      // is what this asserts.
+      //
+      // The cursor is asserted separately below, because a cursor that never
+      // advances replays the entire event log on every boot - invisible here,
+      // and a real defect.
+      await system.dispose();
+      system = await makeSystem(databasePath);
+      await system.startReactor();
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      expect(await wakeMessages(system)).toHaveLength(1);
+
+      const head = await system.run(system.engine.latestSequence);
+      const cursor = await system.run(
+        system.cursors.getByProjector({ projector: MENTION_WAKE_CURSOR }),
+      );
+      expect(Option.isSome(cursor) ? cursor.value.lastAppliedSequence : -1).toEqual(head);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("wakes nobody for a post that mentions nobody", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    let system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await post(system, { id: "post-quiet", mentions: [] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      expect(await wakeMessages(system)).toHaveLength(0);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
