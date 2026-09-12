@@ -55,6 +55,8 @@ message types: `comms/README.md` there.
   hidden sigil; a guard tested only in the permissive direction). Choose the fixture from the property.
 - A test is proven by a named mutant going red, not by being green. Restore mutations from a byte copy.
 - Comments state the input that would break the code, not the reason it is safe.
+- Before pushing, write the adversarial question you would give a reviewer — "what legitimate input
+  does this now reject that worked before?" — and answer it yourself. Writing the prompt is the review.
 
 ## Merge gate
 
