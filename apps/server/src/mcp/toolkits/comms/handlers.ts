@@ -81,13 +81,19 @@ const canonicalHandle = (handle: string): string => stripLeadingSigils(handle, /
  * way to tell that from a delivered one. It reports every bad handle at once so
  * a retry does not discover them one at a time.
  *
- * Matching is forgiving, EMISSION IS NOT. Both sides of the lookup are
+ * Matching is forgiving, DELIVERY IS NOT. Both sides of the lookup are
  * normalized so an agent can write "@Boss1", "boss1" or "  @boss1  " and reach
- * the same member — but what goes out is the member's own stored handle, byte
- * for byte, because the aggregate resolves a mention against its membership
- * with an exact comparison. Emitting the normalized key instead makes a member
+ * the same member — but a RESOLVED handle goes out as the member's own stored
+ * bytes, because the aggregate resolves a mention against its membership with
+ * an exact comparison. Emitting the normalized key instead makes a member
  * stored as "@@PM" unmentionable: every spelling an agent would type collapses
  * to "PM", and "PM" resolves to nobody, so the whole post is rejected.
+ *
+ * An UNRESOLVED handle is different and deliberately so: it goes out in
+ * canonical form, in the error. Nothing matches against it, and showing the
+ * agent the form the lookup actually used is the only diagnostic that error
+ * can carry. The rule is not "canonical output never leaves this function" —
+ * it does — but that it never leaves as a value something else will compare.
  *
  * That is the same defect as folding case, one axis over, and emitting the
  * stored handle closes both at once — it is correct for whatever the aggregate

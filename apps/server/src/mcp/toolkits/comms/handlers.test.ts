@@ -745,6 +745,17 @@ describe("comms toolkit helpers", () => {
     });
   });
 
+  it("reports an unresolved handle in canonical form, not as typed", () => {
+    // The other half of the delivery rule, asserted because the docstring now
+    // claims it: a RESOLVED handle goes out as stored bytes, an UNRESOLVED one
+    // goes out canonical. Nothing compares against the latter, and it is the
+    // only diagnostic the error can carry. Visually the two forms are
+    // identical, which is why this needs an assertion rather than a reading.
+    expect(resolveMentions(["@Rene\u0301x"], MEMBERS)).toEqual({
+      unknown: ["Ren\u00E9x"],
+    });
+  });
+
   it("reaches a member across Unicode composition, and emits what is stored", () => {
     // The decider normalizes to NFC, so a member is stored composed. An agent
     // typing the decomposed spelling - what a macOS paste produces - must
