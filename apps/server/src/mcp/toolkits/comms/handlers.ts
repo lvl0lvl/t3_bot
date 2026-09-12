@@ -27,11 +27,9 @@ import {
  *
  * The lowercasing is not the toolkit's rule to make: the decider canonicalizes
  * on the way in, so the projection only ever holds lowercase and an exact
- * lookup cannot match anything else. Repeating it here is what turns a case
- * mismatch into a match instead of a CommsChannelNotFoundError the agent cannot
- * distinguish from being excluded.
+ * lookup cannot match anything else.
  */
-export const normalizeChannelName = (name: string): string =>
+export const canonicalChannelName = (name: string): string =>
   name.trim().replace(/^#+/, "").trim().toLowerCase();
 
 /**
@@ -49,7 +47,7 @@ export const normalizeChannelName = (name: string): string =>
  * Canonical handles are the intended end state (t3_bot-iin), and they have to
  * land in the aggregate first. Do not fold here until they have.
  */
-const normalizeHandle = (handle: string): string => handle.trim().replace(/^@+/, "").trim();
+const canonicalHandle = (handle: string): string => handle.trim().replace(/^@+/, "").trim();
 
 /**
  * Mentions the agent asked for, resolved against the channel's membership, with
@@ -77,14 +75,14 @@ export function resolveMentions(
   members: ReadonlyArray<ChannelGateway.ChannelMember>,
 ): { readonly handles: ReadonlyArray<string> } | { readonly unknown: ReadonlyArray<string> } {
   const byHandle = new Map(
-    members.map((member) => [normalizeHandle(member.handle), member] as const),
+    members.map((member) => [canonicalHandle(member.handle), member] as const),
   );
   const handles: Array<string> = [];
   const unknown: Array<string> = [];
   const seenHandles = new Set<string>();
   const seenUnknown = new Set<string>();
   for (const entry of requested) {
-    const handle = normalizeHandle(entry);
+    const handle = canonicalHandle(entry);
     if (handle.length === 0) continue;
     const member = byHandle.get(handle);
     if (member !== undefined) {
@@ -159,7 +157,7 @@ const make = Effect.gen(function* () {
     isWrite: boolean,
   ) {
     const scope = yield* McpInvocationContext.requireMcpCapability("comms");
-    const normalized = normalizeChannelName(name);
+    const normalized = canonicalChannelName(name);
     if (normalized.length === 0) {
       return yield* new CommsChannelNotFoundError({ channel: normalized });
     }

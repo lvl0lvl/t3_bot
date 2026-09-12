@@ -9,7 +9,7 @@ import type { Tool } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ChannelGateway from "./channelGateway.ts";
-import { CommsToolkitHandlersLive, normalizeChannelName, resolveMentions } from "./handlers.ts";
+import { CommsToolkitHandlersLive, canonicalChannelName, resolveMentions } from "./handlers.ts";
 import { CommsToolkit } from "./tools.ts";
 
 const THREAD_ID = ThreadId.make("thread-boss3");
@@ -291,6 +291,7 @@ describe("comms toolkit handlers", () => {
   it("canonicalizes a channel name the way the aggregate stores it", () => {
     const cases: ReadonlyArray<readonly [string, string]> = [
       ["seniors", "seniors"],
+      ["  seniors  ", "seniors"],
       ["#seniors", "seniors"],
       ["##seniors", "seniors"],
       ["###a", "a"],
@@ -308,11 +309,13 @@ describe("comms toolkit handlers", () => {
       ["#-#", "-#"],
       ["a#b", "a#b"],
     ];
-    const actual = cases.map(([input]) => `${input} -> ${normalizeChannelName(input)}`);
-    const expected = cases.map(([input, want]) => `${input} -> ${want}`);
-    // Compared as whole rows so a failure names the input that moved, rather
-    // than reporting that two arrays of strings differ somewhere.
-    expect(actual).toEqual(expected);
+    // Paired with the input so a failure names the row that moved, and paired
+    // rather than joined into one string because five of these rows expect an
+    // empty or whitespace-only result. Joined, a leaked space reads as
+    // `"# seniors ->  seniors"` and is invisible; paired, the quotes delimit it.
+    expect(cases.map(([input]) => [input, canonicalChannelName(input)])).toEqual(
+      cases.map(([input, want]) => [input, want]),
+    );
   });
 
   it.effect("finds a channel whatever case the agent types", () =>
@@ -645,15 +648,6 @@ describe("comms toolkit gateway failure mapping", () => {
 });
 
 describe("comms toolkit helpers", () => {
-  it("normalizes channel names written with or without #, and with a space after it", () => {
-    expect(normalizeChannelName("#seniors")).toEqual("seniors");
-    expect(normalizeChannelName("  seniors  ")).toEqual("seniors");
-    expect(normalizeChannelName("##seniors")).toEqual("seniors");
-    expect(normalizeChannelName("# seniors")).toEqual("seniors");
-    expect(normalizeChannelName("#")).toEqual("");
-    expect(normalizeChannelName("#   ")).toEqual("");
-  });
-
   it("collapses duplicate spellings of one member to a single handle", () => {
     expect(resolveMentions(["@boss1", "boss1", "  @boss1  "], MEMBERS)).toEqual({
       handles: ["boss1"],

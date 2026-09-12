@@ -79,8 +79,7 @@ export interface Channel {
    * Canonical name: lowercase, no leading "#", no surrounding whitespace.
    *
    * The decider canonicalizes on the way in, so this is the only form the
-   * projection holds and the only form a lookup can match. Stated here because
-   * an unwritten rule is how the toolkit and the aggregate came to disagree.
+   * projection holds and the only form a lookup can match.
    */
   readonly name: string;
   readonly members: ReadonlyArray<ChannelMember>;
