@@ -107,7 +107,28 @@ export class CommsMembershipLostError extends Schema.TaggedError<CommsMembership
 }
 
 /**
- * The cursor did not come from this channel, so the read was refused.
+ * WHICH of the three ways the cursor is unusable, because the agent is told.
+ *
+ * A `Record` over the union rather than a switch: a fourth refusal added to
+ * `ChannelCursorRefusal` is then a compile error here, which is the only thing
+ * that stops the next reason inheriting a sentence written for another one.
+ *
+ * The recovery below is the same whichever it was, and the distinction is not
+ * there to give the agent a choice - it is there so the sentence is TRUE. A
+ * false explanation attached to correct advice is worse than no explanation:
+ * the agent believes the explanation, and the next thing it does is act on it
+ * somewhere the advice does not reach.
+ */
+const cursorRefusalCause: Record<ChannelGateway.ChannelCursorRefusal, (channel: string) => string> =
+  {
+    channel: (channel) => `That cursor was not issued by '${channel}'.`,
+    direction: (channel) =>
+      `That cursor came from reading '${channel}' in the other direction, so it points the other way.`,
+    malformed: (channel) => `That cursor is not one '${channel}' can use.`,
+  };
+
+/**
+ * The cursor cannot be used for this read, so the read was refused.
  *
  * TOLD, rather than answered with an empty page. A cursor is a global sequence
  * underneath, so one earned in another channel used to match no row here and
@@ -115,13 +136,20 @@ export class CommsMembershipLostError extends Schema.TaggedError<CommsMembership
  * caught up, and it stops. The message says what to do instead, because the
  * agent cannot repair the cursor and should not try - and it says "the
  * beginning" rather than "the newest", because this tool reads oldest-first.
+ *
+ * ONE SENTENCE FOR THREE CAUSES WAS A FALSE ONE. The gateway refuses a cursor
+ * from another channel, a cursor from the other direction of THIS channel, and
+ * a cursor that is not the right shape; this error named the first of those for
+ * all three. An agent holding a cursor `seniors` had issued was told `seniors`
+ * had not issued it (`t3_bot-2oh`). The recovery clause is unchanged and shared,
+ * which is why nothing went red and nobody noticed.
  */
 export class CommsCursorUnusableError extends Schema.TaggedError<CommsCursorUnusableError>()(
   "CommsCursorUnusableError",
-  { channel: Schema.String },
+  { channel: Schema.String, reason: ChannelGateway.ChannelCursorRefusal },
 ) {
   override get message() {
-    return `That cursor was not issued by '${this.channel}'. Read the channel again without a cursor to start from the beginning, then follow nextCursor. Nothing was lost.`;
+    return `${cursorRefusalCause[this.reason](this.channel)} Read the channel again without a cursor to start from the beginning, then follow nextCursor. Nothing was lost.`;
   }
 }
 

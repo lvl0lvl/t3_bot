@@ -34,6 +34,14 @@ import * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+// THE REFUSAL VOCABULARY COMES FROM THE CODEC, which is the only thing that can
+// tell the three causes apart, and is re-exported here because this file is where
+// the toolkit reads the gateway's error vocabulary. Spelling the three words again
+// would be the second spelling of one rule this repo has been burned by four times.
+import { ChannelCursorRefusal } from "../../../orchestration/channelCursor.ts";
+
+export { ChannelCursorRefusal };
+
 /** The store backing the channel projection could not answer. */
 export class ChannelStoreUnavailable extends Schema.TaggedError<ChannelStoreUnavailable>()(
   "ChannelStoreUnavailable",
@@ -67,7 +75,7 @@ export class ChannelMembershipRevoked extends Schema.TaggedError<ChannelMembersh
 ) {}
 
 /**
- * The cursor was not issued by this channel.
+ * The cursor cannot be used for this read, and `reason` says which of the three.
  *
  * A TYPED REFUSAL rather than an empty page, and that is the whole point. The
  * cursor used to be the bare global event sequence, so one earned in another
@@ -76,12 +84,19 @@ export class ChannelMembershipRevoked extends Schema.TaggedError<ChannelMembersh
  * like on the wire. The caller cannot tell those apart and stops reading
  * (`t3_bot-e60`).
  *
+ * THREE CAUSES, NAMED. The channel did not issue it, the other DIRECTION of this
+ * channel issued it, or it is not the shape a cursor has. One error with one
+ * sentence for all three told an agent its cursor came from another channel when
+ * this channel had issued it (`t3_bot-2oh`); the recovery is the same in every
+ * case, which is exactly why the false clause survived.
+ *
  * Carries what the caller SENT, not what was expected: the expected value is
- * this channel's own state and echoing it tells a prober something.
+ * this channel's own state and echoing it tells a prober something. `reason` is
+ * safe by the same test - it names which of this caller's own inputs was wrong.
  */
 export class ChannelCursorUnusable extends Schema.TaggedError<ChannelCursorUnusable>()(
   "ChannelCursorUnusable",
-  { cursor: Schema.String, channelId: Schema.String },
+  { cursor: Schema.String, channelId: Schema.String, reason: ChannelCursorRefusal },
 ) {}
 
 /**

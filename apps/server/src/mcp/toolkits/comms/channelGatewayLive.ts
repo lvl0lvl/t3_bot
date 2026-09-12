@@ -25,7 +25,9 @@ import {
   channelPostOverFetch,
   decodeChannelCursor as decodeCursor,
   resolveChannelPostPage,
+  type ChannelCursorRefusal,
 } from "../../../orchestration/channelCursor.ts";
+import * as Result from "effect/Result";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -184,18 +186,25 @@ const make = Effect.gen(function* () {
       // REFUSED rather than answered. Returning an empty page here is the
       // original defect wearing the fix's clothes: the caller cannot tell it
       // from the end of the channel.
-      const decoded =
+      const decoded: Result.Result<number | undefined, ChannelCursorRefusal> =
         input.cursor === undefined
-          ? Option.some(undefined)
+          ? Result.succeed(undefined)
           : decodeCursor(input.channelId, input.direction, input.cursor);
-      if (Option.isNone(decoded)) {
+      if (Result.isFailure(decoded)) {
         return Effect.fail<ChannelCursorUnusable | ChannelStoreUnavailable>(
           // `input.cursor` is defined on this branch: an absent cursor took the
-          // `Option.some(undefined)` path above and cannot reach here.
-          new ChannelCursorUnusable({ cursor: input.cursor!, channelId: input.channelId }),
+          // `Result.succeed(undefined)` path above and cannot reach here.
+          // THE REASON IS CARRIED, not re-derived: this is the only place that
+          // knows which of the three refusals fired, and the toolkit turns it
+          // into the sentence the agent reads.
+          new ChannelCursorUnusable({
+            cursor: input.cursor!,
+            channelId: input.channelId,
+            reason: decoded.failure,
+          }),
         );
       }
-      const at = decoded.value;
+      const at = decoded.success;
       const channelId = ChannelId.make(input.channelId);
       const overFetch = channelPostOverFetch(input.limit);
       const rows =

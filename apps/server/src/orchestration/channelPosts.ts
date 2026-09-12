@@ -37,6 +37,8 @@ import {
   type ChannelMemberRef,
   type ProjectionChannelPost,
 } from "../persistence/Services/ProjectionChannels.ts";
+import * as Result from "effect/Result";
+
 import {
   channelPostOverFetch,
   decodeChannelCursor,
@@ -157,7 +159,12 @@ const resolveCursor = (
     return Effect.succeed(Option.none<number>());
   }
   const decoded = decodeChannelCursor(channelId, direction, cursor);
-  return Option.isNone(decoded)
+  // THE REASON IS DROPPED HERE, and only here. `ChannelCursorRejected` crosses the
+  // wire as `OrchestrationChannelCursorRejectedError`, so carrying the reason means
+  // widening a contract, the ws mapping and whatever the clients render — a change
+  // to the browser's error, not to this cursor. The comms toolkit, whose refusal is
+  // a SENTENCE an agent has to act on, does carry it (`CommsCursorUnusableError`).
+  return Result.isFailure(decoded)
     ? Effect.fail(new ChannelCursorRejected({ channelId, cursor }))
-    : Effect.succeed(decoded);
+    : Effect.succeed(Option.some(decoded.success));
 };

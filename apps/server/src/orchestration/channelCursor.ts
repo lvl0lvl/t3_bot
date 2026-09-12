@@ -28,7 +28,8 @@
  *
  * @module channelCursor
  */
-import * as Option from "effect/Option";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 
 /**
  * Which way a page reads, and therefore which way its cursor points.
@@ -38,6 +39,27 @@ import * as Option from "effect/Option";
  * home for the format (`t3_bot-2oh`).
  */
 export type ChannelPostDirection = "forward" | "backward";
+
+/**
+ * WHY a cursor was refused, because the holder is told and the sentence has to be true.
+ *
+ * The refusal used to be one `Option.none` for three causes, and the comms toolkit's
+ * one sentence named the cause it happened to be written for: an agent holding a
+ * cursor THIS channel issued, for the other direction, was told the channel had not
+ * issued it. The recovery is the same for all three, which is why the wrong reason
+ * survived a review — the sentence read plausibly and its first clause was false
+ * (`t3_bot-2oh`).
+ *
+ * A SCHEMA rather than a bare union because the two errors that carry it across the
+ * seam are `Schema.TaggedError`s; declaring the three words there as well would be a
+ * second spelling of this one, which is the drift `channelMemberRef.ts` exists to end.
+ *
+ * "malformed" is every shape failure, INCLUDING a cursor issued before the direction
+ * segment existed: it has two parts where this decoder wants three, and its holder's
+ * move is the same as for a truncated one.
+ */
+export const ChannelCursorRefusal = Schema.Literals(["malformed", "channel", "direction"]);
+export type ChannelCursorRefusal = typeof ChannelCursorRefusal.Type;
 
 /** A cursor carries the channel AND THE DIRECTION that issued it, which is what
  * makes one from elsewhere — or from the other direction — refusable. Paired with
@@ -59,9 +81,13 @@ export const encodeChannelCursor = (
  * holding three unread posts reported itself caught up to a caller holding the
  * first channel's cursor, and nothing in the reply said otherwise (`t3_bot-e60`).
  *
- * `None` IS A REFUSAL AND NEVER AN EMPTY PAGE. Every caller has to translate it
- * into an error the holder can see; answering it with an empty page is the
+ * A FAILURE IS A REFUSAL AND NEVER AN EMPTY PAGE. Every caller has to translate
+ * it into an error the holder can see; answering it with an empty page is the
  * original defect wearing the fix's clothes.
+ *
+ * THE FAILURE CARRIES WHICH REFUSAL IT WAS, because the holder is shown a
+ * sentence and one shape for three causes made that sentence false for two of
+ * them. `ChannelCursorRefusal` has the account.
  *
  * Split on the FIRST colon, which is correct only BECAUSE `t3_bot-2d2` forbids
  * ":" inside a `ChannelId` — so today the first and last colon are the same one
@@ -75,10 +101,10 @@ export const decodeChannelCursor = (
   channelId: string,
   direction: ChannelPostDirection,
   cursor: string,
-): Option.Option<number> => {
+): Result.Result<number, ChannelCursorRefusal> => {
   const boundary = cursor.indexOf(":");
   if (boundary === -1) {
-    return Option.none<number>();
+    return Result.fail("malformed");
   }
   const issuedBy = cursor.slice(0, boundary);
   const rest = cursor.slice(boundary + 1);
@@ -92,7 +118,7 @@ export const decodeChannelCursor = (
   // behaviour is the defect class this module exists for.
   const directionBoundary = rest.indexOf(":");
   if (directionBoundary === -1) {
-    return Option.none<number>();
+    return Result.fail("malformed");
   }
   const issuedFor = rest.slice(0, directionBoundary);
   const digits = rest.slice(directionBoundary + 1);
@@ -104,14 +130,19 @@ export const decodeChannelCursor = (
   // "here is the start again" is the same lie, reachable at the seam rather
   // than through the tool.
   if (!/^[0-9]+$/.test(digits)) {
-    return Option.none<number>();
+    return Result.fail("malformed");
   }
   const sequence = Number(digits);
-  // BOTH halves, and the channel half first: a cursor for another channel is
-  // the defect this exists for, and a caller that gets the right refusal for
-  // the wrong reason has learned nothing. Compared EXACTLY — a length or prefix
-  // comparison passes every obvious fixture and pages the wrong channel on a
-  // seeded install, where two channel ids share a prefix and a length.
+  // BOTH halves, and the channel half first — which is now a decision a holder
+  // can see rather than an ordering inside one boolean. A cursor wrong on both
+  // axes is reported as the other channel's, because that is the cause the
+  // holder has to act on: re-reading THIS channel the other way would still be
+  // wrong. Compared EXACTLY — a length or prefix comparison passes every obvious
+  // fixture and pages the wrong channel on a seeded install, where two channel
+  // ids share a prefix and a length.
+  if (issuedBy !== channelId) {
+    return Result.fail("channel");
+  }
   // THE DIRECTION IS THE OTHER AXIS OF THE SAME LIE (`t3_bot-2oh`). A cursor
   // points AFTER its page going forward and BEFORE it going backward, so the
   // same number means opposite things and neither read could tell which it was
@@ -124,15 +155,17 @@ export const decodeChannelCursor = (
   //
   // Both answered `null`, the wire shape of "you are caught up", over four
   // unread posts each time.
-  if (
-    issuedBy !== channelId ||
-    issuedFor !== direction ||
-    !Number.isSafeInteger(sequence) ||
-    sequence < 0
-  ) {
-    return Option.none<number>();
+  if (issuedFor !== direction) {
+    return Result.fail("direction");
   }
-  return Option.some(sequence);
+  // "9007199254740993" is fifteen digits of nothing wrong and is not a safe
+  // integer: `Number` rounds it to 9007199254740992, which is a sequence the
+  // caller never held. A SHAPE failure rather than a provenance one — the
+  // channel and the direction above are this channel's own.
+  if (!Number.isSafeInteger(sequence) || sequence < 0) {
+    return Result.fail("malformed");
+  }
+  return Result.succeed(sequence);
 };
 
 /**

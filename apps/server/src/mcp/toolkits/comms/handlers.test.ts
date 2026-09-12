@@ -200,14 +200,27 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
             // 43 tests run against. The refusal branch the handlers gained for
             // it was unreachable in this file.
             const [issuedBy, issuedFor, digits] = splitCursor(input.cursor);
-            if (
-              input.cursor !== undefined &&
-              (issuedBy !== input.channelId || issuedFor !== input.direction || digits === null)
-            ) {
+            // AND THE REASON, IN THE LIVE DECODER'S ORDER. The handler turns this
+            // word into the sentence the agent reads, so a fake that refuses
+            // correctly while blaming the wrong cause reproduces `t3_bot-2oh`
+            // instead of guarding against it: shape first, then the channel, then
+            // the direction — a cursor wrong on both axes is the other channel's.
+            const refusal =
+              input.cursor === undefined
+                ? undefined
+                : digits === null
+                  ? "malformed"
+                  : issuedBy !== input.channelId
+                    ? "channel"
+                    : issuedFor !== input.direction
+                      ? "direction"
+                      : undefined;
+            if (input.cursor !== undefined && refusal !== undefined) {
               return Effect.fail(
                 new ChannelGateway.ChannelCursorUnusable({
                   cursor: input.cursor,
                   channelId: input.channelId,
+                  reason: refusal,
                 }),
               );
             }
@@ -751,6 +764,45 @@ describe("comms toolkit handlers", () => {
     }),
   );
 
+  it.effect("does not blame the channel for a cursor the channel issued", () =>
+    Effect.gen(function* () {
+      const many = Array.from({ length: 5 }, (_, index) => post(`post-${index + 1}`));
+      const harness = yield* makeHarness({ posts: many });
+
+      // THE SENTENCE WAS FALSE AND NOTHING WAS RED. Three gateway refusals —
+      // another channel's cursor, the other direction's, and a malformed one —
+      // arrived here as one error carrying no reason, and the one sentence
+      // written for the first of them was served to all three. An agent holding
+      // a cursor `seniors` had issued was told `seniors` had not issued it, and
+      // the only assertions on this message were `toContain("seniors")` and
+      // `toContain("without a cursor")`, which the false sentence and the true
+      // one both satisfy (`t3_bot-2oh`).
+      //
+      // BUILT FROM THE REAL CURSOR rather than hand-spelled: flipping the
+      // direction word in a cursor this channel just issued is the one edit that
+      // leaves the channel half and the sequence exactly as the gateway wrote
+      // them, so nothing but the direction can be what is refused.
+      const first = yield* harness.call("comms_read_channel", { channel: "seniors", limit: 2 });
+      const otherDirection = first.nextCursor!.replace(":forward:", ":backward:");
+      expect(otherDirection).not.toBe(first.nextCursor);
+
+      const refused = yield* harness
+        .call("comms_read_channel", { channel: "seniors", cursor: otherDirection })
+        .pipe(Effect.flip);
+
+      expect((refused as { _tag: string })._tag).toBe("CommsCursorUnusableError");
+      const message = (refused as { message: string }).message;
+      expect(message).toContain("in the other direction");
+      // THE NEGATIVE IS THE POINT. The tag, the channel name and the recovery
+      // clause are identical either way; the false clause is the only thing that
+      // changed, so it is the only thing that can catch its return.
+      expect(message).not.toContain("was not issued by");
+      // And the recovery it depends on is still there, since a true explanation
+      // with no next step is its own failure.
+      expect(message).toContain("without a cursor");
+    }),
+  );
+
   it.effect("turns the gateway's foreign-cursor refusal into the agent-facing one", () =>
     Effect.gen(function* () {
       const many = Array.from({ length: 5 }, (_, index) => post(`post-${index + 1}`));
@@ -775,6 +827,11 @@ describe("comms toolkit handlers", () => {
       // is the retryable one, and telling an agent to retry a cursor that can
       // never work is the loop this area exists to stop.
       expect((refused as { _tag: string })._tag).toBe("CommsCursorUnusableError");
+      // AND THE SENTENCE, which is the whole product here — the agent acts on
+      // prose, not on a tag. True for THIS cursor: another channel issued it.
+      expect((refused as { message: string }).message).toContain(
+        "That cursor was not issued by 'seniors'.",
+      );
       expect((refused as { _tag: string })._tag).not.toBe("CommsReadFailedError");
       // Not a page. An empty page with a null cursor is what the old coercion
       // produced and is indistinguishable from being caught up.
