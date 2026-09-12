@@ -91,24 +91,28 @@ export interface ChannelMember {
    * What the agent types to mention this member, without the leading "@".
    *
    * CANONICAL, by the shared rule with "@" as the sigil
-   * (`@t3tools/shared/channelIdentity`): whitespace collapsed, variation
-   * selectors stripped, leading sigils stripped to a fixpoint, lowercased, NFC
-   * last. The aggregate applies it on every path that stores or compares a
-   * handle, so this is the only form the projection holds.
+   * (`@t3tools/shared/channelIdentity`): variation selectors stripped,
+   * whitespace collapsed and trimmed, leading sigils stripped to a fixpoint,
+   * lowercased, NFC last. That is the order the function applies them in. The
+   * aggregate applies the rule on every path that stores or compares a handle,
+   * so this is the only form the projection holds.
    *
    * MATCHING IS FORGIVING, DELIVERY IS NOT, and that is the half a reader has
    * to take from this docstring. A caller may fold, strip and normalise to FIND
    * a member — the toolkit does. What it EMITS must be these bytes, because the
    * aggregate resolves a mention with an exact comparison, and this is a read
-   * model: it can hold a row written under an older form of the rule, which
-   * canonicalises to something other than itself. Emit the key rather than the
-   * stored value and such a member becomes unmentionable, with the whole post
-   * refused for it.
+   * model: it outlives the version of the rule that wrote into it, so it can
+   * hold a row that canonicalises to something other than itself. Emit the key
+   * rather than the stored value and such a member becomes unmentionable, with
+   * the whole post refused for it.
    *
-   * That is not hypothetical. It shipped once: the toolkit folded case while
-   * the aggregate compared bytes, a member stored `Boss1` was echoed as
-   * `boss1`, and every post naming it was rejected whole — with an error
-   * telling the agent to consult the tool that had produced the wrong handle.
+   * That is not hypothetical. It shipped once, as a DISAGREEMENT rather than a
+   * legacy row: the toolkit folded case while the aggregate compared bytes, a
+   * member stored `Boss1` was echoed as `boss1`, and every post naming it was
+   * rejected whole — with an error telling the agent to consult the tool that
+   * had produced the wrong handle. The aggregate folds case itself now, so
+   * that exact row cannot recur; the rule survives it, because the next change
+   * to the canonicaliser writes the same shape of row again.
    */
   readonly handle: string;
   readonly memberKind: "thread" | "human";
@@ -246,6 +250,25 @@ export interface ChannelGatewayShape {
    * Appends a post. Rejects a post whose author is not a current member of
    * `channelId`, and rejects a post carrying a mention that does not resolve to
    * one — a post that silently drops a mention wakes nobody while looking sent.
+   *
+   * THREE OF THE FIVE FAILURES BELOW HAVE NO LIVE PRODUCER, and a caller should
+   * not write handling for them yet. `ChannelGatewayLive` returns
+   * `ChannelStoreUnavailable` or `ChannelWriteConflict` and nothing else: the
+   * decider's refusals all arrive as one invariant error distinguished only by
+   * its prose, and matching on that prose is both fragile and the thing that
+   * leaked an internal channelId to an agent. `ChannelMembershipRevoked`,
+   * `ChannelMentionUnresolvable` and `ChannelArchived` are constructed by test
+   * fakes only.
+   *
+   * They stay declared because the distinctions are the right ones and a caller
+   * will want them; `t3_bot-dnz` is giving the decider a machine-readable reason
+   * so the live layer can classify without reading English.
+   *
+   * ARCHIVED IS THE CALLER'S, not this seam's, until then: decide it from the
+   * `archivedAt` on the channel you already resolved membership on. Re-reading
+   * the row here would answer an existence question without a membership check,
+   * and "archived" tells a reader the channel EXISTS — which a non-member must
+   * not learn.
    */
   readonly createPost: (
     input: CreatePostInput,

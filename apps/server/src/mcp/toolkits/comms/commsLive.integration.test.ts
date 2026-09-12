@@ -601,7 +601,7 @@ describe("the comms toolkit on the live gateway", () => {
   );
 
   it.effect(
-    "hides a channel the calling thread is not a member of",
+    "hides a channel the calling thread is not a member of, through the live projection",
     () =>
       Effect.gen(function* () {
         yield* seed();

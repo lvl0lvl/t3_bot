@@ -642,8 +642,10 @@ export const layer = Layer.mergeAll(
   DeviceToolkitRegistrationLive,
   // Registered in the same change that supplies its live gateway, which is what
   // the note that used to sit here asked for. Before that, these three tools
-  // would have been offered to every agent and failed on every call — worse
-  // than not offering them, since an agent cannot tell "not wired" from "you
-  // are in no channels".
+  // would have been offered to every agent and died on every call — a surface
+  // an agent has to spend a call to discover is dead, and it has no way to
+  // learn that from the tool list. `ChannelGatewayUnavailable` dies rather than
+  // failing precisely so the deadness cannot be mistaken for a typed refusal,
+  // so the cost was always the wasted call rather than a confusing one.
   CommsToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));
