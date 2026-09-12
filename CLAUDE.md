@@ -76,6 +76,11 @@ message types: `comms/README.md` there.
   re-run the previous PR's mutants on that file; 2 = could not measure (runner matched nothing, a test file
   fails to load in either revision, base will not check out) — never read 2 as green. What it cannot see: an
   assertion hollowed out of a test that keeps its name. The PM checks the gate output before merging.
+- **Adding a required segment to a format moves every existing fixture past the guard it was written for.**
+  A two-segment cursor fixture, once the format needs three, is refused at the boundary before it reaches the
+  clause its test measures; the test stays green and stops testing, and nobody edited it, so the diff cannot
+  show it (three files, one day: fifteen fixtures, then four, then three at the doors — CI found the last).
+  When a format grows, re-run the previous PR's mutants on every file that holds a fixture of it.
 - Comments state the input that would break the code, not the reason it is safe.
 - **Before asserting reachability in a comment or a PR body, look for the answer the repo already holds.**
   `rg` the beads and the sibling tests for the same question. Three times on 2026-09-12 a comment claimed
