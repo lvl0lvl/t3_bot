@@ -97,6 +97,26 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
     }),
   );
 
+  it.effect("a non-member learns nothing about who is in the channel", () =>
+    Effect.gen(function* () {
+      // The mention error names the handles that did NOT resolve, which tells
+      // the reader which ones DID. That is only safe because the author check
+      // runs first, so a non-member never reaches it. The ordering is the
+      // control; this pins it, because swapping the two guards is a one-line
+      // change that would turn the error into a membership oracle.
+      const error = yield* decideOrchestrationCommand({
+        command: postCommand({ authorMemberId: "thread-stranger", mentions: ["boss1", "nobody"] }),
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("Author is not a member");
+        expect(error.detail).not.toContain("nobody");
+        expect(error.detail).not.toContain("boss1");
+      }
+    }),
+  );
+
   it.effect("rejects the whole post when any mention does not resolve", () =>
     Effect.gen(function* () {
       // One good handle and one bad one: the post must not land with the good
