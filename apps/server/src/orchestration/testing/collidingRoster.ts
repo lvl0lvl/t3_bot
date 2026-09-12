@@ -119,17 +119,47 @@ export const COLLIDING_THREAD_MEMBER: ChannelMember = {
 };
 
 /**
- * The roster as the ordering leaves it, for a pure read model.
+ * The two colliding members, with the caller's HANDLES, in the caller's ORDER.
  *
- * Human first, thread second — the order the aggregate would have written them
- * in. A comparison that finds the FIRST row with a matching id finds the human;
- * one that also checks the kind finds whichever was asked for. That difference
- * is the whole reason this module exists, so the order is not cosmetic.
+ * HANDLES ARE THE TEST'S BUSINESS. `requireChannelHandlesUnique` is the one
+ * uniqueness invariant a roster has, so a fixed handle here collides with any
+ * test that already seats one — `decider.issuer.test.ts` seats `walt` in a
+ * test about exactly that guard. The id collision is this module's; the names
+ * are not.
+ *
+ * ORDER IS THE MEASUREMENT, not a detail. `find` returns the FIRST row with a
+ * matching id, so the wrong row has to come first for the issuer under test:
+ * human first when the author is the THREAD, thread first when the author is
+ * the HUMAN. Reversed, a test passes under an id-only lookup and measures
+ * nothing — a review lane proved that with all 685 tests green over a broken
+ * guard. The aggregate itself produces human-first (the only order the shape
+ * guard admits); thread-first is what REPLAY of pre-invariant events produces,
+ * and both are states a lookup can be handed.
  */
-export const COLLIDING_MEMBERS: ReadonlyArray<ChannelMember> = [
-  COLLIDING_HUMAN_MEMBER,
-  COLLIDING_THREAD_MEMBER,
-];
+export const collidingMembers = (input: {
+  readonly humanHandle: ChannelMemberHandle;
+  readonly threadHandle: ChannelMemberHandle;
+  readonly first: "human" | "thread";
+}): ReadonlyArray<ChannelMember> => {
+  const human: ChannelMember = {
+    handle: input.humanHandle,
+    memberKind: "human",
+    memberId: COLLIDING_MEMBER_ID,
+  };
+  const thread: ChannelMember = {
+    handle: input.threadHandle,
+    memberKind: "thread",
+    memberId: COLLIDING_MEMBER_ID,
+  };
+  return input.first === "human" ? [human, thread] : [thread, human];
+};
+
+/** This module's own handles, human first: the roster `seedCollidingRoster` seats. */
+export const COLLIDING_MEMBERS: ReadonlyArray<ChannelMember> = collidingMembers({
+  humanHandle: COLLIDING_HUMAN_HANDLE,
+  threadHandle: COLLIDING_THREAD_HANDLE,
+  first: "human",
+});
 
 /**
  * A read model holding the colliding roster, with the twin thread present.
@@ -144,34 +174,43 @@ export const COLLIDING_MEMBERS: ReadonlyArray<ChannelMember> = [
  * rather than replacing it; the collision is the point and must not be lost
  * to a spread.
  */
-export const collidingReadModel = (
-  now: string,
-  extra: {
+export const collidingReadModel = (input: {
+  readonly now: string;
+  readonly channelId?: ChannelId;
+  readonly channelName?: string;
+  readonly humanHandle?: ChannelMemberHandle;
+  readonly threadHandle?: ChannelMemberHandle;
+  readonly first?: "human" | "thread";
+  readonly extra?: {
     readonly threads?: OrchestrationReadModel["threads"];
     readonly channels?: OrchestrationReadModel["channels"];
-  } = {},
-): OrchestrationReadModel => ({
+  };
+}): OrchestrationReadModel => ({
   snapshotSequence: 0,
   projects: [],
   threads: [
-    ...(extra.threads ?? []),
+    ...(input.extra?.threads ?? []),
     {
       id: COLLIDING_THREAD_ID,
       deletedAt: null,
     } as unknown as OrchestrationReadModel["threads"][number],
   ],
   channels: [
-    ...(extra.channels ?? []),
+    ...(input.extra?.channels ?? []),
     {
-      id: COLLIDING_CHANNEL_ID,
-      name: COLLIDING_CHANNEL_NAME,
-      members: COLLIDING_MEMBERS,
+      id: input.channelId ?? COLLIDING_CHANNEL_ID,
+      name: input.channelName ?? COLLIDING_CHANNEL_NAME,
+      members: collidingMembers({
+        humanHandle: input.humanHandle ?? COLLIDING_HUMAN_HANDLE,
+        threadHandle: input.threadHandle ?? COLLIDING_THREAD_HANDLE,
+        first: input.first ?? "human",
+      }),
       archivedAt: null,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: input.now,
+      updatedAt: input.now,
     },
   ],
-  updatedAt: now,
+  updatedAt: input.now,
 });
 
 /**
