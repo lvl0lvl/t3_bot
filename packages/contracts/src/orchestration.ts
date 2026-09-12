@@ -942,11 +942,20 @@ export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
  * the sidebar needs from the history — order by recency, and say "nothing yet"
  * about an empty channel — and it is the last POST's time rather than the
  * channel's `updatedAt`, because a membership edit is not activity.
+ *
+ * MEMBERS ARE NOT HERE EITHER, for a different reason: payload. This shape
+ * reaches every connected client on every channel change, and carrying full
+ * membership multiplies that by membership size for data only an OPEN channel
+ * needs — which `getChannelForMember` already returns. Too much data over a
+ * websocket is the regression this repo names first, and a sidebar is where it
+ * would go unnoticed, because it looks correct and merely costs.
+ *
+ * The server still READS membership to decide whether to send this at all. That
+ * is the point: membership decides, and does not travel.
  */
 export const OrchestrationChannelShell = Schema.Struct({
   id: ChannelId,
   name: TrimmedNonEmptyString,
-  members: Schema.Array(ChannelMember),
   archivedAt: Schema.NullOr(IsoDateTime),
   latestPostAt: Schema.NullOr(IsoDateTime),
   createdAt: IsoDateTime,

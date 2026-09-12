@@ -146,6 +146,36 @@ const makeProjectionChannelRepository = Effect.gen(function* () {
       `,
   });
 
+  /**
+   * The same projection as `listChannelRowsForMember`, for one channel and
+   * without the membership join.
+   *
+   * The two share their SELECT shape deliberately: a refetch must produce the
+   * same fields as the snapshot, or a live update overwrites a real value with
+   * a missing one. They are two statements rather than one because the filters
+   * differ — `MAX` over a LEFT JOIN needs the GROUP BY either way, and
+   * parameterising the WHERE across "by member" and "by id" would make one
+   * query that answers neither question clearly.
+   */
+  const findChannelWithActivityById = SqlSchema.findOneOption({
+    Request: Schema.String,
+    Result: ProjectionChannelWithActivityRow,
+    execute: (channelId) =>
+      sql`
+        SELECT
+          c.channel_id AS "channelId",
+          c.name,
+          c.archived_at AS "archivedAt",
+          MAX(p.created_at) AS "latestPostAt",
+          c.created_at AS "createdAt",
+          c.updated_at AS "updatedAt"
+        FROM projection_channels c
+        LEFT JOIN projection_channel_posts p ON p.channel_id = c.channel_id
+        WHERE c.channel_id = ${channelId}
+        GROUP BY c.channel_id
+      `,
+  });
+
   const insertPostRow = SqlSchema.void({
     Request: ProjectionChannelPost,
     execute: (row) =>
@@ -266,6 +296,21 @@ const makeProjectionChannelRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("ProjectionChannelRepository.getPost:query")),
     );
 
+  const getChannelWithActivityById: ProjectionChannelRepositoryShape["getChannelWithActivityById"] =
+    (channelId) =>
+      findChannelWithActivityById(channelId).pipe(
+        Effect.flatMap((found) =>
+          Option.isNone(found)
+            ? Effect.succeed(Option.none())
+            : listMemberRows(found.value.channelId).pipe(
+                Effect.map((members) => Option.some({ ...found.value, members })),
+              ),
+        ),
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionChannelRepository.getChannelWithActivityById:query"),
+        ),
+      );
+
   const listChannelsForMember: ProjectionChannelRepositoryShape["listChannelsForMember"] = (
     member,
   ) =>
@@ -295,6 +340,7 @@ const makeProjectionChannelRepository = Effect.gen(function* () {
     replaceMembers,
     insertPost,
     getPost,
+    getChannelWithActivityById,
     listChannelsForMember,
     listPosts,
   } satisfies ProjectionChannelRepositoryShape;

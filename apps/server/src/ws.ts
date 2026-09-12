@@ -20,6 +20,7 @@ import {
   type AuthAccessStreamEvent,
   type AuthEnvironmentScope,
   AuthSessionId,
+  ChannelId,
   ClientConnectionMethod,
   ClientDeviceType,
   ClientOs,
@@ -95,6 +96,12 @@ import {
   normalizeDispatchCommand,
 } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
+
+/**
+ * Hoisted: compiling a decoder per event would rebuild it on every shell item.
+ */
+const decodeChannelId = Schema.decodeUnknownEffect(ChannelId);
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
 import {
@@ -497,6 +504,25 @@ const makeWsRpcLayer = (
               Effect.orElseSucceed(() => null),
             );
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+      const projectionChannels = yield* ProjectionChannelRepository;
+      /**
+       * Who this connection is, as ONE value used on both sides.
+       *
+       * It is the issuer stamped on every command this connection dispatches AND
+       * the member the channel shell stream is filtered by. Two values would be
+       * two ways to be wrong in opposite directions: an operator who can post to
+       * a channel they cannot see, or who can see one they cannot post to. Both
+       * read as "the app is broken" and neither points at the cause.
+       *
+       * DERIVED, NEVER READ FROM A REQUEST. There is nothing to read — no
+       * account system, one operator — and when there is, it comes from the
+       * authenticated session and not from a payload field. A member id arriving
+       * from a client is the bug, not the shape of it.
+       */
+      const connectionMember = {
+        memberKind: "human",
+        memberId: HUMAN_OPERATOR_MEMBER_ID,
+      } as const;
       const threadDeletionReactor = yield* ThreadDeletionReactor;
       const analytics = yield* AnalyticsService.AnalyticsService;
       // Every command dispatched on this connection carries the connecting
@@ -514,19 +540,18 @@ const makeWsRpcLayer = (
        * engine already ignores the field for every command that has no issuer
        * invariant.
        *
-       * The value is `HUMAN_OPERATOR_MEMBER_ID` rather than anything read off
-       * this connection, because there is nothing to read: no account system,
-       * one operator. What the connection contributes is that it authenticated
-       * at all — and the seeder writes the same constant into the channels'
-       * membership, so `requireChannelAuthorIsMember` is deciding against a
-       * member that exists.
+       * The value is `connectionMember`, the same one the channel shell stream
+       * filters by, so the identity that may WRITE and the identity that may
+       * READ cannot drift apart. The seeder writes that same constant into the
+       * channels' membership, so `requireChannelAuthorIsMember` is deciding
+       * against a member that exists.
        */
       const dispatchFromClient: OrchestrationEngine.OrchestrationEngineShape["dispatch"] = (
         command,
       ) =>
         orchestrationEngine.dispatch(command, {
           ...(hasClientOrigin ? { origin: clientOrigin } : {}),
-          issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+          issuer: connectionMember,
         });
       const recordClientCommandAnalytics = (command: OrchestrationCommand) => {
         switch (command.type) {
@@ -815,6 +840,9 @@ const makeWsRpcLayer = (
           case "thread.unarchived":
             return threadUpsertOrRemove(ThreadId.make(event.aggregateId), event.sequence);
           default:
+            if (event.aggregateKind === "channel") {
+              return channelUpsertOrRemove(event.aggregateId, event.sequence);
+            }
             if (event.aggregateKind !== "thread") {
               return Effect.succeed(Option.none());
             }
@@ -828,7 +856,7 @@ const makeWsRpcLayer = (
       // If both attempts fail, log and drop the stream item; treating an error as
       // a missing row would incorrectly remove a still-active aggregate.
       const retryShellProjectionRead = <A, E>(
-        aggregateKind: "project" | "thread",
+        aggregateKind: "project" | "thread" | "channel",
         aggregateId: string,
         read: Effect.Effect<A, E>,
       ): Effect.Effect<Option.Option<A>, never, never> =>
@@ -908,6 +936,106 @@ const makeWsRpcLayer = (
                     sequence,
                     thread: nextThread,
                   }),
+              }),
+            ),
+          ),
+        );
+
+      /**
+       * Refetch a channel and emit an upsert if this connection's member is in
+       * it, or `channel-removed` otherwise.
+       *
+       * THE `none` CASE COVERS TWO DIFFERENT THINGS ON PURPOSE: the channel is
+       * gone, and the member is no longer in it. Both mean the same thing to a
+       * client whose view is "the channels I am in", so neither needs an event
+       * of its own — and getting a removal out of a coalesced burst is the same
+       * argument the thread version makes one function up. A `channel-removed`
+       * the client does not have is a harmless no-op.
+       *
+       * MEMBERSHIP IS DECIDED HERE rather than in the repository, because this
+       * is the layer that knows who is connected. `getChannelById` deliberately
+       * does not filter by member — its docstring says the conflation belongs
+       * where the caller's identity is known, so that the projector can still
+       * see rows it has to update.
+       *
+       * `latestPostAt` on the returned shell is how a post reaches the client:
+       * there is no per-post event, because coalescing keeps one event per
+       * aggregate per window and a per-post event would name one post and drop
+       * the rest of the burst. That is also why the refetch reads the
+       * activity-aware projection and not `getChannelById` — the field has to
+       * be real here or the argument for deleting the post event is false.
+       */
+      const channelUpsertOrRemove = (
+        aggregateId: string,
+        sequence: number,
+      ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
+        Effect.gen(function* () {
+          // DECODED, NOT `.make`. `ChannelId.make` THROWS on a refused id, and
+          // it would throw here synchronously while this call is being built —
+          // before any `.pipe` guard is attached to anything — taking the whole
+          // shell stream down rather than one item. Channels are the aggregate
+          // where that is reachable: `t3_bot-2d2` gave ChannelId a charset, and
+          // an event stored before that invariant replays through here with
+          // whatever id it was written with. The sibling project/thread branches
+          // use `.make` because those ids carry no charset to refuse.
+          const decoded = yield* Effect.option(decodeChannelId(aggregateId));
+          if (Option.isNone(decoded)) {
+            yield* Effect.logWarning("orchestration shell stream skipped a channel event", {
+              aggregateId,
+              sequence,
+            });
+            return Option.none<OrchestrationShellStreamEvent>();
+          }
+          return yield* channelShellFor(decoded.value, sequence);
+        });
+
+      const channelShellFor = (
+        channelId: ChannelId,
+        sequence: number,
+      ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
+        retryShellProjectionRead(
+          "channel",
+          channelId,
+          projectionChannels.getChannelWithActivityById(channelId),
+        ).pipe(
+          Effect.map(
+            Option.flatMap((channel) =>
+              Option.match(channel, {
+                onNone: () =>
+                  Option.some<OrchestrationShellStreamEvent>({
+                    kind: "channel-removed" as const,
+                    sequence,
+                    channelId,
+                  }),
+                onSome: (row) =>
+                  Option.some<OrchestrationShellStreamEvent>(
+                    row.members.some(
+                      (member) =>
+                        member.memberKind === connectionMember.memberKind &&
+                        member.memberId === connectionMember.memberId,
+                    )
+                      ? {
+                          kind: "channel-upserted" as const,
+                          sequence,
+                          channel: {
+                            id: row.channelId,
+                            name: row.name,
+                            archivedAt: row.archivedAt,
+                            // THE REAL VALUE, and the reason the refetch uses
+                            // the activity-aware read. A refetch that sent null
+                            // here would overwrite the snapshot's real value on
+                            // every live update, reorder the sidebar to the
+                            // bottom, and render "nothing here yet" over a
+                            // channel that had just received a post — with the
+                            // post event deleted on the grounds that this field
+                            // carries the fact.
+                            latestPostAt: row.latestPostAt,
+                            createdAt: row.createdAt,
+                            updatedAt: row.updatedAt,
+                          },
+                        }
+                      : { kind: "channel-removed" as const, sequence, channelId },
+                  ),
               }),
             ),
           ),

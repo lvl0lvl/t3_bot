@@ -123,6 +123,7 @@ import {
   OrchestrationThreadSettleBlockedError,
 } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
@@ -535,6 +536,7 @@ const buildAppUnderTest = (options?: {
     >;
     terminalManager?: Partial<TerminalManager.TerminalManager["Service"]>;
     orchestrationEngine?: Partial<OrchestrationEngine.OrchestrationEngineService["Service"]>;
+    projectionChannels?: Partial<ProjectionChannelRepository["Service"]>;
     threadDeletionReactor?: Partial<ThreadDeletionReactor["Service"]>;
     analyticsService?: Partial<AnalyticsService.AnalyticsService["Service"]>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
@@ -991,42 +993,60 @@ const buildAppUnderTest = (options?: {
         ),
       ),
       Layer.provide(
-        Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
-          getUserInputActivity: () => Effect.die("unused"),
-          getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: "1970-01-01T00:00:00.000Z",
-            }),
-          getArchivedShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: "1970-01-01T00:00:00.000Z",
-            }),
-          searchThreads: () => Effect.succeed({ matches: [] }),
-          getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
-          getProjectShellById: () => Effect.succeed(Option.none()),
-          getThreadShellById: () => Effect.succeed(Option.none()),
-          getThreadDetailById: () => Effect.succeed(Option.none()),
-          getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
-          getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
-          getEventReplayStats: ({ fromSequenceExclusive, toSequenceInclusive }) =>
-            Effect.succeed({
-              eventCount: Math.max(0, toSequenceInclusive - fromSequenceExclusive),
-              payloadBytes: 0,
-            }),
-          getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
-          getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
-          getImportedAgentSessionSources: () => Effect.succeed([]),
-          getThreadCheckpointContext: () => Effect.succeed(Option.none()),
-          ...options?.layers?.projectionSnapshotQuery,
-        }),
+        Layer.mergeAll(
+          // The channel projection the shell stream refetches through. Every
+          // method dies rather than answering plausibly, except the two the ws
+          // layer actually calls: a test that reaches an unused one without
+          // saying so is a test whose subject has moved.
+          Layer.mock(ProjectionChannelRepository)({
+            upsertChannel: () => Effect.die("unused"),
+            getChannelByName: () => Effect.die("unused"),
+            getChannelById: () => Effect.die("unused"),
+            getChannelWithActivityById: () => Effect.succeedNone,
+            replaceMembers: () => Effect.die("unused"),
+            insertPost: () => Effect.die("unused"),
+            getPost: () => Effect.die("unused"),
+            listChannelsForMember: () => Effect.succeed([]),
+            listPosts: () => Effect.die("unused"),
+            ...options?.layers?.projectionChannels,
+          }),
+          Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+            getUserInputActivity: () => Effect.die("unused"),
+            getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
+            getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 0,
+                projects: [],
+                threads: [],
+                updatedAt: "1970-01-01T00:00:00.000Z",
+              }),
+            getArchivedShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 0,
+                projects: [],
+                threads: [],
+                updatedAt: "1970-01-01T00:00:00.000Z",
+              }),
+            searchThreads: () => Effect.succeed({ matches: [] }),
+            getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
+            getProjectShellById: () => Effect.succeed(Option.none()),
+            getThreadShellById: () => Effect.succeed(Option.none()),
+            getThreadDetailById: () => Effect.succeed(Option.none()),
+            getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
+            getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
+            getEventReplayStats: ({ fromSequenceExclusive, toSequenceInclusive }) =>
+              Effect.succeed({
+                eventCount: Math.max(0, toSequenceInclusive - fromSequenceExclusive),
+                payloadBytes: 0,
+              }),
+            getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+            getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+            getImportedAgentSessionSources: () => Effect.succeed([]),
+            getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+            ...options?.layers?.projectionSnapshotQuery,
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({
@@ -8475,6 +8495,182 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.equal(items[0]?.kind, "snapshot");
       assert.equal(items[1]?.kind, "thread-removed");
+      assert.deepEqual(items[2], { kind: "synchronized" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  /**
+   * THE MEASUREMENT THE DELETED POST EVENT RESTS ON.
+   *
+   * There used to be a `channel-post-appended` shell event. It was deleted
+   * because shell events are coalesced to one per aggregate per window, so a
+   * per-post event naming one post would silently drop the rest of a burst. The
+   * replacement argument is that a post moves `latestPostAt` on the channel
+   * shell and `channel-upserted` carries it.
+   *
+   * That argument is a claim about a path, and this is the test of it. Without
+   * it, a `channel.post-created` that never reaches the shell stream — a wrong
+   * `aggregateKind`, a switch branch that drops it, a refetch that sends null —
+   * leaves the message view silently quiet, and the reason it is quiet is a
+   * sentence in a docstring rather than a failing test.
+   */
+  const channelPostEvent = {
+    sequence: 2,
+    eventId: EventId.make("event-channel-post"),
+    aggregateKind: "channel",
+    aggregateId: ChannelId.make("channel-project"),
+    occurredAt: "2026-01-01T00:00:01.000Z",
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "channel.post-created",
+    payload: {
+      channelId: ChannelId.make("channel-project"),
+      postId: ChannelPostId.make("post-1"),
+      authorRef: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+      authorHandle: ChannelMemberHandle.make("walt"),
+      body: "what is 2+2",
+      mentions: [ChannelMemberHandle.make("boss1")],
+      parentPostId: null,
+      createdAt: "2026-01-01T00:00:01.000Z",
+    },
+  } satisfies Extract<OrchestrationEvent, { type: "channel.post-created" }>;
+
+  const channelRow = (input: {
+    readonly latestPostAt: string | null;
+    readonly members: ReadonlyArray<{
+      readonly handle: string;
+      readonly memberKind: "thread" | "human";
+      readonly memberId: string;
+    }>;
+  }) => ({
+    channelId: ChannelId.make("channel-project"),
+    name: "project",
+    members: input.members.map((member) => ({
+      ...member,
+      handle: ChannelMemberHandle.make(member.handle),
+    })),
+    archivedAt: null,
+    latestPostAt: input.latestPostAt,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:01.000Z",
+  });
+
+  it.effect("a post reaches the shell stream as a channel upsert carrying latestPostAt", () =>
+    Effect.gen(function* () {
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [
+                    {
+                      handle: "walt",
+                      memberKind: "human",
+                      memberId: HUMAN_OPERATOR_MEMBER_ID,
+                    },
+                  ],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, channelPostEvent);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "snapshot");
+      const upserted = items[1];
+      assert.equal(upserted?.kind, "channel-upserted");
+      if (upserted?.kind !== "channel-upserted") {
+        throw new Error("the shell stream did not report the post");
+      }
+
+      // THE FIELD, not merely the event. A refetch that sent null here would
+      // overwrite the snapshot's value on every update, and this test would pass
+      // on the event's presence alone while the sidebar reordered to the bottom
+      // and said "nothing here yet" over a channel that had just been posted in.
+      assert.equal(upserted.channel.latestPostAt, "2026-01-01T00:00:01.000Z");
+      assert.equal(upserted.channel.id, "channel-project");
+      assert.deepEqual(items[2], { kind: "synchronized" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("a post in a channel this connection is not in reports a removal", () =>
+    Effect.gen(function* () {
+      // The admitting test above passes for a stream that ignores membership
+      // entirely, so this is the half that makes the filter load-bearing. A
+      // client whose view is "the channels I am in" must be told the channel is
+      // not in its set — the same answer as "the channel is gone", deliberately,
+      // because both mean the same thing to that client.
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [{ handle: "pm", memberKind: "thread", memberId: "thread-pm" }],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, channelPostEvent);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.equal(items[1]?.kind, "channel-removed");
       assert.deepEqual(items[2], { kind: "synchronized" });
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
