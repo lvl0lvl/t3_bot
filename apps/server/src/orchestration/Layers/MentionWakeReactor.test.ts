@@ -142,6 +142,17 @@ const makeSystem = async (
 
 type System = Awaited<ReturnType<typeof makeSystem>>;
 
+/**
+ * Nobody was woken - both member threads, not just the one the test is about.
+ * Checking a single thread passes when the wake went to the OTHER one, which
+ * is the failure these negatives exist to catch.
+ */
+const noWakes = async (system: System) => {
+  const woken = await wakeMessages(system, WOKEN);
+  const bystander = await wakeMessages(system, BYSTANDER);
+  return [...woken, ...bystander];
+};
+
 /** A project, a thread to wake, and a channel that thread is a member of. */
 const seedChannel = async (system: System) => {
   await system.run(
@@ -321,7 +332,7 @@ describe("MentionWakeReactor", () => {
       await system.run(
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
-      expect(await wakeMessages(system)).toHaveLength(0);
+      expect(await noWakes(system)).toHaveLength(0);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
@@ -346,7 +357,7 @@ describe("MentionWakeReactor", () => {
       await system.run(
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
-      expect(await wakeMessages(system)).toHaveLength(0);
+      expect(await noWakes(system)).toHaveLength(0);
 
       // And it is at the head afterwards, not at zero: the NEXT post wakes.
       await post(system, { id: "post-new", mentions: [MENTION] });
@@ -449,7 +460,7 @@ describe("MentionWakeReactor", () => {
       await system.run(
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
-      expect(await wakeMessages(system)).toHaveLength(0);
+      expect(await noWakes(system)).toHaveLength(0);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
@@ -652,7 +663,7 @@ describe("MentionWakeReactor", () => {
       await system.run(
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
-      expect(await wakeMessages(system)).toHaveLength(0);
+      expect(await noWakes(system)).toHaveLength(0);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
