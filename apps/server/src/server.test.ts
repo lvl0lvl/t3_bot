@@ -8741,6 +8741,136 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
+  /**
+   * The channel list for a member, keyed on WHO ASKED.
+   *
+   * The stub answers differently per member rather than returning a fixed list,
+   * because a fixed list passes for a caller that hands `listChannelsForMember`
+   * the wrong member — or no member at all, which is what a snapshot that
+   * ignored membership would look like. It also records the refs it was asked
+   * for, so a test can assert the operator's own ref reached the query instead
+   * of asserting only that some channels came back.
+   */
+  const channelsByMember = (input: {
+    readonly asked: Array<{ readonly memberKind: string; readonly memberId: string }>;
+  }) => ({
+    listChannelsForMember: (member: { memberKind: string; memberId: string }) => {
+      input.asked.push(member);
+      return Effect.succeed(
+        member.memberKind === "human" && member.memberId === HUMAN_OPERATOR_MEMBER_ID
+          ? [
+              channelRow({
+                latestPostAt: "2026-01-01T00:00:01.000Z",
+                members: [
+                  { handle: "walt", memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+                ],
+              }),
+            ]
+          : [
+              {
+                ...channelRow({ latestPostAt: null, members: [] }),
+                channelId: ChannelId.make("channel-someone-else"),
+                name: "someone-else",
+              },
+            ],
+      );
+    },
+  });
+
+  it.effect("the socket's shell snapshot carries the operator's channels", () =>
+    Effect.gen(function* () {
+      // The snapshot, not the live stream. `channel-upserted` fires only when a
+      // channel CHANGES, so channels that exist and sit still reach a client
+      // through the snapshot or not at all — which is exactly how the sidebar
+      // came to be empty against a real server while every stream test passed.
+      const asked: Array<{ readonly memberKind: string; readonly memberId: string }> = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionChannels: channelsByMember({ asked }),
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 1,
+                projects: [],
+                threads: [],
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
+            Stream.take(1),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      const first = items[0];
+      assert.equal(first?.kind, "snapshot");
+      if (first?.kind !== "snapshot") {
+        throw new Error("the shell stream did not open with a snapshot");
+      }
+      assert.deepEqual(
+        first.snapshot.channels?.map((channel) => channel.id),
+        ["channel-project"],
+      );
+      // `latestPostAt` on the SNAPSHOT too, not just on the live upsert: it is
+      // what the sidebar orders by, and a snapshot that dropped it would order
+      // every channel by creation until something happened to move it.
+      assert.equal(first.snapshot.channels?.[0]?.latestPostAt, "2026-01-01T00:00:01.000Z");
+      // WHICH MEMBER WAS ASKED. Without this the assertion above is satisfied by
+      // a handler that hands the query a member it invented, as long as the stub
+      // happens to answer for it.
+      assert.deepEqual(asked, [{ memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID }]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("the HTTP shell route carries the operator's channels", () =>
+    Effect.gen(function* () {
+      // THE DOOR THAT WAS BROKEN, and the one the socket test cannot cover. A
+      // browser bootstraps its shell over HTTP and then resumes the socket with
+      // `afterSequence`, so a snapshot without channels here leaves the sidebar
+      // empty forever: the resume path sends events rather than a snapshot, and
+      // there are no events for channels that have not changed.
+      const asked: Array<{ readonly memberKind: string; readonly memberId: string }> = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionChannels: channelsByMember({ asked }),
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 1,
+                projects: [],
+                threads: [],
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              }),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/shell"), {
+        headers: { cookie: yield* getAuthenticatedSessionCookieHeader() },
+      });
+      const snapshot = yield* responseJsonEffect<{
+        readonly channels?: ReadonlyArray<{ readonly id: string; readonly latestPostAt: unknown }>;
+      }>(response);
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(
+        snapshot.channels?.map((channel) => channel.id),
+        ["channel-project"],
+      );
+      assert.equal(snapshot.channels?.[0]?.latestPostAt, "2026-01-01T00:00:01.000Z");
+      assert.deepEqual(asked, [{ memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID }]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("buffers thread events published while the initial snapshot loads", () =>
     Effect.gen(function* () {
       const thread = makeDefaultOrchestrationReadModel().threads[0]!;
