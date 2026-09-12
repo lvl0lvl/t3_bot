@@ -540,3 +540,8 @@ export const OrchestrationEngineLive = Layer.effect(
   OrchestrationEngineService,
   makeOrchestrationEngine,
 );
+
+/** Exposed for tests. */
+export const __testing = {
+  commandToAggregateRef,
+};
