@@ -745,6 +745,29 @@ describe("comms toolkit helpers", () => {
     });
   });
 
+  it("treats an invisible twin as a separate member, which is the open gap", () => {
+    // KNOWN GAP, asserted so it is visible where someone would meet it rather
+    // than only in a bead. String.trim removes 25 code points and NOT ONE
+    // control or format character, so a zero-width space survives every step
+    // of canonicalisation: "\u200Bboss1" is a distinct key that RENDERS as
+    // "boss1" in the member list comms_read_channel hands the agent.
+    //
+    // Exact-match precedence makes this as much this file's problem as the
+    // aggregate's: the two spellings reach different members,
+    // deterministically, while an agent choosing between them is reading
+    // identical text. The fix is a forbidden-character rule where identities
+    // are created, which belongs in the shared identity module (t3_bot-iin),
+    // not in a second copy here. When it lands, this test flips.
+    const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
+      { handle: "\u200Bboss1", memberKind: "human", memberId: "human-twin" },
+      { handle: "boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
+    ];
+    expect(resolveMentions(["boss1"], members)).toEqual({ handles: ["boss1"] });
+    expect(resolveMentions(["\u200Bboss1"], members)).toEqual({
+      handles: ["\u200Bboss1"],
+    });
+  });
+
   it("does not fold case on a handle, so a member stored Boss1 needs Boss1", () => {
     // The axis this branch got wrong once and then stopped watching. Folding
     // here is HARMLESS now that delivery uses stored bytes - the regression is
