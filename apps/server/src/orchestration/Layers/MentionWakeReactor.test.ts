@@ -44,6 +44,7 @@ import {
   ProjectionChannelRepository,
   type ProjectionChannelRepositoryShape,
 } from "../../persistence/Services/ProjectionChannels.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { ServerConfig } from "../../config.ts";
@@ -289,6 +290,7 @@ const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
   const cursors = await runtime.runPromise(Effect.service(ProjectionStateRepository));
   const threads = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
   const events = await runtime.runPromise(Effect.service(OrchestrationEventStore));
+  const turns = await runtime.runPromise(Effect.service(ProjectionTurnRepository));
   const scope = await runtime.runPromise(Scope.make());
   return {
     engine,
@@ -296,6 +298,7 @@ const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
     cursors,
     threads,
     events,
+    turns,
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     startReactor: () =>
       runtime.runPromise(Scope.provide(reactor.start(), scope) as Effect.Effect<void>),
@@ -1721,6 +1724,100 @@ describe("MentionWakeReactor", () => {
           event.type === "thread.turn-start-requested" ? event.payload.threadId : "",
         ),
       ).toEqual([WOKEN]);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("leaves a post able to find its turn, with no id stored anywhere to link them", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await post(system, { id: "post-correlate", mentions: [MENTION] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // `t3_bot-75k` CRITERION 3 asks that a cancelled turn reach the post, and
+      // the first thing that needs is a way to get from one to the other. There
+      // is no join table and no column linking them, by design: the messageId
+      // is DERIVED, so the link is arithmetic a reader can do with the post in
+      // its hand. This asserts that the derivation actually lands where a
+      // reader would look for it.
+      //
+      // The reactor's own tests assert what it DISPATCHED. That is a different
+      // claim: a dispatched messageId that the projector dropped, renamed, or
+      // overwrote leaves the post with no turn to find, and every one of those
+      // assertions still passes. This reads the PROJECTION.
+      const derived = wakeKey(CHANNEL_ID, "post-correlate", WOKEN);
+      const pending = await system.run(
+        system.turns.getPendingTurnStartByThreadId({ threadId: WOKEN }),
+      );
+      expect(Option.isSome(pending)).toBe(true);
+      expect(Option.isSome(pending) ? String(pending.value.messageId) : null).toBe(derived);
+
+      // AND IT IS THE POST'S OWN, not merely some turn on that thread. Deriving
+      // the key for a DIFFERENT post must not match - without this the
+      // assertion above passes against a projector that keeps the last turn
+      // whatever started it, which is the failure a second post causes.
+      expect(String(Option.isSome(pending) ? pending.value.messageId : "")).not.toBe(
+        wakeKey(CHANNEL_ID, "post-other", WOKEN),
+      );
+
+      // AND THE BYSTANDER HAS NO TURN AT ALL. A correlation that matched on
+      // every member's thread would satisfy both assertions above while
+      // attributing the post to an agent it never woke.
+      const bystander = await system.run(
+        system.turns.getPendingTurnStartByThreadId({ threadId: BYSTANDER }),
+      );
+      expect(Option.isNone(bystander)).toBe(true);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("loses the first post's link when a second post wakes the same thread", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await post(system, { id: "post-first", mentions: [MENTION] });
+      await post(system, { id: "post-second", mentions: [MENTION] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // DOCUMENTS A LIMIT RATHER THAN A GUARANTEE, and it is deliberate that it
+      // is written as a test: `replacePendingTurnStart` REPLACES, so the pending
+      // row holds only the most recent start. Two posts waking one thread inside
+      // a turn leave the first post with nothing to find - which is
+      // `t3_bot-j6o`'s hazard arriving one layer lower than j6o describes it,
+      // in the projection rather than in the adapter.
+      //
+      // Whoever builds criterion 3's surfacing half will reach for this row. It
+      // answers for the LATEST wake only, and a reader that assumed otherwise
+      // would report the second post's failure against the first. Stated here
+      // so that assumption fails a test rather than a user.
+      const pending = await system.run(
+        system.turns.getPendingTurnStartByThreadId({ threadId: WOKEN }),
+      );
+      expect(Option.isSome(pending) ? String(pending.value.messageId) : null).toBe(
+        wakeKey(CHANNEL_ID, "post-second", WOKEN),
+      );
+      expect(Option.isSome(pending) ? String(pending.value.messageId) : null).not.toBe(
+        wakeKey(CHANNEL_ID, "post-first", WOKEN),
+      );
+
+      // Both posts DID wake the thread - so the missing link above is about
+      // what the projection retains, not about a wake that never happened.
+      const woken = await wakeMessages(system, WOKEN);
+      expect(woken.filter((text) => text.includes('post "post-first"'))).toHaveLength(1);
+      expect(woken.filter((text) => text.includes('post "post-second"'))).toHaveLength(1);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
