@@ -318,4 +318,65 @@ layer("readChannelPostPage", (it) => {
       assert.deepStrictEqual(ids(page), expected(channelId, [1]));
     }),
   );
+
+  it.effect("a full walk returns every post exactly once, both ways", () =>
+    Effect.gen(function* () {
+      // THE PROPERTY, which no single-page assertion has: every post once, no
+      // duplicate and no gap. `TEST-25-05` — the deepest walk here was two pages in
+      // one direction, so ignoring the cursor in the FORWARD branch survived 201
+      // tests while the identical mutant in the backward branch was killed.
+      //
+      // Seven posts at a limit of three is two full pages and a partial one, so the
+      // over-fetch boundary is crossed twice in each direction. Four rows at a limit
+      // of three — the old fixture — crosses it once and cannot tell a walk that
+      // drops a post from one that repeats it.
+      const channelId = channelFor("full-walk");
+      const member = yield* seed(channelId, 7);
+
+      const walk = (direction: "backward" | "forward") =>
+        Effect.gen(function* () {
+          const seen: Array<string> = [];
+          let cursor: string | undefined = undefined;
+          // A BOUND, because the failure this test exists for is non-termination: a
+          // branch that ignores its cursor re-reads the same page forever, and a
+          // hanging test is a worse instrument than a failing one. Seven posts at a
+          // limit of three is three pages, so four is already one more than the walk
+          // can legitimately need.
+          for (let page = 0; page < 5; page += 1) {
+            const answer: {
+              readonly posts: ReadonlyArray<{ readonly id: string }>;
+              readonly nextCursor: string | null;
+            } = yield* readChannelPostPage({
+              request: request(channelId, {
+                direction,
+                limit: 3,
+                ...(cursor === undefined ? {} : { cursor }),
+              }),
+              member,
+            });
+            seen.push(...answer.posts.map((post) => post.id));
+            if (answer.nextCursor === null) {
+              return seen;
+            }
+            cursor = answer.nextCursor;
+          }
+          return yield* Effect.die(`the ${direction} walk did not reach an end in 5 pages`);
+        });
+
+      for (const direction of ["backward", "forward"] as const) {
+        const seen = yield* walk(direction);
+        // NO DUPLICATE: a Set the same size as the list. A walk that re-read a page
+        // would collect fourteen ids and seven distinct ones, and a `sorted equals
+        // 1..7` assertion alone would pass on the distinct set.
+        assert.lengthOf(seen, 7, `the ${direction} walk returned ${seen.length} posts`);
+        assert.equal(new Set(seen).size, 7, `the ${direction} walk repeated a post`);
+        // NO GAP: every sequence, which is what makes "exactly once" a statement about
+        // the channel rather than about the count.
+        assert.deepStrictEqual(
+          [...seen].sort(),
+          [...expected(channelId, [1, 2, 3, 4, 5, 6, 7])].sort(),
+        );
+      }
+    }),
+  );
 });

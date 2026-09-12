@@ -9466,11 +9466,47 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
    * test rather than a silently wider read, and `paged` records the repository
    * input so the direction and the over-fetch are visible at the door too.
    */
+  /**
+   * A channel the member is in, whose POST READ fails in the store.
+   *
+   * The membership read succeeds, so the request reaches the paging read and fails
+   * there — which is the only way to exercise the store-failure mapping. A stub that
+   * failed the membership read instead would exercise the refusal.
+   */
+  const postsStoreFails = () => ({
+    ...channelsByMember({ asked: [] }),
+    listPostsBackward: () =>
+      Effect.fail(new PersistenceSqlError({ operation: "listPostsBackward" })),
+    listPosts: () => Effect.fail(new PersistenceSqlError({ operation: "listPosts" })),
+  });
+
   const postsByMember = (input: {
     readonly asked: Array<{ readonly memberKind: string; readonly memberId: string }>;
-    readonly paged: Array<{ readonly limit: number; readonly beforeSequence: number | undefined }>;
+    readonly paged: Array<{
+      readonly limit: number;
+      readonly beforeSequence?: number | undefined;
+      readonly afterSequence?: number | undefined;
+    }>;
   }) => ({
     ...channelsByMember({ asked: input.asked }),
+    // THE FORWARD READ EXISTS HERE NOW, and its absence is why the door's forward
+    // branch was invisible: `?direction=forward` could not have been served at all, so
+    // hardcoding the handler's direction to "backward" survived the suite (TEST-25-05).
+    listPosts: (page: { readonly limit: number; readonly afterSequence: number | undefined }) => {
+      input.paged.push({ limit: page.limit, afterSequence: page.afterSequence });
+      return Effect.succeed([
+        {
+          postId: ChannelPostId.make("post-9"),
+          channelId: ChannelId.make("channel-project"),
+          sequence: 9,
+          authorHandle: ChannelMemberHandle.make("pm"),
+          body: "4",
+          mentions: [],
+          parentPostId: null,
+          createdAt: "2026-01-01T00:00:09.000Z",
+        },
+      ]);
+    },
     listPostsBackward: (page: {
       readonly limit: number;
       readonly beforeSequence: number | undefined;
@@ -9655,6 +9691,154 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // told the caller the channel exists by how long it took, and would have
       // spent a query on a channel it was not going to answer.
       assert.lengthOf(paged, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("the HTTP door carries the direction and the cursor it was given", () =>
+    Effect.gen(function* () {
+      // BOTH FIELDS THE DOOR FORWARDS, neither of which any test varied. Hardcoding
+      // the handler's direction to "backward" survived the suite, and so did deleting
+      // the cursor spread — `?direction=forward` read backward and paging over HTTP
+      // re-read page one forever. One transport quietly deciding something is the
+      // shape of the #20 defect this PR exists to prevent.
+      const paged: Array<{
+        readonly limit: number;
+        readonly beforeSequence?: number | undefined;
+        readonly afterSequence?: number | undefined;
+      }> = [];
+
+      yield* buildAppUnderTest({
+        layers: { projectionChannels: postsByMember({ asked: [], paged }) },
+      });
+
+      const response = yield* fetchEffect(
+        yield* getHttpServerUrl(
+          "/api/orchestration/channels/channel-project/posts" +
+            "?direction=forward&limit=2&cursor=channel-project:1",
+        ),
+        { headers: { cookie: yield* getAuthenticatedSessionCookieHeader() } },
+      );
+
+      assert.equal(response.status, 200);
+      // THE FORWARD READ, with the cursor's sequence as `afterSequence`. A door that
+      // ignored `direction` would have reached `listPostsBackward` and recorded a
+      // `beforeSequence`; one that dropped the cursor would record `undefined`.
+      assert.deepStrictEqual(paged, [{ limit: 3, afterSequence: 1 }]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("the HTTP door refuses a cursor another channel issued", () =>
+    Effect.gen(function* () {
+      // `TEST-25-04`: seven of the eight error mappings at the two doors were
+      // exercised by nothing, and this type is the one the PR puts on the wire.
+      // Pointing this mapping at its neighbour's translation — a 404
+      // `channel_not_found` instead of a 400 `invalid_cursor` — survived the suite.
+      //
+      // The two are not interchangeable and the source says why: a caller told the
+      // channel does not exist stops asking, and one told its cursor is bad discards
+      // a cursor that was fine. So the REASON is the assertion; the status alone
+      // cannot separate them.
+      const paged: Array<{ readonly limit: number; readonly beforeSequence: number | undefined }> =
+        [];
+
+      yield* buildAppUnderTest({
+        layers: { projectionChannels: postsByMember({ asked: [], paged }) },
+      });
+
+      const response = yield* fetchEffect(
+        yield* getHttpServerUrl(
+          "/api/orchestration/channels/channel-project/posts" +
+            "?direction=backward&limit=2&cursor=channel-somewhere-else:2",
+        ),
+        { headers: { cookie: yield* getAuthenticatedSessionCookieHeader() } },
+      );
+      const body = yield* responseJsonEffect<{ readonly reason?: string }>(response);
+
+      assert.equal(response.status, 400);
+      assert.equal(body.reason, "invalid_cursor");
+      // AND IT NEVER PAGED. A cursor from elsewhere is refused before the read, so the
+      // refusal costs no query — and an empty page is what this whole format exists
+      // not to answer with.
+      assert.lengthOf(paged, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("the SOCKET door refuses a cursor another channel issued", () =>
+    Effect.gen(function* () {
+      // The socket door had NO error-path test at all. Its four mappings are the same
+      // four decisions as HTTP's and a different set of types, so one door's test says
+      // nothing about the other's — the lesson #20 taught with the channel shell.
+      const paged: Array<{ readonly limit: number; readonly beforeSequence: number | undefined }> =
+        [];
+
+      yield* buildAppUnderTest({
+        layers: { projectionChannels: postsByMember({ asked: [], paged }) },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      // `Effect.flip`, the idiom eight other RPC failures in this file use. It also
+      // asserts this is a typed FAILURE and not a defect: a defect would arrive as a
+      // dead connection rather than as an error a client can read.
+      const failure = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.readChannelPosts]({
+            channelId: ChannelId.make("channel-project"),
+            direction: "backward",
+            limit: 2,
+            cursor: "channel-somewhere-else:2",
+          }).pipe(Effect.flip),
+        ),
+      );
+
+      // THE TAG, because "it failed" is satisfied by every one of the four mappings.
+      // `ChannelPostsUnreadableError` here would tell the caller the channel is gone.
+      assert.equal(failure._tag, "ChannelCursorRejectedError");
+      // And it carries the cursor it refused, which is what lets a client discard the
+      // right one rather than all of them.
+      assert.equal((failure as { readonly cursor?: string }).cursor, "channel-somewhere-else:2");
+      assert.lengthOf(paged, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("the HTTP door reports a store failure as internal, not as a missing channel", () =>
+    Effect.gen(function* () {
+      // Pointing this mapping at `channel_not_found` survived the suite, and the two
+      // answers are opposites: one says the channel is not there, the other says the
+      // read broke and the channel is fine. A 404 sends a client away from data that
+      // exists.
+      yield* buildAppUnderTest({ layers: { projectionChannels: postsStoreFails() } });
+
+      const response = yield* fetchEffect(
+        yield* getHttpServerUrl(
+          "/api/orchestration/channels/channel-project/posts?direction=backward&limit=2",
+        ),
+        { headers: { cookie: yield* getAuthenticatedSessionCookieHeader() } },
+      );
+      const body = yield* responseJsonEffect<{ readonly reason?: string }>(response);
+
+      assert.equal(response.status, 500);
+      assert.equal(body.reason, "orchestration_snapshot_failed");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("the SOCKET door reports a store failure under its own tag", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({ layers: { projectionChannels: postsStoreFails() } });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const failure = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.readChannelPosts]({
+            channelId: ChannelId.make("channel-project"),
+            direction: "backward",
+            limit: 2,
+          }).pipe(Effect.flip),
+        ),
+      );
+
+      // A STORE FAILURE IS NOT AN ANSWER. Told "unreadable", a caller concludes this
+      // server cannot serve the channel and stops asking; told this, it can retry.
+      assert.equal(failure._tag, "OrchestrationReadChannelPostsError");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
