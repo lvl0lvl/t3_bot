@@ -56,7 +56,12 @@ message types: `comms/README.md` there.
 editing source does it in its own scratch worktree (`git worktree add <tmp> HEAD`), never in the
 worktree the author is editing. A lane "restores" to what it read, not what you have since written —
 that silently reverted two correctness fixes in #4. Copy in, never symlink; write into a copy, never
-into a live tree.
+into a live tree. A scratch worktree has no `node_modules`: a lane that only reads and runs may share
+the live tree's via symlink; a lane that mutates source runs its own `pnpm install --frozen-lockfile`
+in the scratch tree, and no lane ever creates or repoints a symlink inside a shared `node_modules`
+(that is the exact write that repointed five `@t3tools` links in a live tree and left 653 tests green
+over 12,246 type errors). Suspect it: `readlink -f apps/server/node_modules/@t3tools/contracts` must
+resolve inside the tree you are standing in.
 
 **`gh` targets the fork, never upstream.** This clone has `upstream` = Theo's public repo, and
 `gh` resolved to it until `gh repo set-default lvl0lvl/t3_bot` was run (repo-level git config,
