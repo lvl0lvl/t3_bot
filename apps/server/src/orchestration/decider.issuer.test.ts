@@ -260,18 +260,33 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       // Fail CLOSED. The issuer rides the decider's input, not the command, so
       // the compiler cannot force a call site to pass it — this is what stops a
       // forgotten issuer from meaning "unauthorized but allowed".
+      //
+      // The REFUSAL has to be the typed invariant error, not merely something
+      // going wrong. Forcing this guard's presence check to take the
+      // issuer-present branch makes it succeed with `undefined`, the next guard
+      // dereferences that, and all seven commands come back as a DEFECT — which
+      // an `exit._tag === "Failure"` check reads as a refusal, because `Failure`
+      // covers a Die as well as a Fail. That is the input this test now
+      // distinguishes: a crash is not a refusal, and downstream it is the
+      // difference between a rejection on the wire and an unhandled 500.
       const refused: Array<string> = [];
       for (const type of channelCommandTypes()) {
         const command = channelProbe(type);
         expect(command, `no probe for ${type} — add one`).toBeDefined();
         if (command === undefined) continue;
-        const exit = yield* Effect.exit(
-          decideOrchestrationCommand({
-            command: command as never,
-            readModel: readModel(),
-          }),
-        );
-        if (exit._tag === "Failure") refused.push(type);
+        // `Effect.flip` yields the typed error and lets a defect through, so a
+        // dereference crash fails this test instead of being counted here.
+        const error = yield* decideOrchestrationCommand({
+          command: command as never,
+          readModel: readModel(),
+        }).pipe(Effect.flip);
+        expect(error._tag, type).toBe("OrchestrationCommandInvariantError");
+        if (error._tag === "OrchestrationCommandInvariantError") {
+          expect(error.detail, type).toContain(
+            "arrived without an issuer and cannot be authorized",
+          );
+        }
+        refused.push(type);
       }
       expect(refused).toEqual(channelCommandTypes());
     }),
