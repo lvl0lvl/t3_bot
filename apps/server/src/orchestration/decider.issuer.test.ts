@@ -864,6 +864,20 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
           ],
         };
 
+        // THE ORDER IS THE MEASUREMENT, so it is asserted rather than left to the comment
+        // above. `find` returns the first match, so the WRONG member has to be first:
+        // reversed, this test passes under a memberId-only lookup too and measures nothing.
+        // Measured by the review lane — reversing these two rows and applying the id-only
+        // mutant left all 685 tests green, with the guard broken.
+        //
+        // Asserting a fixture is normally a smell. This fixture's order IS the
+        // discriminating input, so pinning it pins the test's power, not the
+        // implementation's.
+        expect(colliding.channels[0]?.members[0]).toMatchObject({
+          handle: BOSS1,
+          memberKind: "thread",
+        });
+
         const decided = yield* decideOrchestrationCommand({
           command: channelProbe("channel.post.create") as never,
           readModel: colliding,
