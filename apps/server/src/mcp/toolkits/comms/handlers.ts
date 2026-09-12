@@ -1,4 +1,5 @@
 import type { ThreadId } from "@t3tools/contracts";
+import { canonicalChannelHandle, canonicalChannelName } from "@t3tools/shared/channelIdentity";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -20,57 +21,22 @@ import {
 } from "./tools.ts";
 
 /**
- * Trim, strip leading sigils, trim again, and repeat until nothing more comes
- * off. One pass is not enough: a sigil can hide behind whitespace that a
- * previous strip exposed, so `"# #seniors"` loses one `#`, then the space, and
- * would keep the second `#` forever.
+ * The canonical form of a channel name and of a member handle, RE-EXPORTED
+ * rather than reimplemented.
  *
- * Shared by both canonicalizers because the stripping rule is genuinely the
- * same; whether the result is then case-folded is not, and that difference
- * stays at each caller where a reader can see it.
+ * There were two implementations of one rule and they diverged four times in a
+ * single evening: how many leading sigils a name loses, whether a handle folds
+ * case, NFC, then NFC's position relative to the fold. Every time, both sides'
+ * tests stayed green, because a copy agrees with itself. The last divergence
+ * came from nobody disagreeing - the decider's side was improved and this copy,
+ * correct when it was written, silently became wrong.
+ *
+ * Re-exported rather than merely imported so that the toolkit's public surface
+ * IS the shared function object. `canonicalOneImplementation.test.ts` asserts
+ * that by reference, and reference is the assertion that fails for a second
+ * implementation even when the second one is byte-for-byte correct today.
  */
-const stripLeadingSigils = (value: string, sigil: RegExp): string => {
-  // NFC first, because the decider canonicalizes to it and matching downstream
-  // is byte-exact. Without it a composed and a decomposed spelling of the same
-  // text are two different keys: an agent that types "café" decomposed misses a
-  // channel stored composed, and is told no such channel exists. This is what
-  // makes the result a canonical FORM rather than a tidied string — not a guard
-  // against bad input.
-  let current = value.normalize("NFC").trim();
-  for (;;) {
-    const next = current.replace(sigil, "").trim();
-    if (next === current) return current;
-    current = next;
-  }
-};
-
-/**
- * Trim, strip leading "#" to fixpoint, lowercase. A name of only sigils and
- * whitespace canonicalizes to empty and must be rejected rather than looked up.
- *
- * The lowercasing is not the toolkit's rule to make: the decider canonicalizes
- * on the way in, so the projection only ever holds lowercase and an exact
- * lookup cannot match anything else.
- */
-export const canonicalChannelName = (name: string): string =>
-  stripLeadingSigils(name, /^#+/).toLowerCase();
-
-/**
- * The same stripping rule as a channel name, WITHOUT the case fold — and that
- * omission is deliberate rather than an oversight.
- *
- * The aggregate keys handles byte-exactly: `ChannelMemberHandle` is a branded
- * `TrimmedNonEmptyString` with no case rule, `canonicalChannelName` is applied
- * only to a channel's name, `requireChannelMentionsResolve` tests membership
- * with an exact Set, and `projection_channel_members` is keyed
- * `(channel_id, handle)` with no collation. So a member stored as "Boss1" is
- * mentioned as "Boss1"; emitting "boss1" gets the whole post rejected as an
- * unresolvable mention.
- *
- * Canonical handles are the intended end state (t3_bot-iin), and they have to
- * land in the aggregate first. Do not fold here until they have.
- */
-const canonicalHandle = (handle: string): string => stripLeadingSigils(handle, /^@+/);
+export { canonicalChannelHandle, canonicalChannelName };
 
 /**
  * Mentions the agent asked for, resolved against the channel's membership, with
@@ -98,14 +64,19 @@ const canonicalHandle = (handle: string): string => stripLeadingSigils(handle, /
  * That is the same defect as folding case, one axis over, and emitting the
  * stored handle closes both at once — it is correct for whatever the aggregate
  * holds rather than correct only while the toolkit and the aggregate agree.
+ * The aggregate now stores canonical handles, so the key and the stored bytes
+ * usually coincide; that is a reason to keep emitting the stored bytes, not a
+ * reason to stop, because it is exactly the coincidence that hid this bug.
  *
- * AN EXACT MATCH WINS. Members can share a canonical key — "boss1" and
+ * AN EXACT MATCH WINS, and it is a guard against a state the aggregate no
+ * longer admits. Two members could once share a canonical key — "boss1" and
  * "@boss1" both key on "boss1" — and the forgiving map keeps whichever came
  * last, so an agent naming one member byte-for-byte could wake the other and
- * be told it succeeded. Trying the raw handle first removes that: the only
- * cases left to insertion order are the ones where the agent's spelling
- * genuinely matches neither member exactly, where there is nothing to choose
- * between them.
+ * be told it succeeded. `requireChannelHandlesUnique` runs on canonical
+ * handles now (decider.ts, channel.create and channel.member.add), so a
+ * channel cannot hold both. This stays because the gateway's membership is a
+ * read model, not the aggregate: rows written before that rule existed still
+ * carry their original bytes, and an exact match is what reaches them.
  */
 export function resolveMentions(
   requested: ReadonlyArray<string>,
@@ -117,9 +88,14 @@ export function resolveMentions(
   // spelling that also canonicalizes to nothing, so a stray space or a bare
   // "@@" from the agent would wake a real member on a post addressed to
   // nobody. Such a member is still reachable by its exact handle above.
+  //
+  // `requireCanonicalChannelHandle` refuses a handle with no canonical form, so
+  // the aggregate no longer stores one. Same reason as the exact-match rule
+  // above: this map is built from a read model that can still hold rows the
+  // aggregate would refuse today.
   const byHandle = new Map(
     members
-      .map((member) => [canonicalHandle(member.handle), member] as const)
+      .map((member) => [canonicalChannelHandle(member.handle), member] as const)
       .filter(([key]) => key.length > 0),
   );
   const handles: Array<string> = [];
@@ -127,7 +103,7 @@ export function resolveMentions(
   const seenHandles = new Set<string>();
   const seenUnknown = new Set<string>();
   for (const entry of requested) {
-    const handle = canonicalHandle(entry);
+    const handle = canonicalChannelHandle(entry);
     const member = byExactHandle.get(entry.trim()) ?? byHandle.get(handle);
     // Keyed on the member rather than on the spelling: two members CAN be named
     // in one post now that an exact match wins, and keying on the canonical

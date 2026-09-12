@@ -755,9 +755,12 @@ describe("comms toolkit helpers", () => {
     // Exact-match precedence makes this as much this file's problem as the
     // aggregate's: the two spellings reach different members,
     // deterministically, while an agent choosing between them is reading
-    // identical text. The fix is a forbidden-character rule where identities
-    // are created, which belongs in the shared identity module (t3_bot-iin),
-    // not in a second copy here. When it lands, this test flips.
+    // identical text. The forbidden-character rule now lives in
+    // the shared identity module and is applied where identities are CREATED:
+    // requireCanonicalChannelHandle refuses a handle carrying one, so the twin
+    // below can no longer be stored. This still asserts the behaviour, because
+    // the gateway's membership is a read model and can hold rows written
+    // before that rule existed.
     const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
       { handle: "\u200Bboss1", memberKind: "human", memberId: "human-twin" },
       { handle: "boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
@@ -768,23 +771,33 @@ describe("comms toolkit helpers", () => {
     });
   });
 
-  it("does not fold case on a handle, so a member stored Boss1 needs Boss1", () => {
-    // The axis this branch got wrong once and then stopped watching. Folding
-    // here is HARMLESS now that delivery uses stored bytes - the regression is
-    // gone - but it is still a live behaviour change, and nothing said which
-    // behaviour we want. This is the one we have: handles match byte-exactly
-    // apart from sigils and Unicode form, because the aggregate stores them
-    // byte-exactly.
-    //
-    // When t3_bot-iin lands the aggregate canonicalises handles and this
-    // flips: the fold goes back in and this test asserts the opposite. It
-    // failing at that point is the point - it is what makes the change
-    // deliberate rather than incidental.
+  it("folds case on a handle, because the aggregate now stores handles folded", () => {
+    // The flip this test was written to make. Its previous form asserted the
+    // opposite and said so: the fold was reverted in PR #5 because the
+    // aggregate keyed handles byte-exactly, so folding here made every
+    // capitalised mention unresolvable and refused the post whole. The
+    // aggregate canonicalises handles now - decider.ts runs
+    // requireCanonicalChannelHandle on channel.create, channel.member.add,
+    // channel.member.remove and channel.post.create - so this side follows.
+    // Order was the whole risk, and the aggregate went first.
     const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
+      { handle: "boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
+    ];
+    expect(resolveMentions(["Boss1"], members)).toEqual({ handles: ["boss1"] });
+    expect(resolveMentions(["@BOSS1"], members)).toEqual({ handles: ["boss1"] });
+
+    // A row written BEFORE the aggregate folded keeps its own bytes, and the
+    // lookup still reaches it. What goes out is still what is STORED, never
+    // the key - the rule that makes this side correct for whatever the read
+    // model holds rather than correct only while both sides agree.
+    //
+    // It does not make such a member mentionable: the decider canonicalises
+    // the mention and compares it to the stored handle, so "Boss1" resolves
+    // here and is refused there. See docs/internals/channel-identity.md.
+    const legacy: ReadonlyArray<ChannelGateway.ChannelMember> = [
       { handle: "Boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
     ];
-    expect(resolveMentions(["Boss1"], members)).toEqual({ handles: ["Boss1"] });
-    expect(resolveMentions(["boss1"], members)).toEqual({ unknown: ["boss1"] });
+    expect(resolveMentions(["boss1"], legacy)).toEqual({ handles: ["Boss1"] });
   });
 
   it("reports an unresolved handle in canonical form, not as typed", () => {
@@ -794,7 +807,7 @@ describe("comms toolkit helpers", () => {
     // only diagnostic the error can carry. Visually the two forms are
     // identical, which is why this needs an assertion rather than a reading.
     expect(resolveMentions(["@Rene\u0301x"], MEMBERS)).toEqual({
-      unknown: ["Ren\u00E9x"],
+      unknown: ["ren\u00E9x"],
     });
   });
 
