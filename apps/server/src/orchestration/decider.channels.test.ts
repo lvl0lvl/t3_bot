@@ -101,9 +101,11 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
     Effect.gen(function* () {
       // The mention error names the handles that did NOT resolve, which tells
       // the reader which ones DID. That is only safe because the author check
-      // runs first, so a non-member never reaches it. The ordering is the
-      // control; this pins it, because swapping the two guards is a one-line
-      // change that would turn the error into a membership oracle.
+      // runs first, so a non-member never reaches it.
+      //
+      // This pins the RESOLUTION half only. Both handles here canonicalise
+      // cleanly, so moving canonicalisation ahead of the author check does not
+      // change this error — the test below is the one that pins the ordering.
       const error = yield* decideOrchestrationCommand({
         command: postCommand({ authorMemberId: "thread-stranger", mentions: ["boss1", "nobody"] }),
         readModel: makeReadModel(),
@@ -113,6 +115,28 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
         expect(error.detail).toContain("Author is not a member");
         expect(error.detail).not.toContain("nobody");
         expect(error.detail).not.toContain("boss1");
+      }
+    }),
+  );
+
+  it.effect("canonicalises mentions only after the author check", () =>
+    Effect.gen(function* () {
+      // The ordering control, pinned. Canonicalising a mention can itself FAIL
+      // — "@" is a schema-valid handle with no canonical form — so a guard that
+      // runs before the author check answers a non-member with a different
+      // error than a member gets, which is a membership oracle.
+      //
+      // Only a mention that cannot be canonicalised can tell the two orders
+      // apart. The test above uses handles that canonicalise cleanly, so it
+      // passes under either order; this one goes red the moment the guards swap.
+      const error = yield* decideOrchestrationCommand({
+        command: postCommand({ authorMemberId: "thread-stranger", mentions: ["@"] }),
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("Author is not a member");
+        expect(error.detail).not.toContain("no canonical form");
       }
     }),
   );
@@ -346,6 +370,9 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
         readModel: makeReadModel(),
       });
       const events = Array.isArray(decided) ? decided : [decided];
+      // Asserted, not just narrowed: a wrong event type makes the branch below
+      // unreachable and the test passes having checked nothing.
+      expect(events[0]?.type).toBe("channel.created");
       if (events[0]?.type === "channel.created") {
         expect(events[0].payload.name).toBe("juniors");
       }
@@ -375,8 +402,37 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
         readModel: makeReadModel(),
       });
       const events = Array.isArray(decided) ? decided : [decided];
+      // Asserted, not just narrowed: a wrong event type makes the branch below
+      // unreachable and the test passes having checked nothing.
+      expect(events[0]?.type).toBe("channel.created");
       if (events[0]?.type === "channel.created") {
         expect(events[0].payload.members[0]?.handle).toBe(PM);
+      }
+    }),
+  );
+
+  it.effect("stores a member handle canonically when one is added", () =>
+    Effect.gen(function* () {
+      // The add path needs its own test: the create path folding proves nothing
+      // about this branch, and a member added with its typed handle is a member
+      // no mention can reach. Dropping the fold here passed the whole suite.
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add-case"),
+          channelId: CHANNEL,
+          member: {
+            handle: ChannelMemberHandle.make("@Boss3"),
+            memberKind: "thread",
+            memberId: "thread-boss3",
+          },
+        },
+        readModel: makeReadModel(),
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events[0]?.type).toBe("channel.member-added");
+      if (events[0]?.type === "channel.member-added") {
+        expect(events[0].payload.member.handle).toBe(ChannelMemberHandle.make("boss3"));
       }
     }),
   );
@@ -490,6 +546,41 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           createdAt: NOW,
         },
         readModel: archived,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is already used by channel");
+      }
+    }),
+  );
+
+  it.effect("refuses a rename onto a name another channel holds", () =>
+    Effect.gen(function* () {
+      // The rename half of the name check, which nothing pinned: the two
+      // refusal tests both go through channel.create, and the self-rename test
+      // below asserts only the PERMISSIVE direction — a test that checks a
+      // guard lets something through cannot show the guard is there. Deleting
+      // the call from the meta.update branch passed all 636 tests.
+      //
+      // Needs a SECOND channel, which the shared fixture does not have: with
+      // one channel there is nothing to collide a rename against.
+      const base = makeReadModel();
+      const first = base.channels[0];
+      expect(first, "fixture must seed a channel to rename against").toBeDefined();
+      if (first === undefined) return;
+      const twoChannels = {
+        ...base,
+        channels: [first, { ...first, id: ChannelId.make("channel-juniors"), name: "juniors" }],
+      };
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.meta.update",
+          commandId: CommandId.make("cmd-meta-collide"),
+          channelId: ChannelId.make("channel-juniors"),
+          // Canonicalises to "seniors", which the other channel holds.
+          name: "#SENIORS",
+        },
+        readModel: twoChannels,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
