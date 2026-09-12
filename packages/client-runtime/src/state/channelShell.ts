@@ -9,6 +9,30 @@ import { Atom } from "effect/unstable/reactivity";
 import type { EnvironmentCatalogState } from "./connections.ts";
 import { arrayElementsEqual } from "./entities.ts";
 
+/** One channel in one environment. Neither id identifies a channel alone. */
+export interface ScopedChannelRef {
+  readonly environmentId: EnvironmentId;
+  readonly channelId: ChannelId;
+}
+
+/**
+ * The one string that identifies a channel across environments.
+ *
+ * Exported because the atom family is not the only thing that needs it — a React
+ * key over the channel list needs the same identity, and the first version of
+ * that key spelled the separator by hand and got a literal NUL BYTE in the
+ * source file rather than the escape, which renders as a space and makes git
+ * report the file as binary. Two spellings of one convention is the drift this
+ * function exists to prevent; a third is not better for being short.
+ *
+ * NUL, as the escape, matching `threadKey`. A separator either side could
+ * contain gives two different refs one key — the wake key hit exactly that with
+ * a colon and had to escape both halves.
+ */
+export function channelKey(ref: ScopedChannelRef): string {
+  return `${ref.environmentId}\u0000${ref.channelId}`;
+}
+
 /**
  * A channel carrying the environment it came from, so a client connected to
  * several servers can tell two `#seniors` apart.
@@ -122,12 +146,6 @@ export function createEnvironmentChannelShellAtoms(input: {
     environmentChannelsAtom,
     environmentSupportsChannelsAtom,
     channelsAtom,
-    // NUL, spelled as the escape and matching the separator `threadKey` already
-    // uses in this module. A separator either side could contain gives two
-    // different refs one key — the wake key hit exactly that with a colon and
-    // had to escape both halves — and a SECOND convention for the same job is
-    // the thing that drifts from the first.
-    channelAtom: (ref: { readonly environmentId: EnvironmentId; readonly channelId: ChannelId }) =>
-      channelAtomFamily(`${ref.environmentId}\u0000${ref.channelId}`),
+    channelAtom: (ref: ScopedChannelRef) => channelAtomFamily(channelKey(ref)),
   };
 }

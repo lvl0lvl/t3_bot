@@ -9,7 +9,7 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 
 import { PrimaryConnectionTarget } from "../connection/model.ts";
-import { createEnvironmentChannelShellAtoms } from "./channelShell.ts";
+import { channelKey, createEnvironmentChannelShellAtoms } from "./channelShell.ts";
 import type { EnvironmentShellState } from "./shell.ts";
 import { createEnvironmentSnapshotAtom } from "./snapshots.ts";
 
@@ -79,6 +79,35 @@ function makeHarness(
     }),
   };
 }
+
+describe("channelKey", () => {
+  it("separates the two ids with NUL rather than a printable character", () => {
+    // The escape, not a typed separator. The first version of the React key over
+    // this list spelled it inline and put a literal NUL BYTE in the source file,
+    // where it renders as a space and git reports the file as binary. Asserting
+    // the produced string is what catches that — reading the source does not.
+    expect(
+      channelKey({ environmentId: ENVIRONMENT_ID, channelId: ChannelId.make("seniors") }),
+    ).toBe("environment-1\u0000seniors");
+  });
+
+  it("does not let two different refs share one key", () => {
+    // The pair that collides under any printable separator: with "-" both of
+    // these are "a-b-c". A key collision here hands two channels one atom, so
+    // opening one renders the other.
+    expect(
+      channelKey({
+        environmentId: EnvironmentId.make("a"),
+        channelId: ChannelId.make("b-c"),
+      }),
+    ).not.toBe(
+      channelKey({
+        environmentId: EnvironmentId.make("a-b"),
+        channelId: ChannelId.make("c"),
+      }),
+    );
+  });
+});
 
 describe("channel shell atoms", () => {
   it("orders by latest post, not by creation", () => {
