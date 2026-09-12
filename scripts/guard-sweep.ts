@@ -558,15 +558,27 @@ export const exitCodeFor = (swept: ReadonlyArray<SweptMutation>): 0 | 2 | 3 => {
 };
 
 /**
- * Ends the process with `code`, and does nothing at all for 0.
+ * Records `code` as the process's eventual exit status. Does NOT terminate.
  *
- * A plain `return` for the healthy case so the runtime's own success path stays
- * intact; an explicit exit only when there is a verdict to carry. The scope's
- * finalizers — which remove the sweep worktree — run before this, because it is
- * the command's return value rather than a call inside it.
+ * `process.exitCode = n` rather than `process.exit(n)`, and the difference is a
+ * leaked git worktree every time. I first wrote this as `process.exit` with a
+ * comment claiming the scope's finalizers ran before it "because it is the
+ * command's return value rather than a call inside it". That was false.
+ * `process.exit` terminates immediately and synchronously, so the scope never
+ * closes and `git worktree remove` never runs. Measured: five sweeps, and the
+ * four that exited non-zero each left a worktree behind in `$TMPDIR` and
+ * registered in the swept repo. The one that exited 0 cleaned up, because 0 goes
+ * through `Effect.void` and lets the runtime finish normally.
+ *
+ * Setting `exitCode` lets the runtime drain: the scope closes, the finalizer
+ * removes the tree, and the process then exits with this status. A tool whose
+ * whole subject is destructive side effects does not get to leak a worktree on
+ * the paths that matter — which are exactly the non-zero ones.
  */
 const exitWith = (code: 0 | 2 | 3) =>
-  code === 0 ? Effect.void : Effect.sync(() => process.exit(code));
+  Effect.sync(() => {
+    process.exitCode = code;
+  });
 
 /**
  * A worktree of `repo` at its current HEAD, removed when the scope closes.
