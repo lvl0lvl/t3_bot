@@ -28,6 +28,7 @@ import {
   CommandId,
   type DiscoveredLocalServerList,
   EventId,
+  HUMAN_OPERATOR_MEMBER_ID,
   type EditorId,
   type FileManagerRevealKind,
   type OrchestrationClientOrigin,
@@ -503,13 +504,30 @@ const makeWsRpcLayer = (
       // the client's request caused them.
       const hasClientOrigin =
         clientOrigin.surface !== undefined || clientOrigin.appVersion !== undefined;
+      /**
+       * Every command from this connection, issued as the human operator.
+       *
+       * UNCONDITIONAL, and that is the point. `requireCommandIssuer` fails
+       * closed, so an entry point that forgets to stamp cannot post — it gets a
+       * rejection. Stamping only for channel commands would make this the entry
+       * point that remembers for the commands someone thought of, and the
+       * engine already ignores the field for every command that has no issuer
+       * invariant.
+       *
+       * The value is `HUMAN_OPERATOR_MEMBER_ID` rather than anything read off
+       * this connection, because there is nothing to read: no account system,
+       * one operator. What the connection contributes is that it authenticated
+       * at all — and the seeder writes the same constant into the channels'
+       * membership, so `requireChannelAuthorIsMember` is deciding against a
+       * member that exists.
+       */
       const dispatchFromClient: OrchestrationEngine.OrchestrationEngineShape["dispatch"] = (
         command,
       ) =>
-        orchestrationEngine.dispatch(
-          command,
-          hasClientOrigin ? { origin: clientOrigin } : undefined,
-        );
+        orchestrationEngine.dispatch(command, {
+          ...(hasClientOrigin ? { origin: clientOrigin } : {}),
+          issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+        });
       const recordClientCommandAnalytics = (command: OrchestrationCommand) => {
         switch (command.type) {
           case "thread.create":

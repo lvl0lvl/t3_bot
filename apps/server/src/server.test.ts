@@ -10,8 +10,12 @@ import {
   AuthStandardClientScopes,
   AuthEnvironmentBootstrapTokenType,
   AuthTokenExchangeGrantType,
+  ChannelId,
+  ChannelMemberHandle,
+  ChannelPostId,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
+  HUMAN_OPERATOR_MEMBER_ID,
   type DpopFailureReason,
   EnvironmentId,
   EventId,
@@ -7070,6 +7074,92 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(response.relativePath, "nested/created.txt");
       const persisted = yield* fs.readFileString(path.join(workspaceDir, "nested", "created.txt"));
       assert.equal(persisted, "written-by-rpc");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("issues every websocket command as the human operator", () =>
+    Effect.gen(function* () {
+      // THE OPTIONS, not the command. The engine stamps the issuer from the
+      // caller's credential and the command never carries it, so the options
+      // this layer passes are the only place its contribution exists — the same
+      // reason the mention-wake tests read the dispatched command rather than
+      // the resulting event.
+      const issuers: Array<unknown> = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (_command, options) =>
+              Effect.sync(() => {
+                issuers.push(options?.issuer);
+                return { sequence: 1 };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "channel.post.create",
+            commandId: CommandId.make("cmd-ws-post"),
+            channelId: ChannelId.make("channel-project"),
+            postId: ChannelPostId.make("post-ws-1"),
+            body: "what is 2+2",
+            mentions: [ChannelMemberHandle.make("boss1")],
+            parentPostId: null,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }),
+        ),
+      );
+
+      // The exact member, not merely "an issuer". A wrong id is a member the
+      // channels do not contain, and `requireChannelAuthorIsMember` would then
+      // refuse every post from the browser with a message about membership that
+      // is true and unhelpful.
+      assert.deepStrictEqual(issuers, [
+        { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("issues a command that has no issuer invariant as the operator too", () =>
+    Effect.gen(function* () {
+      // The stamp is unconditional, and this is the test that says so. Stamping
+      // only for channel commands would make this the entry point that
+      // remembers for the commands someone thought of, and `requireCommandIssuer`
+      // fails closed — so the next command to grow an issuer invariant would be
+      // refused rather than mis-issued, silently, at runtime.
+      const issuers: Array<unknown> = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (_command, options) =>
+              Effect.sync(() => {
+                issuers.push(options?.issuer);
+                return { sequence: 1 };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.session.stop",
+            commandId: CommandId.make("cmd-ws-stop"),
+            threadId: defaultThreadId,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }),
+        ),
+      );
+
+      assert.deepStrictEqual(issuers, [
+        { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+      ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

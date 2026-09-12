@@ -39,6 +39,7 @@ import {
   ChannelId,
   ChannelMemberHandle,
   CommandId,
+  HUMAN_OPERATOR_MEMBER_ID,
   ProjectId,
   ThreadId,
   defaultInstanceIdForDriver,
@@ -74,16 +75,16 @@ const PROJECT_CHANNEL = ChannelId.make("channel-project");
 const SENIORS_CHANNEL = ChannelId.make("channel-seniors");
 
 /**
- * The human's member id.
+ * The human's member id, from the one place that defines it.
  *
- * There is no human-identity concept on `main` yet, so this is a fixed value
- * rather than a real account id. It is the field the web UI will need in order
- * to render "you", and it is recorded on `t3_bot-1nx` as the thing to replace
- * when identities exist. Deliberately NOT a thread id: a human member carrying
- * a thread's id is the impersonation route `requireChannelMemberShape` exists to
+ * It was a local constant here and is now shared with the WebSocket layer,
+ * which stamps the same value as the issuer on every command a browser sends.
+ * Two definitions would mean an operator who is a member of a channel they
+ * cannot post to. Deliberately NOT a thread id: a human member carrying a
+ * thread's id is the impersonation route `requireChannelMemberShape` exists to
  * refuse.
  */
-const WALT_MEMBER_ID = "human-walt";
+const WALT_MEMBER_ID = HUMAN_OPERATOR_MEMBER_ID;
 
 const SEEDED_THREADS = [
   { id: PM_THREAD, handle: "pm", title: "PM" },
@@ -195,6 +196,38 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
       memberId: thread.id,
     })),
     createdAt: input.createdAt,
+  });
+
+  // The operator joins #seniors as its OWN command, with its own id, and not by
+  // being added to the list above.
+  //
+  // NEVER CHANGE THE PAYLOAD OF A DETERMINISTIC COMMAND THAT HAS SHIPPED. The
+  // receipt short-circuit compares the commandId and the aggregate ref and never
+  // the payload, so editing `seed-channel-seniors`'s members is a change that
+  // silently does not happen on every environment that has already booted — and
+  // `seedHierarchy` still returns success. The operator would then be missing
+  // from the channel M1 is a demonstration of, and the symptom would be
+  // `requireChannelAuthorIsMember` refusing their post with a message about
+  // membership that is true and useless.
+  //
+  // A new id is the whole fix. Bumping the CREATE's id would not work:
+  // `requireChannelAbsent` and `requireChannelNameAvailable` both refuse a
+  // second create for a channel that exists.
+  //
+  // Why the operator is in here at all is a product decision rather than a
+  // technical one: M1 is Walt asking "@boss1 what is 2+2" in #seniors and
+  // watching the seniors answer each other. It is not a way around the
+  // membership check — `requireChannelAuthorIsMember` still decides, and it
+  // decides on the list this produces.
+  yield* dispatch({
+    type: "channel.member.add",
+    commandId: CommandId.make("seed-channel-seniors-member-walt"),
+    channelId: SENIORS_CHANNEL,
+    member: {
+      handle: ChannelMemberHandle.make("walt"),
+      memberKind: "human",
+      memberId: WALT_MEMBER_ID,
+    },
   });
 });
 

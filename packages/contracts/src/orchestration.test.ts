@@ -1594,15 +1594,49 @@ it("isProviderSendTurnSupportedImageMimeType accepts raster formats and rejects 
 });
 
 /**
- * The wire exclusion, asserted rather than assumed.
+ * The administrative channel commands, written out rather than derived as
+ * "every channel command except the one".
  *
- * Channel commands are dispatchable but deliberately not decodable from a
- * client. That exclusion was the only thing preventing forged channel
- * authorship before the issuer landed, and nothing recorded it — so adding one
- * of these to ClientOrchestrationCommand to "finish the integration" would have
- * opened the hole with every test still green.
+ * A derived list absorbs new members silently: add a seventh administrative
+ * command to `OrchestrationCommand` and a derived list would cover it without
+ * anyone deciding that it should be covered. A written list does not — the set
+ * assertion below goes red, and putting it right is an edit a reviewer sees in
+ * the diff. That visibility is the point.
  */
-it.effect("does not decode channel commands from a client", () =>
+const ADMINISTRATIVE_CHANNEL_COMMANDS = [
+  "channel.archive",
+  "channel.create",
+  "channel.member.add",
+  "channel.member.remove",
+  "channel.meta.update",
+  "channel.unarchive",
+] as const;
+
+/**
+ * The wire BOUNDARY, asserted rather than assumed, in both directions.
+ *
+ * It used to assert that no channel command decodes from a client. That was the
+ * only thing preventing forged channel authorship before the issuer landed, and
+ * nothing recorded it — so adding one of these to `ClientOrchestrationCommand`
+ * to "finish the integration" would have opened the hole with every test green.
+ *
+ * `t3_bot-zuy` needs exactly one of them on the wire, so the assertion is the
+ * line rather than the absence: `channel.post.create` MUST decode, and the six
+ * administrative commands MUST NOT, by name. Both halves matter, for different
+ * reasons. Without the first, the web composer silently stops working and the
+ * failure reads as "the server did not understand that". Without the second,
+ * every browser session can create and archive channels and edit membership,
+ * because an RPC client is issued as `human` and `requireIssuerCanAdminister`
+ * admits `human`.
+ *
+ * The admitting half is also what stops this test measuring its own payload. Its
+ * predecessor sent ONE probe shape for all seven commands — `channel.create`'s
+ * shape — and `channel.post.create` cannot decode as that shape, so the test
+ * recorded "did not decode" for a schema reason and would have passed with the
+ * command on the wire. Measured, on the union that has it: the old probe does
+ * not decode.
+ */
+it.effect("decodes channel.post.create from a client and nothing else channel-shaped", () =>
   Effect.gen(function* () {
     const groups: ReadonlyArray<{
       readonly members: ReadonlyArray<{
@@ -1617,11 +1651,18 @@ it.effect("does not decode channel commands from a client", () =>
           .filter((literal) => literal.startsWith("channel.")),
       ),
     ].sort();
-    // If this is empty the traversal broke and the loop below proves nothing.
-    assert.strictEqual(channelTypes.length, 7, `found: ${channelTypes.join(", ")}`);
 
+    // The traversal, checked before anything is concluded from it. If this went
+    // empty the loops below would prove nothing while passing.
+    assert.deepStrictEqual(
+      channelTypes,
+      [...ADMINISTRATIVE_CHANNEL_COMMANDS, "channel.post.create"].sort(),
+      `the channel commands are not what this test thinks: ${channelTypes.join(", ")}`,
+    );
+
+    // The refusing direction: each administrative command by name.
     const decoded: Array<string> = [];
-    for (const type of channelTypes) {
+    for (const type of ADMINISTRATIVE_CHANNEL_COMMANDS) {
       const exit = yield* Effect.exit(
         decodeClientOrchestrationCommand({
           type,
@@ -1629,18 +1670,33 @@ it.effect("does not decode channel commands from a client", () =>
           channelId: "channel-1",
           name: "seniors",
           members: [],
+          member: { handle: "walt", memberKind: "human", memberId: "human-walt" },
+          handle: "walt",
+          title: "Seniors",
           createdAt: "2026-01-01T00:00:00.000Z",
         }),
       );
       if (Exit.isSuccess(exit)) decoded.push(type);
     }
-    // An RPC client can only be given a `human` issuer, which would make every
-    // browser session a channel administrator.
     assert.deepStrictEqual(
       decoded,
       [],
-      `these channel commands decode from the wire: ${decoded.join(", ")}`,
+      `these administrative channel commands decode from the wire: ${decoded.join(", ")}`,
     );
+
+    // The admitting direction, which is the half a "no channel commands"
+    // assertion could never have: the one command the web composer sends.
+    const post = yield* decodeClientOrchestrationCommand({
+      type: "channel.post.create",
+      commandId: "cmd-wire-post",
+      channelId: "channel-1",
+      postId: "post-1",
+      body: "what is 2+2",
+      mentions: ["boss1"],
+      parentPostId: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(post.type, "channel.post.create");
   }),
 );
 
