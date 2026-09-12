@@ -417,6 +417,46 @@ layer("ProjectionChannelRepository", (it) => {
     }),
   );
 
+  it.effect("sorts a channel with NO posts by when it was created, not last", () =>
+    Effect.gen(function* () {
+      // THE COALESCE FALLBACK, and the only fixture shape that can see it. The
+      // ordering test above gives BOTH channels a post, so
+      // `COALESCE(MAX(p.created_at), c.created_at)` and `MAX(p.created_at)` are
+      // the same function against it — dropping the fallback survived all 16
+      // tests until this one existed.
+      //
+      // NULLs sort LAST under DESC in SQLite, which is the wrong end: a channel
+      // created today and never posted in belongs above one whose only post is
+      // from last week. So "empty" is created AFTER "busy"'s post, and the two
+      // orderings are opposite.
+      const repo = yield* ProjectionChannelRepository;
+      const busy = ChannelId.make("coalesce-busy");
+      const empty = ChannelId.make("coalesce-empty");
+      const member = { memberKind: "human" as const, memberId: "coalesce-member" };
+      yield* repo.upsertChannel(
+        channelWithMembers(busy, "coalesce-busy", [{ handle: "walt", ...member }], {
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      yield* repo.upsertChannel(
+        channelWithMembers(empty, "coalesce-empty", [{ handle: "walt", ...member }], {
+          createdAt: "2026-01-08T00:00:00.000Z",
+        }),
+      );
+      yield* repo.insertPost({
+        ...post("coalesce-post", busy, 1),
+        createdAt: "2026-01-02T00:00:00.000Z",
+      });
+
+      const rows = yield* repo.listChannelsForMember(member);
+
+      assert.deepStrictEqual(
+        rows.map((row) => row.name),
+        ["coalesce-empty", "coalesce-busy"],
+      );
+    }),
+  );
+
   it.effect("carries the latest post's time, and null for a channel with none", () =>
     Effect.gen(function* () {
       // `latestPostAt` is what the deleted `channel-post-appended` shell event
