@@ -174,30 +174,40 @@ const make = Effect.gen(function* () {
   };
 
   const readPosts = (input: ReadPostsInput) =>
+    // SUSPENDED so the guard below fails INSIDE the Effect. `requireSequence`
+    // throws, and it is evaluated while the argument to `listPosts` is being
+    // built - so without this the throw escapes before any Effect exists, and
+    // `.pipe(Effect.exit)` on the result of this call cannot catch it. That is
+    // the same trap `ChannelPostId.make` was in, reproduced in the guard added
+    // to fix it; writing a test for the guard is what found it, because the
+    // test could not catch what it was asserting.
+    //
     // OVER-FETCH BY ONE. `nextCursor` has to say whether a newer post exists,
     // and asking for one more than the caller wanted is how to know without a
     // second query.
-    channels
-      .listPosts({
-        channelId: ChannelId.make(input.channelId),
-        limit: input.limit + 1,
-        afterSequence: input.cursor === undefined ? undefined : requireSequence(input.cursor),
-      })
-      .pipe(
-        Effect.mapError(() => storeUnavailable("readPosts")),
-        Effect.map((rows) => {
-          const kept = rows.slice(0, input.limit);
-          // The cursor comes off the ROW, before the map: ChannelPostRecord
-          // drops `sequence`, so taking it afterwards is taking it from a shape
-          // that no longer carries it.
-          const last = kept.at(-1);
-          return {
-            posts: kept.map(toPost),
-            nextCursor:
-              rows.length > input.limit && last !== undefined ? String(last.sequence) : null,
-          } satisfies ChannelPage;
-        }),
-      );
+    Effect.suspend(() =>
+      channels
+        .listPosts({
+          channelId: ChannelId.make(input.channelId),
+          limit: input.limit + 1,
+          afterSequence: input.cursor === undefined ? undefined : requireSequence(input.cursor),
+        })
+        .pipe(
+          Effect.mapError(() => storeUnavailable("readPosts")),
+          Effect.map((rows) => {
+            const kept = rows.slice(0, input.limit);
+            // The cursor comes off the ROW, before the map: ChannelPostRecord
+            // drops `sequence`, so taking it afterwards is taking it from a shape
+            // that no longer carries it.
+            const last = kept.at(-1);
+            return {
+              posts: kept.map(toPost),
+              nextCursor:
+                rows.length > input.limit && last !== undefined ? String(last.sequence) : null,
+            } satisfies ChannelPage;
+          }),
+        ),
+    );
 
   const createPost = (input: CreatePostInput) =>
     Effect.gen(function* () {
@@ -219,17 +229,21 @@ const make = Effect.gen(function* () {
             body: input.body,
             mentions: input.mentions.map((handle) => ChannelMemberHandle.make(handle)),
             // BREAKS ON a parentPostId the brand refuses - "a:b", a space, an
-            // emoji, 65 characters. `.make` throws, and unlike `getPost` this
-            // one is inside an `Effect.gen`, so the throw becomes a Die that
-            // `publish`'s `Effect.catchCause(writeDefect)` converts into a
-            // typed `CommsPostFailedError`. Guarded, then - but into the WRONG
-            // error, and only because `comms_reply` calls `getPost` first and
-            // that call now refuses a malformed id. That is a rule in another
-            // function about a different call, which is the coupling this file
-            // removed from the archived check twenty lines up. Nothing tests
-            // the ordering. `t3_bot-d7d` is where it gets decoded rather than
-            // constructed; until then, a caller reaching this directly with an
-            // unvalidated parent id gets a worse error than it should.
+            // emoji, 65 characters. `.make` throws, and a DIRECT caller of this
+            // seam gets that throw as a raw schema Die carrying a serialised
+            // AST, out of a function whose signature declares five typed
+            // failures. Not a worse error - no error at all. Through the
+            // toolkit it is converted, because the throw is inside an
+            // `Effect.gen` and `publish`'s `Effect.catchCause(writeDefect)`
+            // turns the Die into `CommsPostFailedError` whose detail is a
+            // stack trace with absolute server paths.
+            //
+            // The toolkit does not reach it: `comms_reply` passes the postId
+            // the PROJECTION returned, which was a valid id when it was
+            // stored. That is provenance rather than call order, so there is no
+            // ordering here for anyone to reverse - but a future caller
+            // constructing this input itself has nothing stopping it, and
+            // `t3_bot-d7d` is where the construction is replaced by a decode.
             parentPostId:
               input.parentPostId === null ? null : ChannelPostId.make(input.parentPostId),
             createdAt,

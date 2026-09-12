@@ -642,6 +642,42 @@ describe("the comms toolkit on the live gateway", () => {
   );
 
   it.effect(
+    "treats a cursor that is not a sequence as a DEFECT, for the caller the schema does not cover",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const gateway = yield* ChannelGateway;
+
+        // Unreachable through the toolkit, whose schema refuses these first -
+        // so this calls the gateway directly, the same way the non-canonical
+        // name below is tested. Without it the guard is inert: reverting
+        // `requireSequence` on its own reds nothing, because every input that
+        // would reach it is stopped one layer up.
+        //
+        // The guard is what holds if that layer is ever widened, and its
+        // docstring says so. A docstring making a claim about a guard nothing
+        // exercises is the thing this branch has spent the day deleting.
+        for (const notASequence of ["abc", "-1", "1.5", "9007199254740993"]) {
+          const defect = yield* gateway
+            .readPosts({ channelId: CHANNEL_ID, limit: 10, cursor: notASequence })
+            .pipe(Effect.exit);
+          expect(defect._tag).toBe("Failure");
+          expect(String(defect)).toContain("not a sequence");
+        }
+
+        // And a real cursor still reads, so the assertions above are about the
+        // VALUE rather than about readPosts refusing everything.
+        const page = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 10,
+          cursor: undefined,
+        });
+        expect(page.posts).toEqual([]);
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
     "treats a non-canonical name as a DEFECT rather than an empty answer",
     () =>
       Effect.gen(function* () {

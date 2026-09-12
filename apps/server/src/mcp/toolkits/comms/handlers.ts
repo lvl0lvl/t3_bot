@@ -301,7 +301,15 @@ const make = Effect.gen(function* () {
           threadId,
           body: input.body,
           mentions: input.mentions,
-          parentPostId: input.parentPostId,
+          // THE PROJECTION'S id, not the agent's string. They are equal
+          // whenever the lookup succeeded, so this changes no behaviour - what
+          // it changes is the ARGUMENT for why the gateway's
+          // `ChannelPostId.make` on this value cannot throw. Passing the
+          // agent's string made that safe by call order: `getPost` above
+          // refuses a malformed id first. Passing the row's makes it safe by
+          // provenance: this value was a valid `ChannelPostId` when it was
+          // stored, so there is no ordering left for anyone to reverse.
+          parentPostId: parent.value.postId,
         });
       }),
 
