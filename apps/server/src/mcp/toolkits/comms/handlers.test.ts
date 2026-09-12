@@ -273,6 +273,65 @@ describe("comms toolkit handlers", () => {
     }),
   );
 
+  /**
+   * The canonical rule, as a table, because the toolkit and the decider each
+   * implement it and they have already disagreed once: the toolkit stripped
+   * every leading sigil while the decider stripped one, so "##seniors" resolved
+   * to two different channels depending on which side you asked. When the rule
+   * moves, this is the one place to change it — and the decider has the
+   * matching table, so a silent divergence has to break both.
+   */
+  it("canonicalizes a channel name the way the aggregate stores it", () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ["seniors", "seniors"],
+      ["#seniors", "seniors"],
+      ["Seniors", "seniors"],
+      ["#SENIORS", "seniors"],
+      ["  ##SENIORS  ", "seniors"],
+      ["# seniors", "seniors"],
+      // Only sigils and spaces: empty, and rejected before any lookup.
+      ["#", ""],
+      ["##", ""],
+      ["#   ", ""],
+      // A sigil that is not leading is part of the name.
+      ["a#b", "a#b"],
+    ];
+    expect(cases.map(([input]) => [input, normalizeChannelName(input)])).toEqual(
+      cases.map(([input, expected]) => [input, expected]),
+    );
+  });
+
+  it.effect("finds a channel whatever case the agent types", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const result = yield* harness.call("comms_post", {
+        channel: "  ##SENIORS  ",
+        body: "case should not matter",
+      });
+      expect(result.channel).toEqual("seniors");
+      // The canonical form is what reaches the seam. Matching there is exact,
+      // so anything else reads as "no such channel" — which is deliberately the
+      // same answer a non-member gets, and therefore undiagnosable.
+      expect(yield* Ref.get(harness.channelLookups)).toEqual([["seniors", THREAD_ID]]);
+    }),
+  );
+
+  it.effect("resolves a mention whatever case the agent types", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const result = yield* harness.call("comms_post", {
+        channel: "seniors",
+        body: "over to you",
+        mentions: ["@BOSS1", "Walt"],
+      });
+      // Echoed and stored canonically: the aggregate matches a mention against
+      // its member handles exactly, so a mention written back in the agent's
+      // casing would wake nobody while looking delivered.
+      expect(result.mentioned).toEqual(["boss1", "walt"]);
+      expect((yield* Ref.get(harness.created))[0]?.mentions).toEqual(["boss1", "walt"]);
+    }),
+  );
+
   it.effect("resolves mentions written with a sigil, a space, or both", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
@@ -312,9 +371,10 @@ describe("comms toolkit handlers", () => {
     Effect.gen(function* () {
       const harness = yield* makeHarness();
       const result = yield* harness.call("comms_read_channel", { channel: "seniors" });
-      // A handle echoed with a sigil would not match the normalized form the
-      // agent must send back as a mention.
-      expect(result.members.every((handle) => !handle.startsWith("@"))).toBe(true);
+      // The exact list, not a property of it: "no leading @" also passes for a
+      // handle mangled some other way, and these strings are what the agent
+      // must send back verbatim as a mention.
+      expect(result.members).toEqual(["pm", "boss1", "boss3", "walt"]);
     }),
   );
 

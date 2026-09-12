@@ -20,15 +20,23 @@ import {
 } from "./tools.ts";
 
 /**
- * Agents write "#seniors" and "seniors" interchangeably, and the sigil can hide
- * whitespace, so the trim runs on both sides of the strip. A name that is only
- * sigils and spaces normalizes to empty and must be rejected rather than looked
- * up.
+ * Agents write "#seniors", "Seniors" and "# SENIORS" interchangeably, and the
+ * sigil can hide whitespace, so the trim runs on both sides of the strip. A
+ * name that is only sigils and spaces normalizes to empty and must be rejected
+ * rather than looked up.
+ *
+ * The lowercasing is not the toolkit's rule to make: the decider canonicalizes
+ * on the way in, so the projection only ever holds lowercase and an exact
+ * lookup cannot match anything else. Repeating it here is what turns a case
+ * mismatch into a match instead of a CommsChannelNotFoundError the agent cannot
+ * distinguish from being excluded.
  */
-export const normalizeChannelName = (name: string): string => name.trim().replace(/^#+/, "").trim();
+export const normalizeChannelName = (name: string): string =>
+  name.trim().replace(/^#+/, "").trim().toLowerCase();
 
-/** Same for "@boss1" and "boss1". */
-const normalizeHandle = (handle: string): string => handle.trim().replace(/^@+/, "").trim();
+/** Same rule for "@Boss1" and "boss1". */
+const normalizeHandle = (handle: string): string =>
+  handle.trim().replace(/^@+/, "").trim().toLowerCase();
 
 /**
  * Mentions the agent asked for, resolved against the channel's membership, with
