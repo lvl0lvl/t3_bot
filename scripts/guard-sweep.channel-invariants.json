@@ -1,0 +1,76 @@
+{
+  "testCommand": ["pnpm", "exec", "vp", "test", "run", "apps/server/src/orchestration"],
+  "setupCommand": ["pnpm", "install", "--frozen-lockfile"],
+  "mutations": [
+    {
+      "id": "issuer-required-fails-open",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  if (input.issuer !== undefined) {",
+      "replace": "  if (true as boolean) {"
+    },
+    {
+      "id": "author-allow-list-admits-system",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  if (input.issuer.memberKind === \"human\" || input.issuer.memberKind === \"thread\") {",
+      "replace": "  if (true as boolean) {"
+    },
+    {
+      "id": "author-allow-list-refuses-threads",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  if (input.issuer.memberKind === \"human\" || input.issuer.memberKind === \"thread\") {",
+      "replace": "  if (input.issuer.memberKind === \"human\") {"
+    },
+    {
+      "id": "administer-allow-list-admits-threads",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  if (input.issuer.memberKind === \"human\" || input.issuer.memberKind === \"system\") {",
+      "replace": "  if (true as boolean) {"
+    },
+    {
+      "id": "administer-allow-list-refuses-system",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  if (input.issuer.memberKind === \"human\" || input.issuer.memberKind === \"system\") {",
+      "replace": "  if (input.issuer.memberKind === \"human\") {"
+    },
+    {
+      "id": "author-membership-matches-id-only",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      member.memberKind === input.authorRef.memberKind &&\n      member.memberId === input.authorRef.memberId,",
+      "replace": "      member.memberId === input.authorRef.memberId,"
+    },
+    {
+      "id": "author-membership-never-matches",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  if (author) {\n    return Effect.succeed(author);\n  }",
+      "replace": "  if (false as boolean) {\n    return Effect.succeed(author as never);\n  }"
+    },
+    {
+      "id": "channel-absent-inert",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  if (!findChannelById(input.readModel, input.channelId)) {\n    return Effect.void;\n  }",
+      "replace": "  if (true as boolean) {\n    return Effect.void;\n  }"
+    },
+    {
+      "id": "handles-unique-inert",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "    if (seen.has(member.handle)) {",
+      "replace": "    if (false as boolean) {"
+    },
+    {
+      "id": "member-shape-refuses-every-human",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  if (namedThread !== undefined) {",
+      "replace": "  if (true as boolean) {"
+    }
+  ]
+}
