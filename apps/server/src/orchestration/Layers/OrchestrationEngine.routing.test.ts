@@ -109,7 +109,9 @@ const EXPECTED_AGGREGATE: Readonly<Record<string, OrchestrationAggregateKind>> =
  */
 type CommandGroup = {
   readonly members: ReadonlyArray<{
-    readonly fields: { readonly type: { readonly literal: string } };
+    readonly fields: Readonly<Record<string, unknown>> & {
+      readonly type: { readonly literal: string };
+    };
   }>;
 };
 
@@ -130,6 +132,57 @@ const declaredCommandTypes = (): ReadonlyArray<string> => {
 };
 
 /**
+ * The commands whose payload carries BOTH a projectId and a threadId — the only
+ * ones the compiler cannot already keep out of the wrong branch. Derived from
+ * the contract rather than listed, so a command that grows a second id joins
+ * the hazard set automatically instead of silently escaping it.
+ */
+const dualIdCommandTypes = (): ReadonlyArray<string> => {
+  const groups: ReadonlyArray<CommandGroup> = OrchestrationCommand.members;
+  return [
+    ...new Set(
+      groups
+        .flatMap((group) => group.members)
+        .filter((member) => "projectId" in member.fields && "threadId" in member.fields)
+        .map((member) => member.fields.type.literal),
+    ),
+  ].sort();
+};
+
+/**
+ * Payload fields a command needs before the decider will produce events for it.
+ * Only the hazard set needs them: every other command is either satisfied by
+ * the bare probe or is legitimately skipped, but a hazard-set command that the
+ * decider refuses is a command the agreement test cannot see at all.
+ */
+const PROBE_EXTRAS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+  // A thread id the read model does not already hold: creating the existing one
+  // is rejected, which is what kept this command out of the comparison.
+  "thread.create": {
+    threadId: ThreadId.make("thread-created-by-probe"),
+    title: "Probe thread",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    createdAt: NOW,
+  },
+  // `expected` is the optimistic-concurrency snapshot and must match the read
+  // model's thread and project exactly, or the decider refuses the command.
+  "thread.pull-request.sync": {
+    snapshotSequence: 0,
+    expected: {
+      branch: null,
+      worktreePath: null,
+      linkedPullRequest: null,
+      branchPullRequest: null,
+      workspaceRoot: "/workspace/project",
+    },
+  },
+};
+
+/**
  * Every id kind on every probe, deliberately. A command carrying only the id
  * its own branch reads would be routed correctly by any branch, so the probe
  * has to make the wrong branch *succeed* at producing the wrong answer. Add a
@@ -143,6 +196,19 @@ const probe = (type: string): OrchestrationCommand =>
     projectId: PROJECT_ID,
     threadId: THREAD_ID,
     channelId: CHANNEL_ID,
+  }) as unknown as OrchestrationCommand;
+
+/**
+ * The same probe, plus whatever a command needs before the decider will act on
+ * it. Kept separate because the extras can change the ids: the table test must
+ * see the bare probe so its id assertion stays meaningful, while the agreement
+ * test compares the router and the decider against each other and only needs
+ * them to agree on whatever the payload carries.
+ */
+const decidableProbe = (type: string): OrchestrationCommand =>
+  ({
+    ...(probe(type) as unknown as Record<string, unknown>),
+    ...(PROBE_EXTRAS[type] ?? {}),
   }) as unknown as OrchestrationCommand;
 
 const readModel = (): OrchestrationReadModel => ({
@@ -245,11 +311,11 @@ it.layer(NodeServices.layer)("router and decider agree", (it) => {
    */
   it.effect("every event a command produces carries the aggregate the router computed", () =>
     Effect.gen(function* () {
-      let decided = 0;
+      const compared: Array<string> = [];
       const disagreements: Array<string> = [];
 
       for (const type of declaredCommandTypes()) {
-        const command = probe(type);
+        const command = decidableProbe(type);
         const ref = commandToAggregateRef(command);
         if (ref === null) continue;
 
@@ -267,7 +333,7 @@ it.layer(NodeServices.layer)("router and decider agree", (it) => {
 
         const events = Array.isArray(planned.value) ? planned.value : [planned.value];
         if (events.length === 0) continue;
-        decided += 1;
+        compared.push(type);
 
         for (const event of events) {
           if (event === undefined || typeof event !== "object" || !("aggregateKind" in event)) {
@@ -286,12 +352,17 @@ it.layer(NodeServices.layer)("router and decider agree", (it) => {
       expect(disagreements, "router and decider disagree about who owns these commands").toEqual(
         [],
       );
-      // Without this the assertion above is vacuous: if every probe were
-      // rejected, `disagreements` would be empty because nothing was compared.
+      // Naming what went uncompared, rather than counting it. A probe payload
+      // the decider refuses is skipped silently, so without this the commands
+      // that matter most can drop out of the comparison and the test still
+      // passes — which is exactly what happened: the first version of this test
+      // skipped both dual-id commands, and flipping the decider's aggregate for
+      // `thread.pull-request.sync` left the whole suite green.
+      const uncoveredHazards = dualIdCommandTypes().filter((type) => !compared.includes(type));
       expect(
-        decided,
-        "too few commands produced events; the agreement above compared almost nothing",
-      ).toBeGreaterThan(15);
+        uncoveredHazards,
+        "these commands carry both ids, so only this test can catch a misroute — and it did not compare them",
+      ).toEqual([]);
     }),
   );
 });
