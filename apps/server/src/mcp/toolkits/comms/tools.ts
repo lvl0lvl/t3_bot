@@ -95,6 +95,25 @@ export class CommsMembershipLostError extends Schema.TaggedError<CommsMembership
  * would send it to `comms_read_channel`, which would show the channel and no
  * reason for the refusal. It names the state and the one action that changes it.
  */
+/**
+ * The cursor did not come from this channel, so the read was refused.
+ *
+ * TOLD, rather than answered with an empty page. A cursor is a global sequence
+ * underneath, so one earned in another channel used to match no row here and
+ * come back as "no posts, nothing newer" - which an agent reads as having
+ * caught up, and it stops. The message says what to do instead, because the
+ * agent cannot repair the cursor and should not try - and it says "the
+ * beginning" rather than "the newest", because this tool reads oldest-first.
+ */
+export class CommsCursorUnusableError extends Schema.TaggedError<CommsCursorUnusableError>()(
+  "CommsCursorUnusableError",
+  { channel: Schema.String },
+) {
+  override get message() {
+    return `That cursor was not issued by '${this.channel}'. Read the channel again without a cursor to start from the beginning, then follow nextCursor. Nothing was lost.`;
+  }
+}
+
 export class CommsChannelArchivedError extends Schema.TaggedError<CommsChannelArchivedError>()(
   "CommsChannelArchivedError",
   { channel: Schema.String },
@@ -128,6 +147,7 @@ export const CommsToolError = Schema.Union([
   McpCapabilityUnavailableError,
   CommsChannelNotFoundError,
   CommsChannelArchivedError,
+  CommsCursorUnusableError,
   CommsMemberNotFoundError,
   CommsPostNotFoundError,
   CommsEmptyBodyError,
@@ -163,18 +183,24 @@ export type ChannelPost = typeof ChannelPost.Type;
 /**
  * A cursor is the `nextCursor` of an earlier read, handed back verbatim.
  *
- * Opaque to the agent and a decimal sequence underneath.
+ * Opaque to the agent, and `${channelId}:${sequence}` underneath. The channel
+ * half is what makes a cursor from ANOTHER channel detectable: the sequence is
+ * global, so a bare one matched no row here and the read answered with an empty
+ * page - which is byte for byte "you are caught up" (`t3_bot-e60`).
  *
- * BOUNDED AT FIFTEEN DIGITS, and the bound is not decoration.
- * `Number.MAX_SAFE_INTEGER` is 9007199254740991 - sixteen digits - and the
- * gateway turns this string into a number. An unbounded `^[0-9]+$` admits
- * "9007199254740993", which is numeric, passes every check here, and then
- * throws in the gateway while the query argument is being built, where no
- * guard is attached yet: agent input crossing into a server defect. Fifteen
- * digits is the widest bound that cannot overflow, and an event sequence
- * reaching 10^15 is not a thing this server will see.
+ * TWO BOUNDS, EACH LOAD-BEARING.
+ *
+ * The channel half repeats `t3_bot-2d2`'s id charset rather than accepting
+ * anything up to a colon, because the split assumes no ":" inside a channel id
+ * and this is where that assumption is checkable. If 2d2's rule ever widens,
+ * this pattern is wrong and so is the split.
+ *
+ * The sequence half stays at fifteen digits. `Number.MAX_SAFE_INTEGER` is
+ * sixteen, and an unbounded `[0-9]+` admitted "9007199254740993" - numeric,
+ * accepted here, and then a defect inside the gateway. Widening this reopens
+ * that, and the gateway's own guard is the only thing behind it.
  */
-const CURSOR_PATTERN = /^[0-9]{1,15}$/;
+const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:[0-9]{1,15}$/;
 
 export const ReadChannelResult = Schema.Struct({
   channel: Schema.String,
@@ -268,7 +294,7 @@ const ReadChannelTool = Tool.make("comms_read_channel", {
       // and cursors are both bare strings in the result.
       Schema.String.check(Schema.isPattern(CURSOR_PATTERN)).annotate({
         description:
-          "nextCursor from a previous read, to get the posts after that page. Omit for the oldest posts. Pass it back exactly as given.",
+          "nextCursor from a previous read OF THIS CHANNEL, to get the posts after that page. Omit for the oldest posts. Pass it back exactly as given; a cursor from another channel is refused rather than answered.",
       }),
     ),
   }),

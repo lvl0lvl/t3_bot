@@ -65,6 +65,24 @@ export class ChannelMembershipRevoked extends Schema.TaggedError<ChannelMembersh
 ) {}
 
 /**
+ * The cursor was not issued by this channel.
+ *
+ * A TYPED REFUSAL rather than an empty page, and that is the whole point. The
+ * cursor used to be the bare global event sequence, so one earned in another
+ * channel matched no row here and the read came back empty with
+ * `nextCursor: null` - which is byte for byte what "you are caught up" looks
+ * like on the wire. The caller cannot tell those apart and stops reading
+ * (`t3_bot-e60`).
+ *
+ * Carries what the caller SENT, not what was expected: the expected value is
+ * this channel's own state and echoing it tells a prober something.
+ */
+export class ChannelCursorUnusable extends Schema.TaggedError<ChannelCursorUnusable>()(
+  "ChannelCursorUnusable",
+  { cursor: Schema.String, channelId: Schema.String },
+) {}
+
+/**
  * The channel is archived: readable, not postable.
  *
  * Distinct from "not found" on purpose. The caller is a member — they resolved
@@ -158,8 +176,25 @@ export interface ChannelPostRecord {
   readonly createdAt: string;
 }
 
+export type ReadDirection = "forward" | "backward";
+
 export interface ChannelPage {
+  /**
+   * ALWAYS ascending by sequence, whatever the direction.
+   *
+   * `direction` chooses the WINDOW and which way `nextCursor` points; it never
+   * chooses the order. Every caller renders oldest-at-top, so returning a
+   * backward page newest-first would put a `.reverse()` in each of them — a
+   * step that is correct until someone forgets it, and a page nobody reversed
+   * reads as though time runs backwards, which gets diagnosed as a data bug.
+   */
   readonly posts: ReadonlyArray<ChannelPostRecord>;
+  /**
+   * Opaque. Hand it back verbatim; never construct or parse one.
+   *
+   * Null means there is nothing further IN THAT DIRECTION — the newest post
+   * going forward, the beginning of history going backward.
+   */
   readonly nextCursor: string | null;
 }
 
@@ -199,8 +234,25 @@ export interface ReadPostsInput {
   readonly channelId: string;
   /** 1..200, enforced at the tool schema; the gateway may assume the range. */
   readonly limit: number;
-  /** Omitted for the first page. */
+  /**
+   * A `nextCursor` from an earlier read of THIS channel, handed back verbatim.
+   *
+   * Omitted for the first page, which depends on the direction: "forward"
+   * starts at the oldest post, "backward" at the newest.
+   *
+   * A CURSOR FROM ANOTHER CHANNEL IS REFUSED, not answered. It used to be the
+   * bare event sequence, which is global — so one earned in another channel was
+   * well-formed digits matching no row here, and the read came back as an empty
+   * page with `nextCursor: null`: byte for byte the answer for "you are caught
+   * up". Three unread posts behind a successful reply, undetectable by the
+   * caller, on the feature whose whole purpose is catching up (`t3_bot-e60`).
+   */
   readonly cursor: string | undefined;
+  /**
+   * "forward" is oldest-first from the cursor — an agent tailing a channel.
+   * "backward" is the newest page and then upward — a UI opening one.
+   */
+  readonly direction: ReadDirection;
 }
 
 export interface ChannelGatewayShape {
@@ -243,7 +295,7 @@ export interface ChannelGatewayShape {
    */
   readonly readPosts: (
     input: ReadPostsInput,
-  ) => Effect.Effect<ChannelPage, ChannelStoreUnavailable>;
+  ) => Effect.Effect<ChannelPage, ChannelStoreUnavailable | ChannelCursorUnusable>;
 
   /**
    * Appends a post. Rejects a post whose author is not a current member of

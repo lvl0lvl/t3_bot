@@ -8,6 +8,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ChannelGateway from "./channelGateway.ts";
 import {
   CommsChannelArchivedError,
+  CommsCursorUnusableError,
   CommsChannelNotFoundError,
   CommsEmptyBodyError,
   CommsMemberNotFoundError,
@@ -142,6 +143,17 @@ const make = Effect.gen(function* () {
    * Naming each tag is what makes a later widening of the gateway's error
    * channel a compile error here rather than a silent flattening.
    */
+  const readFailures = (channelName: string) =>
+    ({
+      ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
+        Effect.fail(new CommsReadFailedError({ detail: error.detail })),
+      // NAMED, not folded into the read failure. "The store did not answer" and
+      // "your cursor is for a different channel" call for opposite responses:
+      // retry the first, drop the cursor on the second.
+      ChannelCursorUnusable: () =>
+        Effect.fail(new CommsCursorUnusableError({ channel: channelName })),
+    }) as const;
+
   const storeUnavailableAsRead = {
     ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
       Effect.fail(new CommsReadFailedError({ detail: error.detail })),
@@ -323,8 +335,17 @@ const make = Effect.gen(function* () {
             // here would be a second, silently-diverging control.
             limit: input.limit ?? DEFAULT_READ_LIMIT,
             cursor: input.cursor,
+            // FORWARD, unchanged. `comms_read_channel` documents "oldest
+            // first, the first page is the oldest posts", and an agent catching
+            // up on a conversation wants it in the order it happened. The
+            // backward read exists for a UI opening a channel on its newest
+            // page, which reaches the gateway through the RPC rather than
+            // through this tool - changing the agent default here would be a
+            // silent change to what "catch up" means, smuggled in with a bug
+            // fix about cursors.
+            direction: "forward",
           })
-          .pipe(Effect.catchTags(storeUnavailableAsRead), Effect.catchCause(readDefect));
+          .pipe(Effect.catchTags(readFailures(channel.name)), Effect.catchCause(readDefect));
         return {
           channel: channel.name,
           // The same value `publish` refuses on, read off the same channel, so

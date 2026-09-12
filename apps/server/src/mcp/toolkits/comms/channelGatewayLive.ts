@@ -29,6 +29,7 @@ import {
 import {
   ChannelGateway,
   ChannelStoreUnavailable,
+  ChannelCursorUnusable,
   ChannelWriteConflict,
   type Channel,
   type ChannelPage,
@@ -175,49 +176,87 @@ const make = Effect.gen(function* () {
    * this throw becomes agent-reachable again and has to become a typed refusal
    * instead.
    */
-  const requireSequence = (cursor: string) => {
-    const sequence = Number(cursor);
-    if (!Number.isSafeInteger(sequence) || sequence < 0) {
-      throw new Error(`ChannelGatewayLive received a cursor that is not a sequence: ${cursor}`);
+  /**
+   * A cursor names the channel it came from, and one from elsewhere is REFUSED.
+   *
+   * It used to be the bare event sequence. That sequence is GLOBAL, so a cursor
+   * earned in another channel was well-formed digits that matched no row here,
+   * and the read returned an empty page with `nextCursor: null` - byte for byte
+   * the answer for "you are caught up". Measured before the fix: a second
+   * channel holding three unread posts reported itself caught up to a caller
+   * holding the first channel's cursor, and nothing in the reply said otherwise
+   * (`t3_bot-e60`).
+   *
+   * Split on the FIRST colon. `t3_bot-2d2` forbids ":" inside a `ChannelId`, so
+   * today the first and last colon are the same one - but the wake key already
+   * paid once for assuming a delimiter could not appear in an id, and taking
+   * the first is correct whether or not that rule survives.
+   */
+  const decodeCursor = (channelId: string, cursor: string) => {
+    const boundary = cursor.indexOf(":");
+    if (boundary === -1) {
+      return Option.none<number>();
     }
-    return sequence;
+    const from = cursor.slice(0, boundary);
+    const sequence = Number(cursor.slice(boundary + 1));
+    // BOTH halves, and the channel half first: a cursor for another channel is
+    // the defect this exists for, and a caller that gets the right refusal for
+    // the wrong reason has learned nothing.
+    if (from !== channelId || !Number.isSafeInteger(sequence) || sequence < 0) {
+      return Option.none<number>();
+    }
+    return Option.some(sequence);
   };
 
+  const encodeCursor = (channelId: string, sequence: number) => `${channelId}:${sequence}`;
+
   const readPosts = (input: ReadPostsInput) =>
-    // SUSPENDED so the guard below fails INSIDE the Effect. `requireSequence`
-    // throws, and it is evaluated while the argument to `listPosts` is being
-    // built - so without this the throw escapes before any Effect exists, and
-    // `.pipe(Effect.exit)` on the result of this call cannot catch it. That is
-    // the same trap `ChannelPostId.make` was in, reproduced in the guard added
-    // to fix it; writing a test for the guard is what found it, because the
-    // test could not catch what it was asserting.
-    //
-    // OVER-FETCH BY ONE. `nextCursor` has to say whether a newer post exists,
-    // and asking for one more than the caller wanted is how to know without a
-    // second query.
-    Effect.suspend(() =>
-      channels
-        .listPosts({
-          channelId: ChannelId.make(input.channelId),
-          limit: input.limit + 1,
-          afterSequence: input.cursor === undefined ? undefined : requireSequence(input.cursor),
-        })
-        .pipe(
-          Effect.mapError(() => storeUnavailable("readPosts")),
-          Effect.map((rows) => {
-            const kept = rows.slice(0, input.limit);
-            // The cursor comes off the ROW, before the map: ChannelPostRecord
-            // drops `sequence`, so taking it afterwards is taking it from a shape
-            // that no longer carries it.
-            const last = kept.at(-1);
-            return {
-              posts: kept.map(toPost),
-              nextCursor:
-                rows.length > input.limit && last !== undefined ? String(last.sequence) : null,
-            } satisfies ChannelPage;
-          }),
-        ),
-    );
+    Effect.suspend(() => {
+      // REFUSED rather than answered. Returning an empty page here is the
+      // original defect wearing the fix's clothes: the caller cannot tell it
+      // from the end of the channel.
+      const from =
+        input.cursor === undefined
+          ? Option.some(undefined)
+          : Option.map(decodeCursor(input.channelId, input.cursor), (sequence) => sequence);
+      if (Option.isNone(from)) {
+        return Effect.fail<ChannelCursorUnusable | ChannelStoreUnavailable>(
+          new ChannelCursorUnusable({ cursor: input.cursor ?? "", channelId: input.channelId }),
+        );
+      }
+      const at = from.value;
+      const channelId = ChannelId.make(input.channelId);
+      // OVER-FETCH BY ONE. `nextCursor` has to say whether another post exists
+      // in that direction, and asking for one more than the caller wanted is
+      // how to know without a second query.
+      const rows =
+        input.direction === "forward"
+          ? channels.listPosts({ channelId, limit: input.limit + 1, afterSequence: at })
+          : channels.listPostsBackward({ channelId, limit: input.limit + 1, beforeSequence: at });
+      return rows.pipe(
+        Effect.mapError(() => storeUnavailable("readPosts")),
+        Effect.map((all) => {
+          // BACKWARD DROPS FROM THE FRONT. The rows arrive ascending either
+          // way, so the over-fetched row is the OLDEST one going backward and
+          // the NEWEST one going forward. Slicing the tail in both directions
+          // would silently discard the post the caller asked for and keep the
+          // probe.
+          const kept =
+            input.direction === "forward" ? all.slice(0, input.limit) : all.slice(-input.limit);
+          const more = all.length > input.limit;
+          // The cursor comes off the ROW, before the map: ChannelPostRecord
+          // drops `sequence`, so taking it afterwards is taking it from a shape
+          // that no longer carries it. Forward points AFTER the last row
+          // returned; backward points BEFORE the first.
+          const edge = input.direction === "forward" ? kept.at(-1) : kept.at(0);
+          return {
+            posts: kept.map(toPost),
+            nextCursor:
+              more && edge !== undefined ? encodeCursor(input.channelId, edge.sequence) : null,
+          } satisfies ChannelPage;
+        }),
+      );
+    });
 
   const createPost = (input: CreatePostInput) =>
     Effect.gen(function* () {

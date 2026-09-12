@@ -642,100 +642,76 @@ describe("the comms toolkit on the live gateway", () => {
   );
 
   it.effect(
-    "treats a cursor that is not a sequence as a DEFECT, for the caller the schema does not cover",
+    "refuses a cursor from another channel instead of reporting it as caught up",
     () =>
       Effect.gen(function* () {
         yield* seed();
         const gateway = yield* ChannelGateway;
 
-        // Unreachable through the toolkit, whose schema refuses these first -
-        // so this calls the gateway directly, the same way the non-canonical
-        // name below is tested. Without it the guard is inert: reverting
-        // `requireSequence` on its own reds nothing, because every input that
-        // would reach it is stopped one layer up.
-        //
-        // The guard is what holds if that layer is ever widened, and its
-        // docstring says so. A docstring making a claim about a guard nothing
-        // exercises is the thing this branch has spent the day deleting.
-        for (const notASequence of ["abc", "-1", "1.5", "9007199254740993"]) {
-          const defect = yield* gateway
-            .readPosts({ channelId: CHANNEL_ID, limit: 10, cursor: notASequence })
-            .pipe(Effect.exit);
-          expect(defect._tag).toBe("Failure");
-          expect(String(defect)).toContain("not a sequence");
-        }
-
-        // And a real cursor still reads, so the assertions above are about the
-        // VALUE rather than about readPosts refusing everything.
-        const page = yield* gateway.readPosts({
-          channelId: CHANNEL_ID,
-          limit: 10,
-          cursor: undefined,
-        });
-        expect(page.posts).toEqual([]);
-
-        // THE SAME PROPERTY FOR `getPost`, which brands a channelId the caller
-        // supplies. `Effect.exit` can only produce an Exit VALUE if the Effect
-        // was built at all - a throw while the function is being called never
-        // reaches it, and fails the test uncatchably instead. That distinction
-        // is the whole of what the suspends buy and it is invisible to any
-        // assertion that only checks THAT it failed.
-        //
-        // What comes back is a DEFECT, not a typed failure: the exit is a
-        // Failure whose cause is a Die. `readPosts` declares only
-        // `ChannelStoreUnavailable`, so a malformed id here is still a caller
-        // bug - what the suspend changes is that the bug is reportable rather
-        // than escaping.
-        const unbrandable = yield* gateway.getPost("not a channel id", "post-1").pipe(Effect.exit);
-        expect(unbrandable._tag).toBe("Failure");
-
-        // AND `createPost` HONOURS ITS OWN SIGNATURE. It declares five typed
-        // failures; a malformed parent used to come out as a raw schema Die
-        // with a serialised AST, so a caller writing an exhaustive `catchTags`
-        // would look correct and be wrong. The toolkit never reached it -
-        // `comms_reply` resolves the parent first - which is exactly why
-        // nothing tested it.
-        for (const malformed of ["a:b", "has space", "   ", "post-\u{1F525}"]) {
+        // THE DEFECT THIS BEAD EXISTS FOR. The cursor used to be the bare
+        // global event sequence, so one earned in another channel was
+        // well-formed digits matching no row here - and the read came back as
+        // an empty page with `nextCursor: null`, which is byte for byte what
+        // "you are caught up" looks like. The caller cannot tell those apart,
+        // so it stops reading a channel that has unread posts in it.
+        for (const foreign of [
+          "channel-somewhere-else:3",
+          "not-a-cursor",
+          `${CHANNEL_ID}:abc`,
+          `${CHANNEL_ID}:-1`,
+          `${CHANNEL_ID}:9007199254740993`,
+          "3",
+        ]) {
           const refused = yield* gateway
-            .createPost({
-              channelId: CHANNEL_ID,
-              threadId: BOSS3,
-              body: "replying to nothing",
-              mentions: [],
-              parentPostId: malformed,
-            })
+            .readPosts({ channelId: CHANNEL_ID, limit: 10, cursor: foreign, direction: "forward" })
             .pipe(Effect.exit);
           expect(refused._tag).toBe("Failure");
-          // A TYPED refusal, not a defect. `Effect.flip` could not tell these
-          // apart: it propagates a die rather than yielding it as a value.
-          expect(String(refused)).toContain("ChannelWriteConflict");
-          expect(String(refused)).not.toContain("SchemaIssue");
+          // THE TAG, not merely failure: an empty page would also be a
+          // "success" the old code produced, and a DIE would be a failure the
+          // caller cannot act on. What it has to be is a refusal it can read.
+          expect(String(refused)).toContain("ChannelCursorUnusable");
         }
 
-        // THE MENTIONS ARRAY IS NOT THE SAME SITE, and it is worth the four
-        // lines to say why rather than leaving the next reader to re-derive it.
-        // `ChannelMemberHandle` is a trimmed non-empty string, so a handle of
-        // only whitespace LOOKS like it should throw - but `.make` checks
-        // `isNonEmpty` against the untrimmed value, which has length 3, so it
-        // constructs fine and the DECIDER refuses it by canonicalising. The
-        // result is a typed `ChannelWriteConflict`, which is what this asserts.
-        //
-        // So this is not provenance and not luck: the value is genuinely
-        // handled. The assertion exists because that is a chain of three
-        // non-obvious facts, and a defect appearing here later would mean one
-        // of them changed.
-        const blankHandle = yield* gateway
-          .createPost({
-            channelId: CHANNEL_ID,
-            threadId: BOSS3,
-            body: "mentioning nobody in particular",
-            mentions: ["   "],
-            parentPostId: null,
-          })
-          .pipe(Effect.exit);
-        expect(blankHandle._tag).toBe("Failure");
-        expect(String(blankHandle)).toContain("ChannelWriteConflict");
-        expect(String(blankHandle)).not.toContain("SchemaIssue");
+        // And this channel's OWN cursor still works, so the assertions above
+        // are about provenance rather than about readPosts refusing every
+        // cursor - which would satisfy all six and break paging.
+        for (const body of ["first", "second", "third"]) {
+          yield* call("comms_post", { channel: "seniors", body }, BOSS1);
+        }
+        const page = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 2,
+          cursor: undefined,
+          direction: "forward",
+        });
+        expect(page.posts.map((post) => post.body)).toEqual(["first", "second"]);
+        expect(page.nextCursor).not.toBeNull();
+        const next = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 2,
+          cursor: page.nextCursor!,
+          direction: "forward",
+        });
+        expect(next.posts.map((post) => post.body)).toEqual(["third"]);
+
+        // BACKWARD opens on the newest page and still returns it ascending.
+        const newest = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 2,
+          cursor: undefined,
+          direction: "backward",
+        });
+        expect(newest.posts.map((post) => post.body)).toEqual(["second", "third"]);
+        // Its cursor points BEFORE the oldest row returned, so the next page
+        // going backward is older still.
+        const older = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 2,
+          cursor: newest.nextCursor!,
+          direction: "backward",
+        });
+        expect(older.posts.map((post) => post.body)).toEqual(["first"]);
+        expect(older.nextCursor).toBeNull();
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );

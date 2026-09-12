@@ -145,12 +145,20 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
           Effect.andThen(fail.readPosts ? Effect.fail(fail.readPosts) : Effect.void),
           Effect.andThen(Ref.update(reads, (seen) => [...seen, input])),
           Effect.map(() => {
-            const startIndex = input.cursor === undefined ? 0 : Number(input.cursor);
+            // THE SAME SHAPE THE LIVE LAYER ISSUES, `${channelId}:${n}`, not a
+            // bare number. The two used to disagree about what a cursor even
+            // IS - this one looked posts up by id while the live layer used a
+            // sequence - and a fake that answers a different shape from the
+            // thing it stands in for is where a paging bug hides from both.
+            // It cost a schema change to notice; it is cheaper to keep them
+            // aligned than to rediscover the divergence.
+            const startIndex =
+              input.cursor === undefined ? 0 : Number(input.cursor.split(":")[1] ?? Number.NaN);
             const page = allPosts.slice(startIndex, startIndex + input.limit);
             const consumed = startIndex + page.length;
             return {
               posts: page,
-              nextCursor: consumed < allPosts.length ? String(consumed) : null,
+              nextCursor: consumed < allPosts.length ? `${input.channelId}:${consumed}` : null,
             } satisfies ChannelGateway.ChannelPage;
           }),
         ),
@@ -641,7 +649,7 @@ describe("comms toolkit handlers", () => {
       // cursor is opaque to the agent, and asserting the exact string here
       // pinned this fake's convention rather than the contract. The proof it
       // is usable is that the next call below is made with it.
-      expect(first.nextCursor).toMatch(/^[0-9]+$/);
+      expect(first.nextCursor).toMatch(/^[A-Za-z0-9_-]{1,64}:[0-9]{1,15}$/);
 
       const second = yield* harness.call("comms_read_channel", {
         channel: "seniors",
