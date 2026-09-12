@@ -390,22 +390,35 @@ describe("comms toolkit handlers", () => {
 
   it.effect("reports member handles in the same form a mention resolves against", () =>
     Effect.gen(function* () {
-      // Deliberately NOT the default fixture. Those handles are already the
-      // answer, so the assertion passed whether the read path normalized them,
-      // folded them, or did nothing at all — a guard with no sensitivity to the
-      // thing it guards. These two differ from their normalized form on both
-      // axes the read path touches.
+      // Deliberately NOT the default fixture. Those handles are already their
+      // own normalized form, so the assertion passed whether the read path
+      // normalized them, folded them, or did nothing at all — a guard with no
+      // sensitivity to the thing it guards.
+      //
+      // Each of these is legal: ChannelMemberHandle is a branded
+      // TrimmedNonEmptyString and imposes nothing else. Between them they pin
+      // that the read path strips LEADING sigils and changes NOTHING else —
+      // not case, not a trailing sigil, not internal spacing, and not Unicode
+      // form. The fullwidth B and the composed e each catch one direction of
+      // Unicode normalization (NFKC folds the first, NFD decomposes the
+      // second), because "normalize before comparing" is the most natural
+      // thing in the world to add here and it breaks byte-exact matching
+      // against the aggregate. Every one of those is "one more normalization
+      // step, surely harmless" — the exact shape of the regression this echo
+      // already carried once.
       const harness = yield* makeHarness({
         members: [
           { handle: "@@PM", memberKind: "thread", memberId: "thread-pm" },
-          { handle: "Boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
+          { handle: "Big  \uFF22oss@", memberKind: "human", memberId: "human-big-boss" },
+          { handle: "Ren\u00E9e", memberKind: "human", memberId: "human-renee" },
         ],
       });
       const result = yield* harness.call("comms_read_channel", { channel: "seniors" });
-      // Every sigil stripped, case untouched: exactly what a mention must be
-      // written as. Folding these to "pm"/"boss1" is the regression this echo
-      // is the last place to reintroduce, since nothing downstream reads it.
-      expect(result.members).toEqual(["PM", "Boss1"]);
+      // Byte-identical to what a mention must carry, because the aggregate
+      // matches handles byte-for-byte. This echo is the last place the handle
+      // regression can be reintroduced silently, since nothing downstream
+      // reads it back.
+      expect(result.members).toEqual(["PM", "Big  \uFF22oss@", "Ren\u00E9e"]);
     }),
   );
 
