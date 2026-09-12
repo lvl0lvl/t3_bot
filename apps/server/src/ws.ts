@@ -29,7 +29,8 @@ import {
   CommandId,
   type DiscoveredLocalServerList,
   EventId,
-  HUMAN_OPERATOR_CHANNEL_MEMBER,
+  operatorCommandIssuer,
+  refFromOperatorSession,
   type EditorId,
   type FileManagerRevealKind,
   type OrchestrationClientOrigin,
@@ -520,7 +521,23 @@ const makeWsRpcLayer = (
        * authenticated session and not from a payload field. A member id arriving
        * from a client is the bug, not the shape of it.
        */
-      const connectionMember = HUMAN_OPERATOR_CHANNEL_MEMBER;
+      const connectionMember = refFromOperatorSession();
+      /**
+       * The same identity as `connectionMember`, in the type the WRITE path
+       * needs.
+       *
+       * NOT because a class instance would corrupt the stored event: a verifier
+       * drove a real post through with one and the persisted row is
+       * byte-identical, since `requireIssuerCanAuthor` rebuilds the `authorRef`
+       * as a fresh literal and the issuer is never persisted. That was this
+       * comment's first reason and it was wrong.
+       *
+       * The reason is that `CommandIssuer` is a different SET: it admits
+       * `system`, for seeds and reactors, which is not a channel member kind at
+       * all. The constant these two replaced served both jobs because a plain
+       * object satisfies both structurally, which is exactly what hid it.
+       */
+      const connectionIssuer = operatorCommandIssuer();
       const threadDeletionReactor = yield* ThreadDeletionReactor;
       const analytics = yield* AnalyticsService.AnalyticsService;
       // Every command dispatched on this connection carries the connecting
@@ -549,7 +566,7 @@ const makeWsRpcLayer = (
       ) =>
         orchestrationEngine.dispatch(command, {
           ...(hasClientOrigin ? { origin: clientOrigin } : {}),
-          issuer: connectionMember,
+          issuer: connectionIssuer,
         });
       const recordClientCommandAnalytics = (command: OrchestrationCommand) => {
         switch (command.type) {

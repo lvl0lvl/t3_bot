@@ -2,7 +2,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
-  HUMAN_OPERATOR_CHANNEL_MEMBER,
+  refFromOperatorSession,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -60,7 +60,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           // the socket's snapshot path, so the two cannot answer differently.
           return yield* projectionSnapshotQuery.getShellSnapshot().pipe(
             Effect.flatMap((snapshot) =>
-              withMemberChannels({ snapshot, member: HUMAN_OPERATOR_CHANNEL_MEMBER }),
+              withMemberChannels({ snapshot, member: refFromOperatorSession() }),
             ),
             Effect.catch((cause) =>
               failEnvironmentInternal("orchestration_snapshot_failed", cause),

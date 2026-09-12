@@ -75,6 +75,22 @@ interface HarnessOptions {
   readonly members?: ReadonlyArray<ChannelGateway.ChannelMember>;
 }
 
+/**
+ * A cursor's two halves, or `[cursor, null]` when the sequence half is not one.
+ *
+ * Deliberately as strict as the live layer's `decodeCursor` about the digits:
+ * `Number("")` is 0 and `Number("0x2")` is 2, so a fake that used `Number`
+ * directly would answer a page for a cursor the real gateway refuses - which is
+ * the divergence this whole fake is written to avoid.
+ */
+const splitCursor = (cursor: string | undefined): readonly [string | null, number | null] => {
+  if (cursor === undefined) return [null, null];
+  const boundary = cursor.indexOf(":");
+  if (boundary === -1) return [cursor, null];
+  const digits = cursor.slice(boundary + 1);
+  return [cursor.slice(0, boundary), /^[0-9]+$/.test(digits) ? Number(digits) : null];
+};
+
 const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: HarnessOptions = {}) {
   const channels = options.channels ?? [
     { name: "seniors", memberThreadIds: [THREAD_ID, OTHER_THREAD_ID, "thread-pm"] },
@@ -85,7 +101,9 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
   const created = yield* Ref.make<ReadonlyArray<ChannelGateway.CreatePostInput>>([]);
   const reads = yield* Ref.make<ReadonlyArray<ChannelGateway.ReadPostsInput>>([]);
   const postLookups = yield* Ref.make<ReadonlyArray<readonly [string, string]>>([]);
-  const channelLookups = yield* Ref.make<ReadonlyArray<readonly [string, string]>>([]);
+  const channelLookups = yield* Ref.make<
+    ReadonlyArray<readonly [string, ChannelGateway.ChannelMemberRef]>
+  >([]);
 
   const die = (op: GatewayFailures["dieOn"]) =>
     fail.dieOn === op ? Effect.die(new Error(`fake gateway defect in ${op}`)) : Effect.void;
@@ -93,16 +111,21 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
   const gateway = Layer.succeed(
     ChannelGateway.ChannelGateway,
     ChannelGateway.ChannelGateway.of({
-      getChannelForMember: (name, threadId) =>
+      getChannelForMember: (name, member) =>
         die("getChannel").pipe(
           Effect.andThen(fail.getChannel ? Effect.fail(fail.getChannel) : Effect.void),
-          Effect.andThen(
-            Ref.update(channelLookups, (seen) => [...seen, [name, threadId] as const]),
-          ),
+          Effect.andThen(Ref.update(channelLookups, (seen) => [...seen, [name, member] as const])),
           Effect.as(
             Option.fromNullishOr(
               channels.find(
-                (channel) => channel.name === name && channel.memberThreadIds.includes(threadId),
+                (channel) =>
+                  channel.name === name &&
+                  // BOTH FIELDS, like the live layer. A fake that matched on
+                  // memberId alone would answer the colliding roster
+                  // differently from the thing it stands in for, which is where
+                  // the last paging bug hid.
+                  member.memberKind === "thread" &&
+                  channel.memberThreadIds.includes(member.memberId),
               ),
             ).pipe(
               Option.map((channel): ChannelGateway.Channel => ({
@@ -144,14 +167,48 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
         die("readPosts").pipe(
           Effect.andThen(fail.readPosts ? Effect.fail(fail.readPosts) : Effect.void),
           Effect.andThen(Ref.update(reads, (seen) => [...seen, input])),
-          Effect.map(() => {
-            const startIndex = input.cursor === undefined ? 0 : Number(input.cursor);
-            const page = allPosts.slice(startIndex, startIndex + input.limit);
-            const consumed = startIndex + page.length;
-            return {
+          Effect.flatMap(() => {
+            // THE SAME SHAPE THE LIVE LAYER ISSUES, `${channelId}:${n}`, not a
+            // bare number. The two used to disagree about what a cursor even
+            // IS - this one looked posts up by id while the live layer used a
+            // sequence - and a fake that answers a different shape from the
+            // thing it stands in for is where a paging bug hides from both.
+            // It cost a schema change to notice; it is cheaper to keep them
+            // aligned than to rediscover the divergence.
+            //
+            // AND THE SAME SEMANTICS, which aligning the FORMAT alone did not
+            // buy and which a verifier caught: this used to take
+            // `cursor.split(":")[1]` and throw the channel half away, so a
+            // cursor issued by another channel was answered here with this
+            // channel's first page and a fresh cursor - the exact defect
+            // `t3_bot-e60` fixed in the live layer, still live in the fake that
+            // 43 tests run against. The refusal branch the handlers gained for
+            // it was unreachable in this file.
+            const [issuedBy, digits] = splitCursor(input.cursor);
+            if (input.cursor !== undefined && (issuedBy !== input.channelId || digits === null)) {
+              return Effect.fail(
+                new ChannelGateway.ChannelCursorUnusable({
+                  cursor: input.cursor,
+                  channelId: input.channelId,
+                }),
+              );
+            }
+            // DIRECTION IS HONOURED, for the same reason. Ignoring it - which
+            // this did - means a handler flipped to "backward" reds nothing
+            // here, and the whole point of the fake is that the handler's
+            // choices are visible in it.
+            const backward = input.direction === "backward";
+            const end = digits === null ? allPosts.length : digits;
+            const start = digits === null ? 0 : digits;
+            const page = backward
+              ? allPosts.slice(Math.max(0, end - input.limit), end)
+              : allPosts.slice(start, start + input.limit);
+            const boundary = backward ? end - page.length : start + page.length;
+            const exhausted = backward ? boundary <= 0 : boundary >= allPosts.length;
+            return Effect.succeed({
               posts: page,
-              nextCursor: consumed < allPosts.length ? String(consumed) : null,
-            } satisfies ChannelGateway.ChannelPage;
+              nextCursor: exhausted ? null : `${input.channelId}:${boundary}`,
+            } satisfies ChannelGateway.ChannelPage);
           }),
         ),
 
@@ -435,7 +492,12 @@ describe("comms toolkit handlers", () => {
       // The canonical form is what reaches the seam. Matching there is exact,
       // so anything else reads as "no such channel" — which is deliberately the
       // same answer a non-member gets, and therefore undiagnosable.
-      expect(yield* Ref.get(harness.channelLookups)).toEqual([["seniors", THREAD_ID]]);
+      expect(yield* Ref.get(harness.channelLookups)).toEqual([
+        // THE KIND TOO, not just the id. The toolkit derives the ref from
+        // its credential, so "thread" here is the assertion that the
+        // handler did not take a member from the tool call.
+        ["seniors", { memberKind: "thread", memberId: THREAD_ID }],
+      ]);
     }),
   );
 
@@ -588,7 +650,12 @@ describe("comms toolkit handlers", () => {
       // calls leaves a second resolution completely undetected, and validating
       // the parent against a different resolution than the post is written to
       // would let the two disagree.
-      expect(yield* Ref.get(harness.channelLookups)).toEqual([["seniors", THREAD_ID]]);
+      expect(yield* Ref.get(harness.channelLookups)).toEqual([
+        // THE KIND TOO, not just the id. The toolkit derives the ref from
+        // its credential, so "thread" here is the assertion that the
+        // handler did not take a member from the tool call.
+        ["seniors", { memberKind: "thread", memberId: THREAD_ID }],
+      ]);
       expect(yield* Ref.get(harness.postLookups)).toEqual([[CHANNEL_ID, "post-1"]]);
     }),
   );
@@ -641,7 +708,7 @@ describe("comms toolkit handlers", () => {
       // cursor is opaque to the agent, and asserting the exact string here
       // pinned this fake's convention rather than the contract. The proof it
       // is usable is that the next call below is made with it.
-      expect(first.nextCursor).toMatch(/^[0-9]+$/);
+      expect(first.nextCursor).toMatch(/^[A-Za-z0-9_-]{1,64}:[0-9]{1,15}$/);
 
       const second = yield* harness.call("comms_read_channel", {
         channel: "seniors",
@@ -658,6 +725,56 @@ describe("comms toolkit handlers", () => {
       expect(third.posts.map((entry) => entry.postId)).toEqual(["post-5"]);
       // Null only when there is nothing newer — the agent's stop signal.
       expect(third.nextCursor).toBeNull();
+    }),
+  );
+
+  it.effect("turns the gateway's foreign-cursor refusal into the agent-facing one", () =>
+    Effect.gen(function* () {
+      const many = Array.from({ length: 5 }, (_, index) => post(`post-${index + 1}`));
+      const harness = yield* makeHarness({ posts: many });
+
+      // THE BRANCH THIS FILE COULD NOT REACH. `readFailures` gained a
+      // `ChannelCursorUnusable` clause in this PR and the fake could not
+      // produce one, because it parsed `cursor.split(":")[1]` and threw the
+      // channel half away - answering a foreign cursor with this channel's
+      // first page, which is the very defect `t3_bot-e60` fixes in the live
+      // layer. 43 tests ran against that fake. Found by a verifier, not by
+      // reading the comment directly above it saying fakes must not diverge.
+      const foreign = "channel-somewhere-else:2";
+      const refused = yield* harness
+        .call("comms_read_channel", { channel: "seniors", cursor: foreign })
+        .pipe(Effect.flip);
+
+      // The tag the AGENT sees, and the one it must not: `CommsReadFailedError`
+      // is the retryable one, and telling an agent to retry a cursor that can
+      // never work is the loop this area exists to stop.
+      expect((refused as { _tag: string })._tag).toBe("CommsCursorUnusableError");
+      expect((refused as { _tag: string })._tag).not.toBe("CommsReadFailedError");
+      // Not a page. An empty page with a null cursor is what the old coercion
+      // produced and is indistinguishable from being caught up.
+      expect(refused).not.toMatchObject({ posts: [], nextCursor: null });
+
+      // And this channel's own cursor still pages, so the assertion above is
+      // about provenance rather than about the fake refusing every cursor.
+      const first = yield* harness.call("comms_read_channel", { channel: "seniors", limit: 2 });
+      const second = yield* harness.call("comms_read_channel", {
+        channel: "seniors",
+        limit: 2,
+        cursor: first.nextCursor!,
+      });
+      expect(second.posts.map((entry) => entry.postId)).toEqual(["post-3", "post-4"]);
+    }),
+  );
+
+  it.effect("asks the gateway to read FORWARD, which is what the tool documents", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.call("comms_read_channel", { channel: "seniors" });
+
+      // `comms_read_channel` documents "oldest first". The fake used to ignore
+      // `direction` entirely, so flipping the handler to "backward" - a silent
+      // change to what catching up MEANS - reddened nothing anywhere.
+      expect((yield* Ref.get(harness.reads))[0]?.direction).toBe("forward");
     }),
   );
 

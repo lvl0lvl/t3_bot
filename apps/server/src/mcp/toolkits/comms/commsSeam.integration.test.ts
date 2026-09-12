@@ -87,17 +87,20 @@ const makeSeam = Effect.fn("commsSeam")(function* (opts: {
   readonly memberThreadIds: ReadonlyArray<string>;
 }) {
   const created = yield* Ref.make<ReadonlyArray<ChannelGateway.CreatePostInput>>([]);
-  const channelLookups = yield* Ref.make<ReadonlyArray<readonly [string, string]>>([]);
+  const channelLookups = yield* Ref.make<
+    ReadonlyArray<readonly [string, ChannelGateway.ChannelMemberRef]>
+  >([]);
   const deciderRejections = yield* Ref.make<ReadonlyArray<string>>([]);
 
   const gateway = Layer.succeed(
     ChannelGateway.ChannelGateway,
     ChannelGateway.ChannelGateway.of({
-      getChannelForMember: (name, threadId) =>
-        Ref.update(channelLookups, (seen) => [...seen, [name, threadId] as const]).pipe(
+      getChannelForMember: (name, member) =>
+        Ref.update(channelLookups, (seen) => [...seen, [name, member] as const]).pipe(
           Effect.as(
             name === canonicalChannelName(opts.channelName) &&
-              opts.memberThreadIds.includes(threadId)
+              member.memberKind === "thread" &&
+              opts.memberThreadIds.includes(member.memberId)
               ? Option.some<ChannelGateway.Channel>({
                   channelId: CHANNEL_ID,
                   name: canonicalChannelName(opts.channelName),

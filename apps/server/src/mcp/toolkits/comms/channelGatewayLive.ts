@@ -29,8 +29,10 @@ import {
 import {
   ChannelGateway,
   ChannelStoreUnavailable,
+  ChannelCursorUnusable,
   ChannelWriteConflict,
   type Channel,
+  type ChannelMemberRef,
   type ChannelPage,
   type ChannelPostRecord,
   type CreatePostInput,
@@ -76,7 +78,7 @@ const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
 
-  const getChannelForMember = (name: string, threadId: string) =>
+  const getChannelForMember = (name: string, member: ChannelMemberRef) =>
     Effect.gen(function* () {
       // A NON-CANONICAL NAME IS A DEFECT, not a typed failure. Matching here is
       // exact, so passing what the agent typed returns None — and None means
@@ -112,8 +114,17 @@ const make = Effect.gen(function* () {
       // Membership decides visibility, and an ARCHIVED channel still resolves:
       // readable, not postable. The refusal to post is the aggregate's and
       // arrives at createPost.
+      // BOTH FIELDS, and the kind was a literal until this change. Comparing
+      // only `memberId` is a mutation that has survived a full suite three
+      // times in this repository - the decider's author lookup, the shell
+      // stream's membership test, and the mention-wake reactor's filter - because
+      // every channel fixture gives its members ids that differ in BOTH
+      // fields, so the two implementations are indistinguishable against any
+      // data we had (`t3_bot-46h`). The colliding roster that tells them apart
+      // is in this change's tests.
       const isMember = row.value.members.some(
-        (member) => member.memberKind === "thread" && member.memberId === threadId,
+        (candidate) =>
+          candidate.memberKind === member.memberKind && candidate.memberId === member.memberId,
       );
       return isMember ? Option.some(toChannel(row.value)) : Option.none<Channel>();
     });
@@ -159,65 +170,106 @@ const make = Effect.gen(function* () {
     );
 
   /**
-   * A cursor this layer did not issue is a DEFECT, not an empty page.
+   * A cursor names the channel it came from, and one from elsewhere is REFUSED.
    *
-   * The toolkit's schema admits only 1-15 digits, so a cursor arriving here
-   * that is not a safe non-negative integer is a caller bug. Dying says so;
-   * coercing with `Number()` answered it with the wire shape of "you are caught
-   * up", which is the one wrong answer an agent cannot detect - it stops
-   * reading.
+   * It used to be the bare event sequence. That sequence is GLOBAL, so a cursor
+   * earned in another channel was well-formed digits that matched no row here,
+   * and the read returned an empty page with `nextCursor: null` - byte for byte
+   * the answer for "you are caught up". Measured before the fix: a second
+   * channel holding three unread posts reported itself caught up to a caller
+   * holding the first channel's cursor, and nothing in the reply said otherwise
+   * (`t3_bot-e60`).
    *
-   * THE DIGIT BOUND IS WHAT MAKES THIS UNREACHABLE, and it was not there at
-   * first: `^[0-9]+$` admitted "9007199254740993", which is numeric, reached
-   * this function, and threw while the argument to `listPosts` was being built
-   * - before `Effect.catchCause(readDefect)` had anything to attach to. Agent
-   * input became a server defect. If the bound in `tools.ts` is ever widened,
-   * this throw becomes agent-reachable again and has to become a typed refusal
-   * instead.
+   * Split on the FIRST colon, which is correct only BECAUSE `t3_bot-2d2`
+   * forbids ":" inside a `ChannelId` - so today the first and last colon are
+   * the same one and the choice does not matter. It is not extra robustness: if
+   * that charset ever widened, `indexOf` would take a channel id's own colon as
+   * the boundary and `lastIndexOf` would take the sequence's. Neither is right
+   * without re-deciding the format, and `CURSOR_PATTERN` in `tools.ts` is where
+   * the assumption is checkable.
    */
-  const requireSequence = (cursor: string) => {
-    const sequence = Number(cursor);
-    if (!Number.isSafeInteger(sequence) || sequence < 0) {
-      throw new Error(`ChannelGatewayLive received a cursor that is not a sequence: ${cursor}`);
+  const decodeCursor = (channelId: string, cursor: string) => {
+    const boundary = cursor.indexOf(":");
+    if (boundary === -1) {
+      return Option.none<number>();
     }
-    return sequence;
+    const issuedBy = cursor.slice(0, boundary);
+    const digits = cursor.slice(boundary + 1);
+    // DIGITS BEFORE `Number()`, because `Number()` is laxer than the schema
+    // that feeds this and this function is also the door a DIRECT caller uses.
+    // `Number("")` is 0, `Number("0x2")` is 2, `Number(" 3 ")` is 3,
+    // `Number("1e2")` is 100 - so `"<channel>:"` decoded to sequence 0 and the
+    // read answered it with the FIRST PAGE. An empty-looking page that is
+    // really "here is the start again" is the same class of lie this whole
+    // change exists to remove, reachable at the seam rather than through the
+    // tool.
+    if (!/^[0-9]+$/.test(digits)) {
+      return Option.none<number>();
+    }
+    const sequence = Number(digits);
+    // BOTH halves, and the channel half first: a cursor for another channel is
+    // the defect this exists for, and a caller that gets the right refusal for
+    // the wrong reason has learned nothing. Compared EXACTLY - a length or
+    // prefix comparison passes every obvious test fixture and pages the wrong
+    // channel on a seeded install, where two channel ids share a prefix and a
+    // length.
+    if (issuedBy !== channelId || !Number.isSafeInteger(sequence) || sequence < 0) {
+      return Option.none<number>();
+    }
+    return Option.some(sequence);
   };
 
+  const encodeCursor = (channelId: string, sequence: number) => `${channelId}:${sequence}`;
+
   const readPosts = (input: ReadPostsInput) =>
-    // SUSPENDED so the guard below fails INSIDE the Effect. `requireSequence`
-    // throws, and it is evaluated while the argument to `listPosts` is being
-    // built - so without this the throw escapes before any Effect exists, and
-    // `.pipe(Effect.exit)` on the result of this call cannot catch it. That is
-    // the same trap `ChannelPostId.make` was in, reproduced in the guard added
-    // to fix it; writing a test for the guard is what found it, because the
-    // test could not catch what it was asserting.
-    //
-    // OVER-FETCH BY ONE. `nextCursor` has to say whether a newer post exists,
-    // and asking for one more than the caller wanted is how to know without a
-    // second query.
-    Effect.suspend(() =>
-      channels
-        .listPosts({
-          channelId: ChannelId.make(input.channelId),
-          limit: input.limit + 1,
-          afterSequence: input.cursor === undefined ? undefined : requireSequence(input.cursor),
-        })
-        .pipe(
-          Effect.mapError(() => storeUnavailable("readPosts")),
-          Effect.map((rows) => {
-            const kept = rows.slice(0, input.limit);
-            // The cursor comes off the ROW, before the map: ChannelPostRecord
-            // drops `sequence`, so taking it afterwards is taking it from a shape
-            // that no longer carries it.
-            const last = kept.at(-1);
-            return {
-              posts: kept.map(toPost),
-              nextCursor:
-                rows.length > input.limit && last !== undefined ? String(last.sequence) : null,
-            } satisfies ChannelPage;
-          }),
-        ),
-    );
+    Effect.suspend(() => {
+      // REFUSED rather than answered. Returning an empty page here is the
+      // original defect wearing the fix's clothes: the caller cannot tell it
+      // from the end of the channel.
+      const decoded =
+        input.cursor === undefined
+          ? Option.some(undefined)
+          : decodeCursor(input.channelId, input.cursor);
+      if (Option.isNone(decoded)) {
+        return Effect.fail<ChannelCursorUnusable | ChannelStoreUnavailable>(
+          // `input.cursor` is defined on this branch: an absent cursor took the
+          // `Option.some(undefined)` path above and cannot reach here.
+          new ChannelCursorUnusable({ cursor: input.cursor!, channelId: input.channelId }),
+        );
+      }
+      const at = decoded.value;
+      const channelId = ChannelId.make(input.channelId);
+      // OVER-FETCH BY ONE. `nextCursor` has to say whether another post exists
+      // in that direction, and asking for one more than the caller wanted is
+      // how to know without a second query.
+      const rows =
+        input.direction === "forward"
+          ? channels.listPosts({ channelId, limit: input.limit + 1, afterSequence: at })
+          : channels.listPostsBackward({ channelId, limit: input.limit + 1, beforeSequence: at });
+      return rows.pipe(
+        Effect.mapError(() => storeUnavailable("readPosts")),
+        Effect.map((all) => {
+          // BACKWARD DROPS FROM THE FRONT. The rows arrive ascending either
+          // way, so the over-fetched row is the OLDEST one going backward and
+          // the NEWEST one going forward. Slicing the tail in both directions
+          // would silently discard the post the caller asked for and keep the
+          // probe.
+          const kept =
+            input.direction === "forward" ? all.slice(0, input.limit) : all.slice(-input.limit);
+          const more = all.length > input.limit;
+          // The cursor comes off the ROW, before the map: ChannelPostRecord
+          // drops `sequence`, so taking it afterwards is taking it from a shape
+          // that no longer carries it. Forward points AFTER the last row
+          // returned; backward points BEFORE the first.
+          const edge = input.direction === "forward" ? kept.at(-1) : kept.at(0);
+          return {
+            posts: kept.map(toPost),
+            nextCursor:
+              more && edge !== undefined ? encodeCursor(input.channelId, edge.sequence) : null,
+          } satisfies ChannelPage;
+        }),
+      );
+    });
 
   const createPost = (input: CreatePostInput) =>
     Effect.gen(function* () {

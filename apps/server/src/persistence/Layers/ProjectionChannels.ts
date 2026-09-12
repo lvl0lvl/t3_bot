@@ -244,6 +244,26 @@ const makeProjectionChannelRepository = Effect.gen(function* () {
       `,
   });
 
+  const listPostRowsBackward = SqlSchema.findAll({
+    Request: Schema.Struct({
+      channelId: Schema.String,
+      limit: Schema.Number,
+      beforeSequence: Schema.Number,
+    }),
+    Result: ProjectionChannelPostDbRow,
+    // DESCENDING here and reversed by the caller: taking the newest N means
+    // ordering from the newest end, and LIMIT applies after ORDER BY. Asking
+    // for ASC with a LIMIT would return the OLDEST n rows before the cursor,
+    // which is the wrong page rather than the wrong order.
+    execute: ({ channelId, limit, beforeSequence }) =>
+      sql`
+        ${selectPostColumns}
+        WHERE channel_id = ${channelId} AND sequence < ${beforeSequence}
+        ORDER BY sequence DESC
+        LIMIT ${limit}
+      `,
+  });
+
   const withMembers = (row: ProjectionChannelRow) =>
     listMemberRows(row.channelId).pipe(Effect.map((members) => ({ ...row, members })));
 
@@ -333,6 +353,21 @@ const makeProjectionChannelRepository = Effect.gen(function* () {
       afterSequence: input.afterSequence ?? -1,
     }).pipe(Effect.mapError(toPersistenceSqlError("ProjectionChannelRepository.listPosts:query")));
 
+  const listPostsBackward: ProjectionChannelRepositoryShape["listPostsBackward"] = (input) =>
+    listPostRowsBackward({
+      channelId: input.channelId,
+      limit: input.limit,
+      // Exclusive, so an absent cursor starts after every row. The sequence is
+      // a safe integer by the time it reaches here; MAX_SAFE_INTEGER is the
+      // only value that cannot be one.
+      beforeSequence: input.beforeSequence ?? Number.MAX_SAFE_INTEGER,
+    }).pipe(
+      // ASCENDING on the way out. The query ordered by the newest end to pick
+      // the window; the caller renders oldest-first.
+      Effect.map((rows) => [...rows].reverse()),
+      Effect.mapError(toPersistenceSqlError("ProjectionChannelRepository.listPostsBackward:query")),
+    );
+
   return {
     upsertChannel,
     getChannelByName,
@@ -343,6 +378,7 @@ const makeProjectionChannelRepository = Effect.gen(function* () {
     getChannelWithActivityById,
     listChannelsForMember,
     listPosts,
+    listPostsBackward,
   } satisfies ProjectionChannelRepositoryShape;
 });
 

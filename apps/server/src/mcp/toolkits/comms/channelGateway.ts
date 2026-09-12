@@ -26,7 +26,9 @@
  *
  * @module channelGateway
  */
-import type { ThreadId } from "@t3tools/contracts";
+import { refFromThreadCredential } from "@t3tools/contracts";
+import type { ChannelMemberRef, ThreadId } from "@t3tools/contracts";
+import type * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
@@ -62,6 +64,24 @@ export class ChannelWriteConflict extends Schema.TaggedError<ChannelWriteConflic
 export class ChannelMembershipRevoked extends Schema.TaggedError<ChannelMembershipRevoked>()(
   "ChannelMembershipRevoked",
   {},
+) {}
+
+/**
+ * The cursor was not issued by this channel.
+ *
+ * A TYPED REFUSAL rather than an empty page, and that is the whole point. The
+ * cursor used to be the bare global event sequence, so one earned in another
+ * channel matched no row here and the read came back empty with
+ * `nextCursor: null` - which is byte for byte what "you are caught up" looks
+ * like on the wire. The caller cannot tell those apart and stops reading
+ * (`t3_bot-e60`).
+ *
+ * Carries what the caller SENT, not what was expected: the expected value is
+ * this channel's own state and echoing it tells a prober something.
+ */
+export class ChannelCursorUnusable extends Schema.TaggedError<ChannelCursorUnusable>()(
+  "ChannelCursorUnusable",
+  { cursor: Schema.String, channelId: Schema.String },
 ) {}
 
 /**
@@ -158,8 +178,70 @@ export interface ChannelPostRecord {
   readonly createdAt: string;
 }
 
+/**
+ * WHO IS ASKING, re-exported from `@t3tools/contracts` rather than declared here.
+ *
+ * IT MOVED BECAUSE IT HAD GROWN A SECOND SPELLING. This module owned a nominal
+ * class while `ProjectionChannels.ts` declared a structural interface of the
+ * same name, and `ws.ts` could only reach the structural one — so the
+ * unconstructible type guarded the toolkit and nothing guarded the websocket.
+ * One home, one type; the persistence repository now takes the nominal one.
+ *
+ * Why a private field rather than a `unique symbol` brand, and why there is no
+ * `makeChannelMemberRef(kind, id)`: see
+ * `packages/contracts/src/channelMemberRef.ts`. Both arguments live with the
+ * type now instead of beside one of its consumers.
+ */
+export type { ChannelMemberRef } from "@t3tools/contracts";
+
+/**
+ * The member an MCP tool call acts as: the credential's own thread.
+ *
+ * TAKES THE INVOCATION SCOPE, not a thread id, so there is no parameter an
+ * agent-supplied value fits. The tool's arguments are not in scope here and
+ * cannot be passed by mistake. `refFromThreadCredential` in contracts takes a
+ * branded `ThreadId` and is the general form; this is the one handlers import,
+ * because a scope is a credential and an id is merely a string that typechecks.
+ *
+ * WHY IT MATTERS MORE HERE THAN ON THE WRITE SIDE: the decider refuses a channel
+ * command that arrives without an issuer, so a gateway that forgot one fails
+ * loudly. Nothing refuses a wrong ref on the read side. A read handler that
+ * passed an agent-supplied member would return the right answer for the wrong
+ * member, successfully, forever.
+ */
+export const refFromMcpCredential = (
+  scope: McpInvocationContext.McpInvocationScope,
+): ChannelMemberRef => refFromThreadCredential(scope.threadId);
+
+export type ReadDirection = "forward" | "backward";
+
 export interface ChannelPage {
+  /**
+   * ALWAYS ascending by sequence, whatever the direction.
+   *
+   * `direction` chooses the WINDOW and which way `nextCursor` points; it never
+   * chooses the order. Every caller renders oldest-at-top, so returning a
+   * backward page newest-first would put a `.reverse()` in each of them — a
+   * step that is correct until someone forgets it, and a page nobody reversed
+   * reads as though time runs backwards, which gets diagnosed as a data bug.
+   */
   readonly posts: ReadonlyArray<ChannelPostRecord>;
+  /**
+   * Opaque. Hand it back verbatim; never construct or parse one.
+   *
+   * Null means there is nothing further IN THAT DIRECTION — the newest post
+   * going forward, the beginning of history going backward.
+   *
+   * IT DOES NOT RECORD THE DIRECTION THAT ISSUED IT, and that is the same lie
+   * this cursor's channel half was introduced to end, one axis over: a forward
+   * cursor read backward answers with the oldest page and `nextCursor: null`,
+   * which is byte for byte "you are caught up" while everything after it is
+   * unread. Measured, not reasoned about - the numbers are on `t3_bot-2oh`,
+   * which carries encoding the direction into the value so the mismatch becomes
+   * a refusal. Until then, keep a cursor with the direction you obtained it
+   * from. Unreachable from production today only because the sole caller
+   * hardcodes forward.
+   */
   readonly nextCursor: string | null;
 }
 
@@ -199,15 +281,32 @@ export interface ReadPostsInput {
   readonly channelId: string;
   /** 1..200, enforced at the tool schema; the gateway may assume the range. */
   readonly limit: number;
-  /** Omitted for the first page. */
+  /**
+   * A `nextCursor` from an earlier read of THIS channel, handed back verbatim.
+   *
+   * Omitted for the first page, which depends on the direction: "forward"
+   * starts at the oldest post, "backward" at the newest.
+   *
+   * A CURSOR FROM ANOTHER CHANNEL IS REFUSED, not answered. It used to be the
+   * bare event sequence, which is global — so one earned in another channel was
+   * well-formed digits matching no row here, and the read came back as an empty
+   * page with `nextCursor: null`: byte for byte the answer for "you are caught
+   * up". Three unread posts behind a successful reply, undetectable by the
+   * caller, on the feature whose whole purpose is catching up (`t3_bot-e60`).
+   */
   readonly cursor: string | undefined;
+  /**
+   * "forward" is oldest-first from the cursor — an agent tailing a channel.
+   * "backward" is the newest page and then upward — a UI opening one.
+   */
+  readonly direction: ReadDirection;
 }
 
 export interface ChannelGatewayShape {
   /**
-   * The channel by name, but only if `threadId` is a member of it. A
-   * non-member and a non-existent channel are the same answer: an agent must
-   * not be able to probe for channels it is not in.
+   * The channel by name, but only if `member` belongs to it. A non-member and a
+   * non-existent channel are the same answer: an agent must not be able to
+   * probe for channels it is not in.
    *
    * `name` must already be canonical by `canonicalChannelName`. Matching is
    * exact, so a caller passing what the agent typed rather than the canonical
@@ -217,7 +316,7 @@ export interface ChannelGatewayShape {
    */
   readonly getChannelForMember: (
     name: string,
-    threadId: ThreadId,
+    member: ChannelMemberRef,
   ) => Effect.Effect<Option.Option<Channel>, ChannelStoreUnavailable>;
 
   /**
@@ -235,15 +334,25 @@ export interface ChannelGatewayShape {
   ) => Effect.Effect<Option.Option<ChannelPostRecord>, ChannelStoreUnavailable>;
 
   /**
-   * One page of posts, oldest first, ascending by sequence.
+   * One page of posts, ALWAYS ascending by sequence in both directions.
    *
-   * `cursor` is opaque and points AFTER the last post returned, so passing a
-   * page's `nextCursor` yields the posts newer than it. `nextCursor` is `null`
-   * when no newer posts exist. `limit` is a maximum, not an exact count.
+   * `direction` chooses the WINDOW and which way the cursor points, never the
+   * order the rows arrive in:
+   *
+   *   "forward"  - oldest first from the cursor; `nextCursor` points AFTER the
+   *                last post returned, and is null when no NEWER post exists.
+   *   "backward" - the newest page, then upward; `nextCursor` points BEFORE the
+   *                first post returned, and is null at the START of history.
+   *
+   * `cursor` is opaque, belongs to THIS channel, and one from another is
+   * refused with `ChannelCursorUnusable` rather than answered with an empty
+   * page - the empty page is indistinguishable from "you are caught up", which
+   * is the defect this contract exists to prevent. `limit` is a maximum, not an
+   * exact count.
    */
   readonly readPosts: (
     input: ReadPostsInput,
-  ) => Effect.Effect<ChannelPage, ChannelStoreUnavailable>;
+  ) => Effect.Effect<ChannelPage, ChannelStoreUnavailable | ChannelCursorUnusable>;
 
   /**
    * Appends a post. Rejects a post whose author is not a current member of

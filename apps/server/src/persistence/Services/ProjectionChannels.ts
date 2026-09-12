@@ -52,19 +52,19 @@ export const ProjectionChannelWithActivity = Schema.Struct({
 export type ProjectionChannelWithActivity = typeof ProjectionChannelWithActivity.Type;
 
 /**
- * Who is asking. The same two fields `ChannelMember` carries and the decider's
- * issuer uses, so this is not a new vocabulary.
+ * Who is asking, re-exported from `@t3tools/contracts`.
  *
- * DERIVED FROM THE CALLER'S OWN CREDENTIAL, NEVER FROM A REQUEST FIELD. It is a
- * parameter where the caller's own thread used to be hardcoded, so "read as
- * someone else" is one argument away and there is no decider on the read side to
- * refuse it. Every caller owes a test that its ref comes from the credential and
- * not from the payload.
+ * IT WAS A STRUCTURAL INTERFACE HERE and a nominal class in the comms gateway —
+ * one identity with two spellings, and only this one reachable from `ws.ts`. So
+ * the type that could not be forged guarded the MCP toolkit while the websocket
+ * took any object with the right two fields. The docstring this replaces said
+ * "DERIVED FROM THE CALLER'S OWN CREDENTIAL, NEVER FROM A REQUEST FIELD" and
+ * "every caller owes a test" — both true, and neither enforceable by a shape
+ * every literal satisfies. The nominal one makes the first a type error; the
+ * second is still owed.
  */
-export interface ChannelMemberRef {
-  readonly memberKind: "thread" | "human";
-  readonly memberId: string;
-}
+import type { ChannelMemberRef } from "@t3tools/contracts";
+export type { ChannelMemberRef };
 
 export const ProjectionChannelPost = Schema.Struct({
   postId: ChannelPostId,
@@ -85,6 +85,14 @@ export interface ListChannelPostsInput {
   readonly limit: number;
   /** Exclusive: rows strictly after this sequence. Omitted for the first page. */
   readonly afterSequence: number | undefined;
+}
+
+export interface ListChannelPostsBackwardInput {
+  readonly channelId: ChannelId;
+  /** A maximum, not an exact count. */
+  readonly limit: number;
+  /** Exclusive: rows strictly before this sequence. Omitted for the newest page. */
+  readonly beforeSequence: number | undefined;
 }
 
 export interface ProjectionChannelRepositoryShape {
@@ -157,6 +165,19 @@ export interface ProjectionChannelRepositoryShape {
   /** Oldest first, ascending by sequence. */
   readonly listPosts: (
     input: ListChannelPostsInput,
+  ) => Effect.Effect<ReadonlyArray<ProjectionChannelPost>, ProjectionRepositoryError>;
+
+  /**
+   * The NEWEST rows before a point, returned ASCENDING like every other read.
+   *
+   * The window is chosen from the newest end; the order is not. A caller that
+   * renders oldest-at-top - which is every caller we have - would otherwise
+   * reverse each page itself, and a page someone forgets to reverse reads as
+   * though time runs backwards, which is diagnosed as a data bug rather than a
+   * rendering one. Reversed once here, where a test can hold it.
+   */
+  readonly listPostsBackward: (
+    input: ListChannelPostsBackwardInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionChannelPost>, ProjectionRepositoryError>;
 }
 

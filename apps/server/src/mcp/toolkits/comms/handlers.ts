@@ -8,6 +8,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ChannelGateway from "./channelGateway.ts";
 import {
   CommsChannelArchivedError,
+  CommsCursorUnusableError,
   CommsChannelNotFoundError,
   CommsEmptyBodyError,
   CommsMemberNotFoundError,
@@ -137,15 +138,33 @@ export function resolveMentions(
 const make = Effect.gen(function* () {
   const channels = yield* ChannelGateway.ChannelGateway;
 
+  const storeUnavailableAsRead = {
+    ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
+      Effect.fail(new CommsReadFailedError({ detail: error.detail })),
+  } as const;
+
   /**
    * Maps the gateway's declared failures onto tool errors, one tag at a time.
    * Naming each tag is what makes a later widening of the gateway's error
    * channel a compile error here rather than a silent flattening.
    */
-  const storeUnavailableAsRead = {
-    ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
-      Effect.fail(new CommsReadFailedError({ detail: error.detail })),
-  } as const;
+  // EXTENDS the store mapping rather than restating it, so the two cannot drift
+  // into disagreeing about what a store failure means.
+  //
+  // BELOW what it spreads, which it was not. It read `storeUnavailableAsRead`
+  // from above its declaration and was correct only because the arrow runs at
+  // request time; hoisting either one into a module-level value would have been
+  // a TDZ crash, and nothing here would have caught it.
+  const readFailures = (channelName: string) =>
+    ({
+      ...storeUnavailableAsRead,
+      // NAMED, not folded into the read failure. "The store did not answer" and
+      // "your cursor is for a different channel" call for opposite responses:
+      // retry the first, drop the cursor on the second. Folding them survived
+      // the whole suite until a test asserted the tag it must NOT be.
+      ChannelCursorUnusable: () =>
+        Effect.fail(new CommsCursorUnusableError({ channel: channelName })),
+    }) as const;
 
   const storeUnavailableAsWrite = {
     ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
@@ -209,7 +228,11 @@ const make = Effect.gen(function* () {
       return yield* new CommsChannelNotFoundError({ channel: normalized });
     }
     const channel = yield* channels
-      .getChannelForMember(normalized, scope.threadId)
+      // THE CREDENTIAL'S scope, never a field from the tool call. The
+      // constructor takes the scope rather than a thread id precisely so there
+      // is no signature an agent-supplied value fits - the ref is a parameter
+      // now, and the read side has no decider to refuse a wrong one.
+      .getChannelForMember(normalized, ChannelGateway.refFromMcpCredential(scope))
       .pipe(
         Effect.catchTags(isWrite ? storeUnavailableAsWrite : storeUnavailableAsRead),
         Effect.catchCause(isWrite ? writeDefect : readDefect),
@@ -323,8 +346,20 @@ const make = Effect.gen(function* () {
             // here would be a second, silently-diverging control.
             limit: input.limit ?? DEFAULT_READ_LIMIT,
             cursor: input.cursor,
+            // FORWARD, unchanged. `comms_read_channel` documents "oldest
+            // first, the first page is the oldest posts", and an agent catching
+            // up on a conversation wants it in the order it happened. The
+            // backward read has NO production caller today - it was built
+            // for a UI opening a channel on its newest page, and that UI does
+            // not exist yet. Said as a fact rather than as a wiring diagram,
+            // because the version of this comment that described the RPC it
+            // "reaches the gateway through" was describing something nobody had
+            // written. Changing the agent default here would be a silent change
+            // to what "catch up" means, smuggled in with a bug fix about
+            // cursors.
+            direction: "forward",
           })
-          .pipe(Effect.catchTags(storeUnavailableAsRead), Effect.catchCause(readDefect));
+          .pipe(Effect.catchTags(readFailures(channel.name)), Effect.catchCause(readDefect));
         return {
           channel: channel.name,
           // The same value `publish` refuses on, read off the same channel, so

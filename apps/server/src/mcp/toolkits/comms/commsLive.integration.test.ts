@@ -14,6 +14,7 @@
  */
 import {
   ChannelId,
+  HUMAN_OPERATOR_MEMBER_ID,
   ChannelMemberHandle,
   CommandId,
   EnvironmentId,
@@ -44,7 +45,8 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { MentionWakeReactor } from "../../../orchestration/Services/MentionWakeReactor.ts";
 import { MentionWakeReactorLive } from "../../../orchestration/Layers/MentionWakeReactor.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ChannelGateway } from "./channelGateway.ts";
+import { refFromOperatorSession } from "@t3tools/contracts";
+import { ChannelGateway, type ChannelMemberRef, refFromMcpCredential } from "./channelGateway.ts";
 import { ChannelGatewayLive } from "./channelGatewayLive.ts";
 import { CommsToolkitHandlersLive } from "./handlers.ts";
 import { CommsToolkit } from "./tools.ts";
@@ -106,6 +108,22 @@ const dispatchFailsWith = (error: OrchestrationDispatchError) =>
       };
     }),
   );
+
+/**
+ * The ONE way a test may forge a member ref, named so it cannot pass for the
+ * real thing.
+ *
+ * `ChannelMemberRef` is a class with a private field precisely so a handler
+ * cannot build one from a request payload. Not a unique-symbol brand, which was
+ * the first attempt and is the wrong tool: a symbol stops an object LITERAL and
+ * does not stop a spread of an existing ref with one field replaced, which is
+ * the exact forgery this has to refuse. Tests that exercise refs no
+ * legitimate source can produce - a colliding roster, a member kind the caller
+ * is not - need a way in, and this is it: in a test file, with a name a
+ * reviewer cannot read as production code. `makeRef` would not say that.
+ */
+const unsafeRefForTest = (memberKind: "thread" | "human", memberId: string) =>
+  ({ memberKind, memberId }) as unknown as ChannelMemberRef;
 
 const invocation = (threadId: ThreadId): McpInvocationContext.McpInvocationScope => ({
   environmentId: EnvironmentId.make("environment-1"),
@@ -642,59 +660,372 @@ describe("the comms toolkit on the live gateway", () => {
   );
 
   it.effect(
-    "treats a cursor that is not a sequence as a DEFECT, for the caller the schema does not cover",
+    "refuses a cursor the SCHEMA should never have admitted",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+
+        // `CURSOR_PATTERN` had no test at all. Deleting it outright - replacing
+        // it with `/^[\s\S]*$/` - survived the whole suite, and so did
+        // unbounding the digit half back to `[0-9]+`. Both bounds are argued at
+        // length in its docstring and neither was ever measured.
+        //
+        // These reach the SCHEMA, not the gateway: a post id has no colon, and
+        // a bare sequence has no channel half, so each is refused one layer
+        // before `decodeCursor` ever runs.
+        for (const notACursor of ["post-2", "3", "seniors:", "a:b:c", "  ", "9".repeat(16)]) {
+          const refused = yield* call(
+            "comms_read_channel",
+            { channel: "seniors", cursor: notACursor },
+            BOSS3,
+          ).pipe(Effect.flip);
+          expect(refused).toBeDefined();
+          // Not a page. An empty page is what the old coercion produced and is
+          // indistinguishable from "caught up".
+          expect(refused).not.toMatchObject({ posts: [], nextCursor: null });
+        }
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "tells the AGENT its cursor is foreign, and does not call it retryable",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+
+        // SCHEMA-VALID AND STILL FOREIGN. That combination is the whole
+        // fixture: every malformed cursor is refused by the tool schema one
+        // layer up, so it never reaches the handler branch under test - which
+        // is exactly how this half stayed untested while four mutations of it
+        // passed the suite.
+        const foreign = "channel-project-live:3";
+        const error = yield* call(
+          "comms_read_channel",
+          { channel: "seniors", cursor: foreign },
+          BOSS3,
+        ).pipe(Effect.flip);
+
+        // THE TAG IT IS, and the tag it MUST NOT BE. Folding this into
+        // `CommsReadFailedError` survived every test, and that error is the
+        // RETRYABLE one - so the agent would be told to try a cursor that can
+        // never work, which is the looping instruction this whole area exists
+        // to stop. Asserting only the tag it is would not have caught that.
+        expect((error as { _tag: string })._tag).toBe("CommsCursorUnusableError");
+        expect((error as { _tag: string })._tag).not.toBe("CommsReadFailedError");
+
+        // NAMES THE CHANNEL THE AGENT ASKED FOR. Passing the wrong channel here
+        // survived too, and an agent in several channels cannot act on a
+        // refusal that names the wrong one.
+        expect((error as unknown as { channel: string }).channel).toBe("seniors");
+        const message = (error as { message: string }).message;
+        expect(message).toContain("seniors");
+        // AND IT SAYS WHAT TO DO. The message was replaceable with anything;
+        // what an agent needs from it is the recovery, and the recovery has to
+        // match the direction this tool actually reads.
+        expect(message).toContain("without a cursor");
+        // NOT the internal channel id, which the agent was never given.
+        expect(message).not.toContain(CHANNEL_ID);
+
+        // And a cursor this channel DID issue still pages, so the assertions
+        // above are about provenance rather than about the tool refusing every
+        // cursor.
+        yield* call("comms_post", { channel: "seniors", body: "one" }, BOSS1);
+        yield* call("comms_post", { channel: "seniors", body: "two" }, BOSS1);
+        const first = yield* call("comms_read_channel", { channel: "seniors", limit: 1 }, BOSS3);
+        const second = yield* call(
+          "comms_read_channel",
+          { channel: "seniors", limit: 1, cursor: first.nextCursor! },
+          BOSS3,
+        );
+        expect(second.posts.map((post) => post.body)).toEqual(["two"]);
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "refuses a cursor from another channel instead of reporting it as caught up",
     () =>
       Effect.gen(function* () {
         yield* seed();
         const gateway = yield* ChannelGateway;
 
-        // Unreachable through the toolkit, whose schema refuses these first -
-        // so this calls the gateway directly, the same way the non-canonical
-        // name below is tested. Without it the guard is inert: reverting
-        // `requireSequence` on its own reds nothing, because every input that
-        // would reach it is stopped one layer up.
-        //
-        // The guard is what holds if that layer is ever widened, and its
-        // docstring says so. A docstring making a claim about a guard nothing
-        // exercises is the thing this branch has spent the day deleting.
-        for (const notASequence of ["abc", "-1", "1.5", "9007199254740993"]) {
-          const defect = yield* gateway
-            .readPosts({ channelId: CHANNEL_ID, limit: 10, cursor: notASequence })
-            .pipe(Effect.exit);
-          expect(defect._tag).toBe("Failure");
-          expect(String(defect)).toContain("not a sequence");
+        // THE DEFECT THIS BEAD EXISTS FOR. The cursor used to be the bare
+        // global event sequence, so one earned in another channel was
+        // well-formed digits matching no row here - and the read came back as
+        // an empty page with `nextCursor: null`, which is byte for byte what
+        // "you are caught up" looks like. The caller cannot tell those apart,
+        // so it stops reading a channel that has unread posts in it.
+        for (const foreign of [
+          "channel-somewhere-else:3",
+          "not-a-cursor",
+          `${CHANNEL_ID}:abc`,
+          `${CHANNEL_ID}:-1`,
+          `${CHANNEL_ID}:1.5`,
+          `${CHANNEL_ID}:9007199254740993`,
+          "3",
+          // THE TWO THAT SEPARATE AN EXACT COMPARISON FROM A LAZY ONE, and
+          // without them the other six do not. Every value above differs from
+          // this channel in LENGTH and in PREFIX, so `from !== channelId`,
+          // `from.length !== channelId.length` and `!channelId.startsWith(from)`
+          // are the same function against them - two of those were run as
+          // mutants and survived every test in this file.
+          //
+          // It is not hypothetical arithmetic: `HierarchySeeder` mints
+          // `channel-project` and `channel-seniors`, both fifteen characters
+          // and both starting "channel-". Under a length comparison a real
+          // cursor from one pages the other on a seeded install, which is the
+          // defect this whole test exists to close.
+          `${CHANNEL_ID.slice(0, -1)}:3`,
+          `${CHANNEL_ID.replace("seniors", "project")}:3`,
+        ]) {
+          // `Effect.flip` rather than `exit`: this must be a typed FAILURE, so
+          // flipping yields the error as a value and a defect would propagate
+          // and fail the test instead - which is the distinction being made.
+          const refused = yield* gateway
+            .readPosts({ channelId: CHANNEL_ID, limit: 10, cursor: foreign, direction: "forward" })
+            .pipe(Effect.flip);
+          expect(refused._tag).toBe("ChannelCursorUnusable");
+          // AND THE PAYLOAD, because a tag-only assertion let the two fields be
+          // swapped and let the refusal echo a synthesised EXPECTED cursor -
+          // the disclosure its own docstring forbids. It carries what the
+          // caller SENT and the channel asked about, never this channel's own
+          // position.
+          expect(refused).toMatchObject({ cursor: foreign, channelId: CHANNEL_ID });
         }
 
-        // And a real cursor still reads, so the assertions above are about the
-        // VALUE rather than about readPosts refusing everything.
+        // And this channel's OWN cursor still works, so the assertions above
+        // are about provenance rather than about readPosts refusing every
+        // cursor - which would satisfy all six and break paging.
+        for (const body of ["first", "second", "third"]) {
+          yield* call("comms_post", { channel: "seniors", body }, BOSS1);
+        }
         const page = yield* gateway.readPosts({
           channelId: CHANNEL_ID,
-          limit: 10,
+          limit: 2,
           cursor: undefined,
+          direction: "forward",
         });
-        expect(page.posts).toEqual([]);
+        expect(page.posts.map((post) => post.body)).toEqual(["first", "second"]);
+        expect(page.nextCursor).not.toBeNull();
+        const next = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 2,
+          cursor: page.nextCursor!,
+          direction: "forward",
+        });
+        expect(next.posts.map((post) => post.body)).toEqual(["third"]);
 
-        // THE SAME PROPERTY FOR `getPost`, which brands a channelId the caller
-        // supplies. `Effect.exit` can only produce an Exit VALUE if the Effect
-        // was built at all - a throw while the function is being called never
-        // reaches it, and fails the test uncatchably instead. That distinction
-        // is the whole of what the suspends buy and it is invisible to any
-        // assertion that only checks THAT it failed.
+        // BACKWARD opens on the newest page and still returns it ascending.
+        const newest = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 2,
+          cursor: undefined,
+          direction: "backward",
+        });
+        expect(newest.posts.map((post) => post.body)).toEqual(["second", "third"]);
+        // Its cursor points BEFORE the oldest row returned, so the next page
+        // going backward is older still.
+        const older = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 2,
+          cursor: newest.nextCursor!,
+          direction: "backward",
+        });
+        expect(older.posts.map((post) => post.body)).toEqual(["first"]);
+        expect(older.nextCursor).toBeNull();
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "refuses every sequence `Number()` would have invented a number for",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const gateway = yield* ChannelGateway;
+
+        // THIS PROPERTY WAS LOST IN A SPLIT, which is the fourth time work of
+        // mine has removed a test on this branch and the first time it happened
+        // without a line being deleted. The base test asserted four things;
+        // three became their own tests and this one did not, and its own
+        // comment had predicted exactly that - "without it the guard is inert".
         //
-        // What comes back is a DEFECT, not a typed failure: the exit is a
-        // Failure whose cause is a Die. `readPosts` declares only
-        // `ChannelStoreUnavailable`, so a malformed id here is still a caller
-        // bug - what the suspend changes is that the bug is reportable rather
-        // than escaping.
+        // The digit pre-check in `decodeCursor` is what these measure, and
+        // nothing else in the suite reaches it. Every malformed cursor
+        // elsewhere is caught by a DIFFERENT clause: `:abc` by
+        // `Number.isSafeInteger(NaN)`, `:-1` by `sequence < 0`, `:1.5` and the
+        // 16-digit one by `isSafeInteger`. Delete the pre-check and all of
+        // those still refuse - which is how a guard I added on this branch sat
+        // in the tree with no test that could tell whether it was there.
+        //
+        // Every value here carries THIS channel's id, so the provenance clause
+        // passes and the digit check is the only thing left that can refuse
+        // them. `Number()` reads each one as a perfectly good non-negative safe
+        // integer - 0, 2, 3, 100, 4, 3 - so without the pre-check the read
+        // answers with a page starting at a sequence the caller never asked
+        // for, which is the silent wrong answer this bead exists to end.
+        for (const coercible of [
+          `${CHANNEL_ID}:`,
+          `${CHANNEL_ID}:0x2`,
+          `${CHANNEL_ID}: 3 `,
+          `${CHANNEL_ID}:1e2`,
+          `${CHANNEL_ID}:+4`,
+          `${CHANNEL_ID}:0b11`,
+        ]) {
+          // A typed failure, so `flip` rather than `exit`: a defect would
+          // propagate and fail the test instead of being yielded, which is the
+          // distinction these cursors are about.
+          const refused = yield* gateway
+            .readPosts({
+              channelId: CHANNEL_ID,
+              limit: 10,
+              cursor: coercible,
+              direction: "forward",
+            })
+            .pipe(Effect.flip);
+          expect(refused._tag).toBe("ChannelCursorUnusable");
+          expect(refused).toMatchObject({ cursor: coercible, channelId: CHANNEL_ID });
+        }
+
+        // And a plain digit cursor still pages, so the loop above is about what
+        // `Number()` accepts rather than about the guard refusing everything -
+        // a refusal of every sequence satisfies all six and breaks reading.
+        for (const body of ["first", "second"]) {
+          yield* call("comms_post", { channel: "seniors", body }, BOSS1);
+        }
+        const page = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 1,
+          cursor: undefined,
+          direction: "forward",
+        });
+        const next = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 1,
+          cursor: page.nextCursor!,
+          direction: "forward",
+        });
+        expect(next.posts.map((post) => post.body)).toEqual(["second"]);
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "gives a read no member field to carry, and refuses a channel the caller is not in",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const engine = yield* OrchestrationEngineService;
+
+        // A SECOND CHANNEL THAT BOSS3 IS NOT IN. My first version of this test
+        // used #seniors - which BOSS3 is already a member of - so a handler
+        // reading as an agent-supplied member returned the SAME ANSWER as one
+        // reading as the credential. It could not fail, and a security lane
+        // proved a member-smuggling handler survives the whole suite against
+        // it.
+        //
+        // The property needs a channel where the two answers WOULD differ:
+        // reading as the credential must refuse, and reading as a smuggled
+        // member would succeed. That much was right. What was still missing is
+        // below, and it is that there is no smuggling channel at all.
+        const privateId = ChannelId.make("channel-boss1-only");
+        yield* engine.dispatch(
+          {
+            type: "channel.create",
+            commandId: CommandId.make("cmd-channel-private"),
+            channelId: privateId,
+            name: "boss1-only",
+            members: [
+              { handle: ChannelMemberHandle.make("boss1"), memberKind: "thread", memberId: BOSS1 },
+            ],
+            createdAt: NOW,
+          },
+          { issuer: ADMIN },
+        );
+
+        // WHERE THE SECOND VERSION OF THIS TEST WAS STILL WRONG, and a blind
+        // verifier proved it rather than argued it: passing `memberId` and
+        // `memberKind` in the arguments smuggles NOTHING, because the tool's
+        // param schema does not declare them and the toolkit strips them during
+        // decode. The handler's input is `{ channel: "boss1-only" }`. The
+        // verifier built the impersonating handler this was supposed to catch -
+        // `requireChannel` threaded with `input.memberId` - and it passed 61/61.
+        // The refusal below is satisfied by BOSS3 simply not being a member,
+        // with or without the credential rule.
+        //
+        // So the ARGUMENTS ARE GONE and what is asserted instead is the control
+        // that actually holds: there is no member field on the wire for a
+        // handler to read. Add one to `ReadChannelTool`'s parameters and this
+        // reds; that is a property of the schema, which is where the defence
+        // lives, rather than of a call that could never have carried anything.
+        const readParams = Object.keys(
+          (
+            CommsToolkit.tools.comms_read_channel.parametersSchema as unknown as {
+              fields: Record<string, unknown>;
+            }
+          ).fields,
+        );
+        expect(readParams.sort()).toEqual(["channel", "cursor", "limit"]);
+
+        const refused = yield* call("comms_read_channel", { channel: "boss1-only" }, BOSS3).pipe(
+          Effect.flip,
+        );
+        expect((refused as { _tag: string })._tag).toBe("CommsChannelNotFoundError");
+
+        // And BOSS1 reading its own channel succeeds, so the refusal above is
+        // about WHO ASKED rather than the channel being unreachable.
+        const allowed = yield* call("comms_read_channel", { channel: "boss1-only" }, BOSS1);
+        expect(allowed.channel).toBe("boss1-only");
+
+        // The constructors carry their SOURCE, both fields each. Asserting the
+        // id alone passes against one that hardcodes the wrong kind.
+        const fromCredential = refFromMcpCredential(invocation(BOSS3));
+        expect(fromCredential.memberKind).toBe("thread");
+        expect(fromCredential.memberId).toBe(BOSS3);
+        const fromSession = refFromOperatorSession();
+        expect(fromSession.memberKind).toBe("human");
+        expect(fromSession.memberId).toBe(HUMAN_OPERATOR_MEMBER_ID);
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "reports a malformed channel id rather than throwing while being called",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const gateway = yield* ChannelGateway;
+
+        // `Effect.exit` can only produce an Exit VALUE if the Effect was built
+        // at all. A throw while the function is being CALLED never reaches it
+        // and fails the test uncatchably instead - which looks identical in a
+        // summary line, so an assertion that only checks THAT it failed cannot
+        // tell the two apart. That distinction is the whole of what the
+        // `Effect.suspend` buys.
+        //
+        // What comes back is a DEFECT, not a typed failure: a Failure whose
+        // cause is a Die. `getPost` declares only `ChannelStoreUnavailable`, so
+        // a malformed id is still a caller bug - the suspend makes the bug
+        // reportable rather than escaping.
         const unbrandable = yield* gateway.getPost("not a channel id", "post-1").pipe(Effect.exit);
         expect(unbrandable._tag).toBe("Failure");
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
 
-        // AND `createPost` HONOURS ITS OWN SIGNATURE. It declares five typed
-        // failures; a malformed parent used to come out as a raw schema Die
-        // with a serialised AST, so a caller writing an exhaustive `catchTags`
-        // would look correct and be wrong. The toolkit never reached it -
-        // `comms_reply` resolves the parent first - which is exactly why
-        // nothing tested it.
+  it.effect(
+    "honours createPost's declared failures on a parent id the brand refuses",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const gateway = yield* ChannelGateway;
+
+        // `createPost` declares five typed failures. A malformed parent used to
+        // come out as a raw schema Die carrying a serialised AST, so a caller
+        // writing an exhaustive `catchTags` would look correct and be wrong.
+        // The toolkit never reaches it - `comms_reply` resolves the parent
+        // first - which is exactly why nothing tested it until it was broken.
         for (const malformed of ["a:b", "has space", "   ", "post-\u{1F525}"]) {
           const refused = yield* gateway
             .createPost({
@@ -706,24 +1037,30 @@ describe("the comms toolkit on the live gateway", () => {
             })
             .pipe(Effect.exit);
           expect(refused._tag).toBe("Failure");
-          // A TYPED refusal, not a defect. `Effect.flip` could not tell these
-          // apart: it propagates a die rather than yielding it as a value.
+          // THE TAG, because `Effect.flip` cannot tell a typed refusal from a
+          // defect - it propagates a die rather than yielding it as a value.
           expect(String(refused)).toContain("ChannelWriteConflict");
           expect(String(refused)).not.toContain("SchemaIssue");
         }
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
 
-        // THE MENTIONS ARRAY IS NOT THE SAME SITE, and it is worth the four
-        // lines to say why rather than leaving the next reader to re-derive it.
+  it.effect(
+    "refuses a whitespace-only mention typed, which is NOT the same site",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const gateway = yield* ChannelGateway;
+
         // `ChannelMemberHandle` is a trimmed non-empty string, so a handle of
-        // only whitespace LOOKS like it should throw - but `.make` checks
-        // `isNonEmpty` against the untrimmed value, which has length 3, so it
-        // constructs fine and the DECIDER refuses it by canonicalising. The
-        // result is a typed `ChannelWriteConflict`, which is what this asserts.
+        // only whitespace LOOKS like it should throw the way the ids did. It
+        // does not: `.make` checks `isNonEmpty` against the UNTRIMMED value,
+        // which has length 3, so it constructs - and the DECIDER refuses it by
+        // canonicalising. The result is a typed `ChannelWriteConflict`.
         //
-        // So this is not provenance and not luck: the value is genuinely
-        // handled. The assertion exists because that is a chain of three
-        // non-obvious facts, and a defect appearing here later would mean one
-        // of them changed.
+        // Not provenance and not luck: a chain of three non-obvious facts. A
+        // defect appearing here later means one of them changed.
         const blankHandle = yield* gateway
           .createPost({
             channelId: CHANNEL_ID,
@@ -741,6 +1078,71 @@ describe("the comms toolkit on the live gateway", () => {
   );
 
   it.effect(
+    "tells a THREAD member from a HUMAN member carrying the same id",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const channels = yield* ProjectionChannelRepository;
+
+        // THE COLLIDING ROSTER, written straight into the projection rather
+        // than through the aggregate. `requireChannelMemberShape` refuses this
+        // shape on COMMANDS, while membership replays from EVENTS - so a row
+        // like this arrives by the path the command guard does not cover, which
+        // is exactly why the guard is not the answer here (`t3_bot-46h`,
+        // criterion 5: do not weaken it to make the fixture constructible).
+        //
+        // WHY IT HAS TO EXIST: every other channel fixture in this repo gives
+        // its members ids that differ in BOTH fields. Against those,
+        // `memberId === x` and `memberKind === k && memberId === x` return the
+        // same answer for every input - so the correct comparison and the
+        // impersonating one are indistinguishable, and the same mutation has
+        // survived a full suite three times in three files (`t3_bot-ami`,
+        // `t3_bot-8i2`, and the shell stream). This is the input that separates
+        // them.
+        const shared = "collides-with-a-thread";
+        yield* channels.replaceMembers({
+          channelId: CHANNEL_ID,
+          members: [
+            { handle: ChannelMemberHandle.make("ghost"), memberKind: "thread", memberId: shared },
+            { handle: ChannelMemberHandle.make("walt"), memberKind: "human", memberId: shared },
+          ],
+        });
+
+        const gateway = yield* ChannelGateway;
+        // The HUMAN resolves for the human ref and the THREAD for the thread
+        // ref, and both must be the channel - a comparison on memberId alone
+        // returns whichever row `some` reaches first for BOTH, which is a post
+        // attributed to the wrong member on a call that returns success.
+        const asHuman = yield* gateway.getChannelForMember(
+          "seniors",
+          unsafeRefForTest("human", shared),
+        );
+        const asThread = yield* gateway.getChannelForMember(
+          "seniors",
+          unsafeRefForTest("thread", shared),
+        );
+        expect(Option.isSome(asHuman)).toBe(true);
+        expect(Option.isSome(asThread)).toBe(true);
+
+        // AND THE KIND THAT IS NOT IN THE ROSTER IS REFUSED, which is the half
+        // that fails when `memberKind` is dropped from the comparison: the id
+        // matches, so an id-only check admits a member that is not there.
+        yield* channels.replaceMembers({
+          channelId: CHANNEL_ID,
+          members: [
+            { handle: ChannelMemberHandle.make("ghost"), memberKind: "thread", memberId: shared },
+          ],
+        });
+        const impostor = yield* gateway.getChannelForMember(
+          "seniors",
+          unsafeRefForTest("human", shared),
+        );
+        expect(Option.isNone(impostor)).toBe(true);
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
     "treats a non-canonical name as a DEFECT rather than an empty answer",
     () =>
       Effect.gen(function* () {
@@ -751,13 +1153,18 @@ describe("the comms toolkit on the live gateway", () => {
         // calls the gateway directly, the only way to exercise a guard against
         // a FUTURE caller. Returning None instead would surface as an agent
         // told it is not in a channel it IS in, with nothing saying why.
-        const defect = yield* gateway.getChannelForMember("#Seniors", BOSS3).pipe(Effect.exit);
+        const defect = yield* gateway
+          .getChannelForMember("#Seniors", unsafeRefForTest("thread", BOSS3))
+          .pipe(Effect.exit);
         expect(defect._tag).toBe("Failure");
         expect(String(defect)).toContain("non-canonical name");
 
         // The canonical form of the same name resolves, so the assertion above
         // is about the FORM rather than about the channel being absent.
-        const found = yield* gateway.getChannelForMember("seniors", BOSS3);
+        const found = yield* gateway.getChannelForMember(
+          "seniors",
+          unsafeRefForTest("thread", BOSS3),
+        );
         expect(Option.isSome(found)).toBe(true);
       }).pipe(Effect.provide(TestLayer)),
     30_000,

@@ -6,6 +6,8 @@ import * as Option from "effect/Option";
 
 import { ProjectionChannelRepositoryLive } from "./ProjectionChannels.ts";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
+import { HUMAN_OPERATOR_MEMBER_ID, refFromOperatorSession } from "@t3tools/contracts";
+import type { ChannelMemberRef } from "@t3tools/contracts";
 import { ProjectionChannelRepository } from "../Services/ProjectionChannels.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
@@ -43,6 +45,23 @@ function channel(channelId: ChannelId, name: string, handles: ReadonlyArray<stri
  * `listChannelsForMember` is a two-field WHERE, so separating the fields needs
  * a builder that can say so.
  */
+/**
+ * The ONE way a test may forge a `ChannelMemberRef`, named so it cannot pass for
+ * the real thing.
+ *
+ * The type is a class with a private field in `@t3tools/contracts` and its two
+ * real constructors are named for their SOURCE — a credential or the operator's
+ * session — so neither can express "a thread whose id is `kind-collide`", which
+ * is exactly what a membership-filter test has to ask for. This is the way in,
+ * and it is `unsafe` in the name because a reviewer must not read it as
+ * production code. `makeRef` would not say that.
+ *
+ * These call sites were object literals until the nominal type moved into
+ * contracts; that they stopped compiling is the type doing its job.
+ */
+const unsafeRefForTest = (memberKind: "thread" | "human", memberId: string) =>
+  ({ memberKind, memberId }) as unknown as ChannelMemberRef;
+
 function channelWithMembers(
   channelId: ChannelId,
   name: string,
@@ -80,6 +99,43 @@ function post(postId: string, channelId: ChannelId, sequence: number, mentions: 
 }
 
 layer("ProjectionChannelRepository", (it) => {
+  it.effect("accepts a REAL member ref, not just the plain object the tests forge", () =>
+    Effect.gen(function* () {
+      // THE ONE THING THE NOMINAL REF CHANGED AT THIS CALL SITE IS THE ONE
+      // THING NOTHING EXERCISED. `unsafeRefForTest` returns a plain object, and
+      // `server.test.ts` stubs this repository — so every existing test here
+      // asks "does the query filter on both fields" and none asks "does it
+      // accept the type production actually passes".
+      //
+      // Production hands it `refFromOperatorSession()`: a class instance whose
+      // prototype is not `Object` and which carries a third own property,
+      // `nominal`, straight into a `SqlSchema` request struct. A fixture that
+      // can only produce plain objects cannot tell "the repository accepts the
+      // nominal type" from "the repository accepts anything", which is exactly
+      // the distinction moving the ref into contracts was for. Found by a blind
+      // verifier as a coverage hole rather than a bug — Effect Schema reads the
+      // struct's fields by key and ignores the excess — but an untested
+      // load-bearing property is one Schema upgrade away from an outage.
+      const repo = yield* ProjectionChannelRepository;
+      yield* repo.upsertChannel(
+        channelWithMembers(ChannelId.make("real-ref"), "real-ref", [
+          {
+            handle: "walt",
+            memberKind: "human",
+            memberId: HUMAN_OPERATOR_MEMBER_ID,
+          },
+        ]),
+      );
+
+      const rows = yield* repo.listChannelsForMember(refFromOperatorSession());
+
+      assert.deepStrictEqual(
+        rows.map((row) => row.name),
+        ["real-ref"],
+      );
+    }),
+  );
+
   it.effect("round-trips a channel and its members by name and by id", () =>
     Effect.gen(function* () {
       const repo = yield* ProjectionChannelRepository;
@@ -220,6 +276,62 @@ layer("ProjectionChannelRepository", (it) => {
     }),
   );
 
+  it.effect("reads the NEWEST window backward and still returns it ascending", () =>
+    Effect.gen(function* () {
+      const repo = yield* ProjectionChannelRepository;
+      const back = ChannelId.make("channel-backward");
+      for (const sequence of [4, 0, 2, 1, 3]) {
+        yield* repo.insertPost(post(`post-back-${sequence}`, back, sequence));
+      }
+
+      // FIVE ROWS AND A LIMIT OF TWO, because that is what distinguishes the
+      // two implementations. `ORDER BY sequence DESC LIMIT 2` then reversed
+      // gives [3, 4]; `ORDER BY sequence ASC LIMIT 2` gives [0, 1]. BOTH are
+      // ascending, so an assertion that only checked the order would pass
+      // against the wrong page. The sequences are the assertion.
+      const newest = yield* repo.listPostsBackward({
+        channelId: back,
+        limit: 2,
+        beforeSequence: undefined,
+      });
+      assert.deepStrictEqual(
+        newest.map((row) => row.sequence),
+        [3, 4],
+      );
+
+      // Exclusive, and walking UP the history: the cursor is the oldest
+      // sequence returned, so the next page is strictly older than it.
+      const older = yield* repo.listPostsBackward({
+        channelId: back,
+        limit: 2,
+        beforeSequence: 3,
+      });
+      assert.deepStrictEqual(
+        older.map((row) => row.sequence),
+        [1, 2],
+      );
+
+      // The beginning of history returns a SHORT page rather than an empty
+      // one - the caller learns it is at the start from the count, and from
+      // the empty page after it.
+      const first = yield* repo.listPostsBackward({
+        channelId: back,
+        limit: 2,
+        beforeSequence: 1,
+      });
+      assert.deepStrictEqual(
+        first.map((row) => row.sequence),
+        [0],
+      );
+      const beyond = yield* repo.listPostsBackward({
+        channelId: back,
+        limit: 2,
+        beforeSequence: 0,
+      });
+      assert.deepStrictEqual(beyond, []);
+    }),
+  );
+
   it.effect("the same post id in two channels does not drop either post", () =>
     Effect.gen(function* () {
       // Post ids are caller-supplied. Under a global key the second insert
@@ -307,10 +419,9 @@ layer("ProjectionChannelRepository", (it) => {
         ]),
       );
 
-      const rows = yield* repo.listChannelsForMember({
-        memberKind: "human",
-        memberId: "filter-human-walt",
-      });
+      const rows = yield* repo.listChannelsForMember(
+        unsafeRefForTest("human", "filter-human-walt"),
+      );
 
       assert.deepStrictEqual(
         rows.map((row) => row.channelId),
@@ -337,14 +448,10 @@ layer("ProjectionChannelRepository", (it) => {
         ]),
       );
 
-      const asThread = yield* repo.listChannelsForMember({
-        memberKind: "thread",
-        memberId: "kind-collide",
-      });
-      const asHuman = yield* repo.listChannelsForMember({
-        memberKind: "human",
-        memberId: "kind-collide",
-      });
+      const asThread = yield* repo.listChannelsForMember(
+        unsafeRefForTest("thread", "kind-collide"),
+      );
+      const asHuman = yield* repo.listChannelsForMember(unsafeRefForTest("human", "kind-collide"));
 
       // Both directions. The refusal alone would pass for a filter that matched
       // nobody at all, which is the mistake in the other direction.
@@ -365,10 +472,9 @@ layer("ProjectionChannelRepository", (it) => {
         ]),
       );
 
-      const stranger = yield* repo.listChannelsForMember({
-        memberKind: "human",
-        memberId: "stranger-nobody",
-      });
+      const stranger = yield* repo.listChannelsForMember(
+        unsafeRefForTest("human", "stranger-nobody"),
+      );
 
       assert.deepStrictEqual(stranger, []);
     }),
@@ -388,7 +494,7 @@ layer("ProjectionChannelRepository", (it) => {
       const repo = yield* ProjectionChannelRepository;
       const busy = ChannelId.make("order-busy");
       const quiet = ChannelId.make("order-quiet");
-      const member = { memberKind: "human" as const, memberId: "order-member" };
+      const member = unsafeRefForTest("human", "order-member");
       yield* repo.upsertChannel(
         channelWithMembers(busy, "order-busy", [{ handle: "walt", ...member }], {
           createdAt: "2026-01-01T00:00:00.000Z",
@@ -432,7 +538,7 @@ layer("ProjectionChannelRepository", (it) => {
       const repo = yield* ProjectionChannelRepository;
       const busy = ChannelId.make("coalesce-busy");
       const empty = ChannelId.make("coalesce-empty");
-      const member = { memberKind: "human" as const, memberId: "coalesce-member" };
+      const member = unsafeRefForTest("human", "coalesce-member");
       yield* repo.upsertChannel(
         channelWithMembers(busy, "coalesce-busy", [{ handle: "walt", ...member }], {
           createdAt: "2026-01-01T00:00:00.000Z",
@@ -470,7 +576,7 @@ layer("ProjectionChannelRepository", (it) => {
       const repo = yield* ProjectionChannelRepository;
       const posted = ChannelId.make("activity-posted");
       const empty = ChannelId.make("activity-empty");
-      const member = { memberKind: "human" as const, memberId: "activity-member" };
+      const member = unsafeRefForTest("human", "activity-member");
       yield* repo.upsertChannel(
         channelWithMembers(posted, "activity-posted", [{ handle: "walt", ...member }]),
       );
@@ -504,7 +610,7 @@ layer("ProjectionChannelRepository", (it) => {
       // duplication unambiguous rather than a possible off-by-one.
       const repo = yield* ProjectionChannelRepository;
       const crowded = ChannelId.make("group-crowded");
-      const member = { memberKind: "human" as const, memberId: "group-member" };
+      const member = unsafeRefForTest("human", "group-member");
       yield* repo.upsertChannel(
         channelWithMembers(crowded, "group-crowded", [
           { handle: "walt", ...member },
