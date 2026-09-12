@@ -106,6 +106,9 @@ Sonnet stays excluded from review and design. Do not switch back to Fable unprom
 - pnpm workspace, Effect-TS server, Vite/React clients. `pnpm install` then `pnpm dev`
   (`vp run dev` in `AGENTS.md` assumes `vp` on PATH; it is not on every session's — `pnpm dev` is
   the portable form). Ports derive from the worktree path; read them from the `[dev-runner]` line.
+- **Decode, never `.make`, a branded id from outside the server.** `Brand.make` throws on a refused
+  value, and inside an argument list it throws before the caller's `.pipe(Effect.catch…)` exists — the
+  guard written for that case never runs. Client and agent-supplied ids go through `Schema.decode`.
 - The server package is named `t3`, not `@t3tools/server`; `pnpm --filter @t3tools/server` matches
   nothing and prints a false green. Filter on `t3`.
 - Claude provider = `@anthropic-ai/claude-agent-sdk` in-process; Codex = `codex app-server`
