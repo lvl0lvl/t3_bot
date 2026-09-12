@@ -68,8 +68,10 @@ message types: `comms/README.md` there.
   removing the check from one site must red a test that names that site.
 - **A test count may not go down silently.** A green suite says nothing about proofs that were deleted: a
   range-replace patch removed three direct-gateway tests from #13 and reverting #13's fix passed 152/152. The
-  local gate compares per-file test counts against base; a decrease is named in the PR body with the reason,
-  and the previous PR's mutants on that file are re-run.
+  author measures per-file test counts base vs head from the runner (never a grep for `it(`, which counts
+  strings and comments) and states them in the PR body's local-gate section; a decrease is named there with
+  the reason, and the previous PR's mutants on that file are re-run. The PM checks the table before merging.
+  No script enforces this yet (bead `t3_bot-9wj`); until one does, the table in the body is the gate.
 - Comments state the input that would break the code, not the reason it is safe.
 - Before pushing, write the adversarial question you would give a reviewer — "what legitimate input
   does this now reject that worked before?" — and answer it yourself. Writing the prompt is the review.
