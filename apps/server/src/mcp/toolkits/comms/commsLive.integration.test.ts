@@ -750,6 +750,56 @@ describe("the comms toolkit on the live gateway", () => {
   );
 
   it.effect(
+    "refuses a cursor issued before the direction existed, rather than assuming forward",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const gateway = yield* ChannelGateway;
+        for (const body of ["p1", "p2", "p3"]) {
+          yield* call("comms_post", { channel: "seniors", body }, BOSS1);
+        }
+
+        // THE DEPLOY WINDOW, and it deserves its own case rather than a line in
+        // a list, because the argument against it is strong: every cursor any
+        // holder is carrying right now IS a forward cursor, since the only
+        // issuer hardcodes forward — so "assume forward" would be right every
+        // time and wrong never.
+        //
+        // Refused anyway. The assumption is unverifiable at the point of use:
+        // the decoder cannot tell a toolkit-issued cursor from a hand-typed one
+        // or, once a second caller chooses direction from the wire, from a
+        // backward one. A guard that is correct only by appeal to a caller's
+        // current behaviour is the defect class this bead exists for. A refusal
+        // costs a re-read from the start; a wrong page costs the posts the
+        // caller never learns it missed.
+        const legacy = `${CHANNEL_ID}:2`;
+        const refused = yield* gateway
+          .readPosts({ channelId: CHANNEL_ID, limit: 10, cursor: legacy, direction: "forward" })
+          .pipe(Effect.flip);
+        expect(refused._tag).toBe("ChannelCursorUnusable");
+        expect(refused).toMatchObject({ cursor: legacy, channelId: CHANNEL_ID });
+
+        // And the same tree still pages with a cursor of the new shape, so this
+        // is about the missing segment rather than about refusing everything.
+        const page = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 2,
+          cursor: undefined,
+          direction: "forward",
+        });
+        expect(page.posts.map((post) => post.body)).toEqual(["p1", "p2"]);
+        const next = yield* gateway.readPosts({
+          channelId: CHANNEL_ID,
+          limit: 2,
+          cursor: page.nextCursor!,
+          direction: "forward",
+        });
+        expect(next.posts.map((post) => post.body)).toEqual(["p3"]);
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
     "refuses a cursor from the OTHER DIRECTION instead of reporting it as caught up",
     () =>
       Effect.gen(function* () {
@@ -838,13 +888,23 @@ describe("the comms toolkit on the live gateway", () => {
         // an empty page with `nextCursor: null`, which is byte for byte what
         // "you are caught up" looks like. The caller cannot tell those apart,
         // so it stops reading a channel that has unread posts in it.
+        //
+        // EVERY FIXTURE CARRIES A DIRECTION, and that is not decoration. When
+        // the direction segment was added (`t3_bot-2oh`) every value here was
+        // two-segment, so the decoder refused them all at the direction
+        // boundary BEFORE the provenance clause this test exists to measure.
+        // The test stayed green and stopped testing: a QA lane re-ran the
+        // mutants and found three that the base suite killed — the digit
+        // pre-check, the exact channel compare, and the safe-integer check —
+        // surviving at head. Nobody edited a test; a source change defanged the
+        // fixtures underneath them.
         for (const foreign of [
-          "channel-somewhere-else:3",
+          "channel-somewhere-else:forward:3",
           "not-a-cursor",
-          `${CHANNEL_ID}:abc`,
-          `${CHANNEL_ID}:-1`,
-          `${CHANNEL_ID}:1.5`,
-          `${CHANNEL_ID}:9007199254740993`,
+          `${CHANNEL_ID}:forward:abc`,
+          `${CHANNEL_ID}:forward:-1`,
+          `${CHANNEL_ID}:forward:1.5`,
+          `${CHANNEL_ID}:forward:9007199254740993`,
           "3",
           // THE TWO THAT SEPARATE AN EXACT COMPARISON FROM A LAZY ONE, and
           // without them the other six do not. Every value above differs from
@@ -858,8 +918,8 @@ describe("the comms toolkit on the live gateway", () => {
           // and both starting "channel-". Under a length comparison a real
           // cursor from one pages the other on a seeded install, which is the
           // defect this whole test exists to close.
-          `${CHANNEL_ID.slice(0, -1)}:3`,
-          `${CHANNEL_ID.replace("seniors", "project")}:3`,
+          `${CHANNEL_ID.slice(0, -1)}:forward:3`,
+          `${CHANNEL_ID.replace("seniors", "project")}:forward:3`,
         ]) {
           // `Effect.flip` rather than `exit`: this must be a typed FAILURE, so
           // flipping yields the error as a value and a defect would propagate
@@ -947,13 +1007,19 @@ describe("the comms toolkit on the live gateway", () => {
         // integer - 0, 2, 3, 100, 4, 3 - so without the pre-check the read
         // answers with a page starting at a sequence the caller never asked
         // for, which is the silent wrong answer this bead exists to end.
+        //
+        // AND A DIRECTION ON EACH, for the reason above: two-segment values are
+        // refused at the direction boundary, so without it the sentence
+        // directly above this loop — "the digit check is the only thing left
+        // that can refuse them" — is false, and deleting the digit check leaves
+        // this test green. Measured by a QA lane, not reasoned about.
         for (const coercible of [
-          `${CHANNEL_ID}:`,
-          `${CHANNEL_ID}:0x2`,
-          `${CHANNEL_ID}: 3 `,
-          `${CHANNEL_ID}:1e2`,
-          `${CHANNEL_ID}:+4`,
-          `${CHANNEL_ID}:0b11`,
+          `${CHANNEL_ID}:forward:`,
+          `${CHANNEL_ID}:forward:0x2`,
+          `${CHANNEL_ID}:forward: 3 `,
+          `${CHANNEL_ID}:forward:1e2`,
+          `${CHANNEL_ID}:forward:+4`,
+          `${CHANNEL_ID}:forward:0b11`,
         ]) {
           // A typed failure, so `flip` rather than `exit`: a defect would
           // propagate and fail the test instead of being yielded, which is the
