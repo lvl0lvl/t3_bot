@@ -110,15 +110,6 @@ export interface MentionWakeBudgetRepositoryShape {
   readonly clear: (input: {
     readonly channelId: string;
   }) => Effect.Effect<void, ProjectionRepositoryError>;
-
-  /**
-   * Wakes for a channel inside the window. Exported for tests and for anything
-   * that wants to report a channel's headroom without spending any of it.
-   */
-  readonly countSince: (input: {
-    readonly channelId: string;
-    readonly windowStart: IsoDateTime;
-  }) => Effect.Effect<number, ProjectionRepositoryError>;
 }
 
 export class MentionWakeBudgetRepository extends Context.Service<

@@ -2320,6 +2320,191 @@ describe("MentionWakeReactor wake budget", () => {
     }
   }, 60_000);
 
+  it("prunes a quiet channel's stale rows when a different channel spends", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await seedOtherChannel(system);
+      await system.startReactor();
+
+      // #seniors gets some wakes and then goes quiet forever.
+      await agentPosts(system, "quiet", 3);
+      await system.run(
+        system.sql`UPDATE mention_wake_budget SET woken_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 hours')`,
+      );
+
+      // THE DESIGN SENTENCE THIS PINS: the prune runs ACROSS ALL CHANNELS, so a
+      // channel that has gone quiet does not keep its rows forever. Scope the
+      // prune to the writer's channel and the table grows with the number of
+      // channels that have ever been busy rather than with recent traffic —
+      // which is the claim the migration makes and which nothing measured. A
+      // review lane scoped it and reddened nothing.
+      //
+      // #juniors spending is what triggers it; #seniors' rows are the ones that
+      // must be gone.
+      await agentPosts(system, "busy", 1, { channelId: OTHER_CHANNEL_ID });
+
+      const stale = await system.run(
+        system.sql`SELECT post_id FROM mention_wake_budget WHERE channel_id = ${CHANNEL_ID}`,
+      );
+      expect(stale.length).toBe(0);
+
+      // And the spending channel's own row survives, so the assertion above is
+      // about age rather than about the prune deleting everything.
+      const fresh = await system.run(
+        system.sql`SELECT post_id FROM mention_wake_budget WHERE channel_id = ${OTHER_CHANNEL_ID}`,
+      );
+      expect(fresh.length).toBe(1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("counts a wake inside the window and not one outside it", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+
+      // Fill the budget, then move those wakes ELEVEN MINUTES into the past by
+      // the database's own clock — a fixed gap, not a fraction of the constant.
+      // That is what makes this pin `WAKE_BUDGET_WINDOW_MINUTES` rather than
+      // restate it: a test that aged rows by "the window plus a bit" would move
+      // with the constant and pass at any value.
+      //
+      // BOTH DIRECTIONS IN ONE FIXTURE PAIR. At eleven minutes the old wakes are
+      // OUTSIDE a ten-minute window, so the next post must wake; at nine they
+      // are INSIDE it, so the next post must be refused. Widen the constant to a
+      // year and the first assertion fails; shrink it toward zero and the second
+      // does. Ageing with a DELETE — which an earlier test here does — exercises
+      // the latch and bypasses the window entirely, which is why neither
+      // direction was pinned until now.
+      await agentPosts(system, "window-fill", WAKE_BUDGET_PER_CHANNEL);
+      expect((await wakesFrom(system, "seniors")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+      await system.run(
+        system.sql`UPDATE mention_wake_budget SET woken_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-11 minutes')`,
+      );
+
+      await agentPosts(system, "after-window", 1);
+      expect((await wakesFrom(system, "seniors")).length).toBe(WAKE_BUDGET_PER_CHANNEL + 1);
+
+      // NINE MINUTES: inside the window. The same twenty wakes now count, so the
+      // next post is the twenty-second and is refused.
+      await system.run(
+        system.sql`UPDATE mention_wake_budget SET woken_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-9 minutes')`,
+      );
+      await agentPosts(system, "inside-window", 1);
+      expect((await wakesFrom(system, "seniors")).length).toBe(WAKE_BUDGET_PER_CHANNEL + 1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("admits the budget'th wake and refuses the one after it", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+
+      // TWENTY AND TWENTY-ONE AS LITERALS, deliberately, and this is the one
+      // place in the file that does not use the constant.
+      //
+      // Writing `WAKE_BUDGET_PER_CHANNEL` on both sides is a TAUTOLOGY: lowering
+      // the constant moves the fixture and the expectation together, so the
+      // whole suite passed at a budget of 6 — and 6 was an accident of another
+      // test's fixture rather than anyone's decision. The number is a decision
+      // (derived where the constant is defined, from the walkthrough's rate and
+      // a runaway's), so changing it SHOULD red a test that names it and send
+      // someone back to that derivation.
+      //
+      // The boundary itself, both sides of it: the twentieth wakes, the
+      // twenty-first does not.
+      expect(WAKE_BUDGET_PER_CHANNEL).toBe(20);
+      await agentPosts(system, "exact", 20);
+      expect((await wakesFrom(system, "seniors")).length).toBe(20);
+
+      await agentPosts(system, "over", 1);
+      expect((await wakesFrom(system, "seniors")).length).toBe(20);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("spends once for a post that wakes several threads", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+
+      // ONE POST, TWO LIVE THREADS WOKEN, ONE ROW SPENT. The choice to count per
+      // POST rather than per thread woken is argued at length where the constant
+      // is defined — and nothing distinguished it, because every other post in
+      // this file mentions exactly one handle. Spending per thread passed the
+      // whole suite, which means those paragraphs described a property the code
+      // did not have to have.
+      //
+      // The author is a member who mentions the other two, so both are woken and
+      // neither is the author.
+      await post(system, {
+        id: "fanout",
+        mentions: [MENTION, BYSTANDER_MENTION],
+        issuer: { memberKind: "human", memberId: "human-walt" },
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      expect((await wakeMessages(system, WOKEN)).length).toBe(1);
+      expect((await wakeMessages(system, BYSTANDER)).length).toBe(1);
+
+      // The charge, read directly: one row, not two.
+      const rows = await system.run(
+        system.sql`SELECT post_id FROM mention_wake_budget WHERE channel_id = ${CHANNEL_ID}`,
+      );
+      expect(rows.length).toBe(1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("keeps the time it was first exhausted, however many wakes it refuses after", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await agentPosts(system, "latch", WAKE_BUDGET_PER_CHANNEL + 1);
+
+      const first = await system.run(
+        system.sql`SELECT exhausted_at FROM mention_wake_suppressed WHERE channel_id = ${CHANNEL_ID}`,
+      );
+      const firstAt = (first[0] as { exhausted_at: string }).exhausted_at;
+
+      // MORE REFUSALS MUST NOT MOVE IT. The ERROR line reports how long a
+      // channel has been stopped, and a field that slid with every refusal could
+      // never answer that — which is the reason the `ON CONFLICT` clause updates
+      // the count and not the timestamp. Making it slide passed the whole suite.
+      await agentPosts(system, "latch-more", 3);
+      const later = await system.run(
+        system.sql`SELECT exhausted_at, suppressed_count FROM mention_wake_suppressed WHERE channel_id = ${CHANNEL_ID}`,
+      );
+      expect((later[0] as { exhausted_at: string }).exhausted_at).toBe(firstAt);
+      // And the count DID move, so the assertion above is about the timestamp
+      // rather than about nothing happening.
+      expect((later[0] as { suppressed_count: number }).suppressed_count).toBeGreaterThan(1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
   it("does not re-charge a replayed post whose wake has aged out of the window", async () => {
     const { directory, databasePath } = await makeDatabasePath();
     const system = await makeSystem(databasePath);

@@ -425,15 +425,26 @@ const make = Effect.gen(function* () {
     at: string,
   ) {
     const suppression = yield* budget.suppress({ channelId: event.payload.channelId, at });
-    yield* Effect.logError("mention wake budget exhausted; channel stopped until a human posts", {
-      channelId: event.payload.channelId,
-      channelName,
-      postId: event.payload.postId,
-      budget: WAKE_BUDGET_PER_CHANNEL,
-      windowMinutes: WAKE_BUDGET_WINDOW_MINUTES,
-      exhaustedAt: suppression.exhaustedAt,
-      suppressedCount: suppression.suppressedCount,
-    });
+    // THE LINE NAMES THE RECOVERY, not just the condition. A channel with no
+    // human member cannot be un-latched by a human posting — a non-member's post
+    // is refused — so "wait for a human" is unactionable advice in exactly the
+    // channel shape most likely to run away. The way out exists and is two
+    // steps, and a responder should not have to derive them from the schema.
+    yield* Effect.logError(
+      "mention wake budget exhausted; no further wakes in this channel. " +
+        "A HUMAN member's post clears it; if none is a member, add yourself " +
+        "(channel.member.add) and then post.",
+      {
+        channelId: event.payload.channelId,
+        channelName,
+        postId: event.payload.postId,
+        budget: WAKE_BUDGET_PER_CHANNEL,
+        windowMinutes: WAKE_BUDGET_WINDOW_MINUTES,
+        exhaustedAt: suppression.exhaustedAt,
+        suppressedCount: suppression.suppressedCount,
+        authorHandle: event.payload.authorHandle,
+      },
+    );
   });
 
   const wake = Effect.fn("MentionWakeReactor.wake")(function* (event: PostCreated) {
@@ -675,9 +686,13 @@ const make = Effect.gen(function* () {
       // The bound is the BACKLOG, not a clock or a retry count. If nothing else
       // arrives, holding costs nothing and there is nothing to give up on. Once
       // this many events have queued behind the failure the post is declared
-      // undeliverable, logged at error - the only place in this file that logs
-      // at error, because it is the only place a mention is knowingly dropped -
-      // and the cursor moves on.
+      // undeliverable, logged at error, and the cursor moves on.
+      //
+      // NO LONGER THE ONLY PLACE A MENTION IS KNOWINGLY DROPPED, which this
+      // comment claimed until the wake budget landed. `refuse` is the second,
+      // and in the case both exist for — a runaway — it is by far the dominant
+      // one: this branch fires once per undeliverable post, that one fires for
+      // every mention in an exhausted channel.
       if (heldAt !== null) {
         if (event.sequence - heldAt < HELD_BACKLOG_LIMIT) {
           return;

@@ -128,12 +128,6 @@ const makeMentionWakeBudgetRepository = Effect.gen(function* () {
       return row.count;
     }).pipe(Effect.mapError(toPersistenceSqlError("MentionWakeBudgetRepository.spend:query")));
 
-  const countSince: MentionWakeBudgetRepositoryShape["countSince"] = (input) =>
-    countWakeRows(input).pipe(
-      Effect.map((row) => row.count),
-      Effect.mapError(toPersistenceSqlError("MentionWakeBudgetRepository.countSince:query")),
-    );
-
   const getSuppression: MentionWakeBudgetRepositoryShape["getSuppression"] = (input) =>
     getSuppressionRow(input).pipe(
       Effect.mapError(toPersistenceSqlError("MentionWakeBudgetRepository.getSuppression:query")),
@@ -152,7 +146,6 @@ const makeMentionWakeBudgetRepository = Effect.gen(function* () {
 
   return {
     spend,
-    countSince,
     getSuppression,
     suppress,
     clear,
