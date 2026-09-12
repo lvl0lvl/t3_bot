@@ -578,6 +578,12 @@ describe("the comms toolkit on the live gateway", () => {
     () =>
       Effect.gen(function* () {
         yield* seed();
+        // POSTS FIRST, so the read below has a history to fail to return. The
+        // earlier version archived an EMPTY channel, which made "still reads
+        // it" unable to tell "pages the history" from "there was no history".
+        for (const body of ["before the archive", "also before"]) {
+          yield* call("comms_post", { channel: "seniors", body }, BOSS1);
+        }
         const engine = yield* OrchestrationEngineService;
         yield* engine.dispatch(
           {
@@ -602,6 +608,12 @@ describe("the comms toolkit on the live gateway", () => {
 
         const read = yield* call("comms_read_channel", { channel: "seniors" }, BOSS3);
         expect(read.channel).toBe("seniors");
+        // THE HISTORY IS STILL THERE. Archiving hides nothing that was already
+        // said: a member keeps reading what they could read before, and only
+        // writing stops. A UI listing an archived channel opens onto its
+        // history and disables the composer, rather than onto an error.
+        expect(read.posts.map((post) => post.body)).toEqual(["before the archive", "also before"]);
+        expect(read.members).toEqual(["boss1", "boss3"]);
         // AND THE READ SAYS SO, which is the only way an agent learns without
         // burning a post to find out. Archived became a first-class channel
         // state in this change and had no surface showing it: the refusal
