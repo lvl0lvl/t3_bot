@@ -127,6 +127,64 @@ function channelCommandTypes(): ReadonlyArray<string> {
 }
 
 it.layer(NodeServices.layer)("command issuer authorization", (it) => {
+  /**
+   * An OFF-UNION issuer kind, which is the only input that tells an allow-list
+   * from a deny-list.
+   *
+   * The schema-literal test below asserts the union is still the three kinds. It
+   * does NOT exercise a fourth, so both guards were unpinned: rewriting either as
+   * `!== "thread"` or `=== "system"` left the entire suite green. The cast is the
+   * point — it simulates the contract edit that adds a kind, which is the change
+   * whose safety these guards exist to provide.
+   */
+  const RELAY = { memberKind: "relay", memberId: "relay-1" } as unknown as CommandIssuer;
+
+  it.effect("refuses an issuer kind that is not in the union, on administration", () =>
+    Effect.gen(function* () {
+      const error = yield* decideOrchestrationCommand({
+        command: channelProbe("channel.member.add") as never,
+        readModel: readModel(),
+        issuer: RELAY,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("cannot administer a channel");
+        // Names the kind, so an operator reading the log knows what arrived.
+        expect(error.detail).toContain("relay");
+      }
+    }),
+  );
+
+  it.effect("refuses an off-union issuer authoring EVEN WHEN it is seated", () =>
+    Effect.gen(function* () {
+      // Seating it is what makes this test discriminating. Unseated, the author
+      // check refuses a relay issuer for a different reason — not a member — so
+      // the test would pass under the deny-list mutation too and prove nothing.
+      // Seated, a deny-list ACCEPTS the post; only an allow-list refuses it.
+      const base = readModel();
+      const seated = {
+        ...base,
+        channels: base.channels.map((channel) => ({
+          ...channel,
+          members: [
+            ...channel.members,
+            { handle: "relay", memberKind: "relay", memberId: "relay-1" },
+          ],
+        })),
+      } as unknown as typeof base;
+      const error = yield* decideOrchestrationCommand({
+        command: channelProbe("channel.post.create") as never,
+        readModel: seated,
+        issuer: RELAY,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("cannot author a channel post");
+        expect(error.detail).toContain("relay");
+      }
+    }),
+  );
+
   it("pins the issuer kinds, so adding one cannot silently gain access", () => {
     // Both guards are allow-lists naming "human", "thread" and "system". A kind
     // added to CommandIssuer is refused by default rather than granted, but only
