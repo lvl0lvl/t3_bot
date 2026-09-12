@@ -380,6 +380,18 @@ const post = async (
  * What the woken thread actually received, read through the same projection the
  * UI reads. "Was it woken" is a question about the thread's messages, not about
  * whether a command was dispatched.
+ *
+ * IT ANSWERS [] FOR A THREAD THE DETAIL QUERY WILL NOT RETURN, and that is not
+ * the same answer as "nobody was woken". A deleted thread has no detail row and
+ * an archived one does not come back either, so for those two states this
+ * helper reports an ABSENCE OF VISIBILITY and reads exactly like an absence of
+ * a wake. Both of the tests that needed to tell those apart got it wrong first
+ * and now assert on `thread.turn-start-requested` in the event log, which is
+ * kept either way.
+ *
+ * Every other test here uses threads in neither state, where the two questions
+ * coincide - but a NEGATIVE assertion through this helper is only as strong as
+ * the fixture's thread being visible.
  */
 const wakeMessages = async (system: System, threadId: ThreadId = WOKEN) => {
   const detail = await system.run(system.threads.getThreadDetailById(threadId));
@@ -1372,6 +1384,56 @@ describe("MentionWakeReactor", () => {
 
       expect(turn.runtimeMode).toBe(WOKEN_RUNTIME_MODE);
       expect(turn.interactionMode).toBe(WOKEN_INTERACTION_MODE);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("wakes an ARCHIVED thread, which the tombstone check must not catch", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      // The admit side of the deleted-thread guard, and the reason it needs
+      // one: the guard is written as "skip a thread that is gone", and archived
+      // reads like gone. It is not - archiving is reversible and the mention is
+      // real, where a tombstone is neither. Without this, a reader tightening
+      // the check to cover archived threads too breaks nothing and finds out
+      // from an operator whose unarchived thread never answered.
+      //
+      // The general form, from boss1 on t3_bot-2d2: a guard proven only with
+      // the values it EXCLUDES is a guard that would pass if it excluded
+      // everything.
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("cmd-archive-woken"),
+          threadId: WOKEN,
+        }),
+      );
+      await system.startReactor();
+      await post(system, { id: "post-archived", mentions: [MENTION] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // On the TURN REQUEST, for the same reason as the deleted-thread test:
+      // an archived thread's detail row may not come back from the query the
+      // UI reads, and an assertion on its messages would then be satisfied by
+      // absence rather than by the thread not being woken.
+      const requested = await system.run(
+        system.events.readFromSequence(0, Number.MAX_SAFE_INTEGER).pipe(
+          Stream.filter((event) => event.type === "thread.turn-start-requested"),
+          Stream.runCollect,
+          Effect.orDie,
+        ),
+      );
+      expect(
+        requested.map((event) =>
+          event.type === "thread.turn-start-requested" ? event.payload.threadId : "",
+        ),
+      ).toEqual([WOKEN]);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
