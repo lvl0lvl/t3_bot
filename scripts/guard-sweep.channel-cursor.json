@@ -1,0 +1,167 @@
+{
+  "testCommand": [
+    "pnpm",
+    "exec",
+    "vp",
+    "test",
+    "run",
+    "apps/server/src/mcp/toolkits/comms",
+    "apps/server/src/orchestration/channelCursor.test.ts",
+    "apps/server/src/orchestration/channelPosts.test.ts"
+  ],
+  "setupCommand": ["pnpm", "install", "--frozen-lockfile"],
+  "mutations": [
+    {
+      "id": "channel-half-admits-everything",
+      "guard": "decodeChannelCursor/channel",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "  if (issuedBy !== channelId) {",
+      "replace": "  if (false as boolean) {"
+    },
+    {
+      "id": "channel-half-compares-by-prefix",
+      "guard": "decodeChannelCursor/channel",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "  if (issuedBy !== channelId) {",
+      "replace": "  if (!channelId.startsWith(issuedBy)) {"
+    },
+    {
+      "id": "channel-half-refuses-its-own",
+      "guard": "decodeChannelCursor/channel",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "  if (issuedBy !== channelId) {",
+      "replace": "  if (issuedBy !== channelId.slice(1)) {"
+    },
+    {
+      "id": "direction-half-admits-everything",
+      "guard": "decodeChannelCursor/direction",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "  if (issuedFor !== direction) {",
+      "replace": "  if (false as boolean) {"
+    },
+    {
+      "id": "direction-half-refuses-its-own",
+      "guard": "decodeChannelCursor/direction",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "  if (issuedFor !== direction) {",
+      "replace": "  if (issuedFor === direction) {"
+    },
+    {
+      "id": "second-colon-not-required",
+      "guard": "decodeChannelCursor/segments",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "  if (directionBoundary === -1) {",
+      "replace": "  if (false as boolean) {"
+    },
+    {
+      "id": "second-colon-forbidden",
+      "guard": "decodeChannelCursor/segments",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "  if (directionBoundary === -1) {",
+      "replace": "  if (directionBoundary !== -1) {"
+    },
+    {
+      "id": "first-colon-not-required",
+      "guard": "decodeChannelCursor/segments",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "  if (boundary === -1) {",
+      "replace": "  if (false as boolean) {"
+    },
+    {
+      "id": "digits-admit-what-Number-coerces",
+      "guard": "decodeChannelCursor/digits",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "  if (!/^[0-9]+$/.test(digits)) {",
+      "replace": "  if (false as boolean) {"
+    },
+    {
+      "id": "digits-refuse-a-leading-zero",
+      "guard": "decodeChannelCursor/digits",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "  if (!/^[0-9]+$/.test(digits)) {",
+      "replace": "  if (!/^[1-9][0-9]*$/.test(digits)) {"
+    },
+    {
+      "id": "safe-integer-check-removed",
+      "guard": "decodeChannelCursor/range",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "  if (!Number.isSafeInteger(sequence) || sequence < 0) {",
+      "replace": "  if (false as boolean) {"
+    },
+    {
+      "id": "range-refuses-sequence-zero",
+      "guard": "decodeChannelCursor/range",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "  if (!Number.isSafeInteger(sequence) || sequence < 0) {",
+      "replace": "  if (!Number.isSafeInteger(sequence) || sequence <= 0) {"
+    },
+    {
+      "id": "attribution-direction-blames-the-channel",
+      "guard": "ChannelCursorRefusal/attribution",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "    return Result.fail(\"direction\");",
+      "replace": "    return Result.fail(\"channel\");"
+    },
+    {
+      "id": "attribution-channel-blames-the-direction",
+      "guard": "ChannelCursorRefusal/attribution",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/channelCursor.ts",
+      "find": "    return Result.fail(\"channel\");",
+      "replace": "    return Result.fail(\"direction\");"
+    },
+    {
+      "id": "attribution-sentence-reverts-to-the-shipped-lie",
+      "guard": "ChannelCursorRefusal/attribution",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/tools.ts",
+      "find": "    direction: (channel) =>\n      `That cursor came from reading '${channel}' in the other direction, so it points the other way.`,",
+      "replace": "    direction: (channel) => `That cursor was not issued by '${channel}'.`,"
+    },
+    {
+      "id": "tool-schema-admits-any-string",
+      "guard": "CURSOR_PATTERN",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/tools.ts",
+      "find": "export const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:(?:(?:forward|backward):)?[0-9]{1,15}$/;",
+      "replace": "export const CURSOR_PATTERN = /^[\\s\\S]*$/;"
+    },
+    {
+      "id": "tool-schema-admits-any-direction-word",
+      "guard": "CURSOR_PATTERN",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/tools.ts",
+      "find": "export const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:(?:(?:forward|backward):)?[0-9]{1,15}$/;",
+      "replace": "export const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:(?:[a-z]+:)?[0-9]{1,15}$/;"
+    },
+    {
+      "id": "tool-schema-unbounds-the-sequence",
+      "guard": "CURSOR_PATTERN",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/tools.ts",
+      "find": "export const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:(?:(?:forward|backward):)?[0-9]{1,15}$/;",
+      "replace": "export const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:(?:(?:forward|backward):)?[0-9]+$/;"
+    },
+    {
+      "id": "tool-schema-closes-the-legacy-window",
+      "guard": "CURSOR_PATTERN",
+      "axis": "wider",
+      "file": "apps/server/src/mcp/toolkits/comms/tools.ts",
+      "find": "export const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:(?:(?:forward|backward):)?[0-9]{1,15}$/;",
+      "replace": "export const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:(?:forward|backward):[0-9]{1,15}$/;"
+    }
+  ]
+}
