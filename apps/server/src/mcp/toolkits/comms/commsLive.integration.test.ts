@@ -642,6 +642,61 @@ describe("the comms toolkit on the live gateway", () => {
   );
 
   it.effect(
+    "tells the AGENT its cursor is foreign, and does not call it retryable",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+
+        // SCHEMA-VALID AND STILL FOREIGN. That combination is the whole
+        // fixture: every malformed cursor is refused by the tool schema one
+        // layer up, so it never reaches the handler branch under test - which
+        // is exactly how this half stayed untested while four mutations of it
+        // passed the suite.
+        const foreign = "channel-project-live:3";
+        const error = yield* call(
+          "comms_read_channel",
+          { channel: "seniors", cursor: foreign },
+          BOSS3,
+        ).pipe(Effect.flip);
+
+        // THE TAG IT IS, and the tag it MUST NOT BE. Folding this into
+        // `CommsReadFailedError` survived every test, and that error is the
+        // RETRYABLE one - so the agent would be told to try a cursor that can
+        // never work, which is the looping instruction this whole area exists
+        // to stop. Asserting only the tag it is would not have caught that.
+        expect((error as { _tag: string })._tag).toBe("CommsCursorUnusableError");
+        expect((error as { _tag: string })._tag).not.toBe("CommsReadFailedError");
+
+        // NAMES THE CHANNEL THE AGENT ASKED FOR. Passing the wrong channel here
+        // survived too, and an agent in several channels cannot act on a
+        // refusal that names the wrong one.
+        expect((error as unknown as { channel: string }).channel).toBe("seniors");
+        const message = (error as { message: string }).message;
+        expect(message).toContain("seniors");
+        // AND IT SAYS WHAT TO DO. The message was replaceable with anything;
+        // what an agent needs from it is the recovery, and the recovery has to
+        // match the direction this tool actually reads.
+        expect(message).toContain("without a cursor");
+        // NOT the internal channel id, which the agent was never given.
+        expect(message).not.toContain(CHANNEL_ID);
+
+        // And a cursor this channel DID issue still pages, so the assertions
+        // above are about provenance rather than about the tool refusing every
+        // cursor.
+        yield* call("comms_post", { channel: "seniors", body: "one" }, BOSS1);
+        yield* call("comms_post", { channel: "seniors", body: "two" }, BOSS1);
+        const first = yield* call("comms_read_channel", { channel: "seniors", limit: 1 }, BOSS3);
+        const second = yield* call(
+          "comms_read_channel",
+          { channel: "seniors", limit: 1, cursor: first.nextCursor! },
+          BOSS3,
+        );
+        expect(second.posts.map((post) => post.body)).toEqual(["two"]);
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
     "refuses a cursor from another channel instead of reporting it as caught up",
     () =>
       Effect.gen(function* () {
