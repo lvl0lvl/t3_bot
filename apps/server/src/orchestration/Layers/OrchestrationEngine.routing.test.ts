@@ -132,8 +132,17 @@ const declaredCommandTypes = (): ReadonlyArray<string> => {
   const types = [...new Set(members.map((member) => member.fields.type.literal))];
   // Every leaf must have yielded a readable literal. A member the accessor
   // cannot read would otherwise be skipped in silence, and a command that is
-  // never enumerated is never routing-checked.
-  expect(members.every((member) => typeof member.fields.type.literal === "string")).toBe(true);
+  // never enumerated is never routing-checked. Reported by position and field
+  // names rather than as a bare boolean: an unreadable member has no type
+  // literal to name it by, so those are the only handles a maintainer gets.
+  const unreadable = members
+    .map((member, index) => ({ index, member }))
+    .filter(({ member }) => typeof member.fields.type.literal !== "string")
+    .map(({ index, member }) => `#${index} {${Object.keys(member.fields).sort().join(",")}}`);
+  expect(
+    unreadable,
+    "these union members did not yield a type literal, so their commands are never routing-checked",
+  ).toEqual([]);
   return types.sort();
 };
 
