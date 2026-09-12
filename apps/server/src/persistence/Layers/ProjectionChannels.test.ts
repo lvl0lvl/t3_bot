@@ -33,6 +33,39 @@ function channel(channelId: ChannelId, name: string, handles: ReadonlyArray<stri
   };
 }
 
+/**
+ * A channel whose members carry an EXPLICIT kind and id.
+ *
+ * `channel()` above hardcodes `memberKind: "thread"` and derives the id from
+ * the handle, so every member it builds differs from every other in BOTH
+ * fields. That is the fixture shape `t3_bot-46h` names: a comparison that
+ * ignored `memberKind` passes against it. The membership filter in
+ * `listChannelsForMember` is a two-field WHERE, so separating the fields needs
+ * a builder that can say so.
+ */
+function channelWithMembers(
+  channelId: ChannelId,
+  name: string,
+  members: ReadonlyArray<{
+    readonly handle: string;
+    readonly memberKind: "thread" | "human";
+    readonly memberId: string;
+  }>,
+  fields: { readonly createdAt?: string } = {},
+) {
+  return {
+    channelId,
+    name,
+    members: members.map((member) => ({
+      ...member,
+      handle: ChannelMemberHandle.make(member.handle),
+    })),
+    archivedAt: null,
+    createdAt: fields.createdAt ?? NOW,
+    updatedAt: fields.createdAt ?? NOW,
+  };
+}
+
 function post(postId: string, channelId: ChannelId, sequence: number, mentions: string[] = []) {
   return {
     postId: ChannelPostId.make(postId),
@@ -251,6 +284,201 @@ layer("ProjectionChannelRepository", (it) => {
         afterSequence: undefined,
       });
       assert.isTrue(still.length > 0);
+    }),
+  );
+  it.effect("lists only the channels this member belongs to", () =>
+    Effect.gen(function* () {
+      // THE MEMBERSHIP FILTER, against a real database. Both shell-snapshot
+      // door tests stub this method, so the WHERE clause that decides what a
+      // client is sent is invisible to them — and dropping the membership JOIN
+      // outright, which returns EVERY channel on the server to EVERY client,
+      // survived the whole suite until this test existed.
+      const repo = yield* ProjectionChannelRepository;
+      const mineId = ChannelId.make("filter-mine");
+      const theirsId = ChannelId.make("filter-theirs");
+      yield* repo.upsertChannel(
+        channelWithMembers(mineId, "filter-mine", [
+          { handle: "walt", memberKind: "human", memberId: "filter-human-walt" },
+        ]),
+      );
+      yield* repo.upsertChannel(
+        channelWithMembers(theirsId, "filter-theirs", [
+          { handle: "pm", memberKind: "thread", memberId: "filter-thread-pm" },
+        ]),
+      );
+
+      const rows = yield* repo.listChannelsForMember({
+        memberKind: "human",
+        memberId: "filter-human-walt",
+      });
+
+      assert.deepStrictEqual(
+        rows.map((row) => row.channelId),
+        [mineId],
+      );
+    }),
+  );
+
+  it.effect("a member whose id matches but whose KIND does not gets nothing", () =>
+    Effect.gen(function* () {
+      // The input that separates the two halves of the WHERE clause, and the
+      // only one that can: the id is identical and the kind differs. Dropping
+      // `m.member_kind` from the filter passes every other test in this file,
+      // because every other fixture's members differ in both fields.
+      //
+      // It is the same impersonation this repo refuses at the decider
+      // (`requireChannelMemberShape`), arriving on a READ path that has no
+      // decider to refuse it — so a thread aggregate named `human-walt` would
+      // read the operator's channels.
+      const repo = yield* ProjectionChannelRepository;
+      yield* repo.upsertChannel(
+        channelWithMembers(ChannelId.make("kind-only"), "kind-only", [
+          { handle: "walt", memberKind: "human", memberId: "kind-collide" },
+        ]),
+      );
+
+      const asThread = yield* repo.listChannelsForMember({
+        memberKind: "thread",
+        memberId: "kind-collide",
+      });
+      const asHuman = yield* repo.listChannelsForMember({
+        memberKind: "human",
+        memberId: "kind-collide",
+      });
+
+      // Both directions. The refusal alone would pass for a filter that matched
+      // nobody at all, which is the mistake in the other direction.
+      assert.deepStrictEqual(asThread, []);
+      assert.strictEqual(asHuman.length, 1);
+    }),
+  );
+
+  it.effect("a member of nothing gets an empty list rather than everything", () =>
+    Effect.gen(function* () {
+      // The admit side, stated separately: a member id that exists nowhere must
+      // see nothing, and the assertion is that it sees nothing RATHER THAN
+      // every channel — which is what dropping the JOIN produces.
+      const repo = yield* ProjectionChannelRepository;
+      yield* repo.upsertChannel(
+        channelWithMembers(ChannelId.make("stranger-chan"), "stranger-chan", [
+          { handle: "walt", memberKind: "human", memberId: "stranger-member" },
+        ]),
+      );
+
+      const stranger = yield* repo.listChannelsForMember({
+        memberKind: "human",
+        memberId: "stranger-nobody",
+      });
+
+      assert.deepStrictEqual(stranger, []);
+    }),
+  );
+
+  it.effect("orders by the latest POST, not by when the channel was created", () =>
+    Effect.gen(function* () {
+      // The two orderings are OPPOSITE in this fixture, which is the only kind
+      // that can tell them apart: "order-quiet" was created LATER and its last
+      // post is older, "order-busy" was created first and has a post from
+      // today. Ordering by `c.created_at` puts quiet first; the sidebar needs
+      // busy first.
+      //
+      // The client atom pins this rule too, but against its own fixture — the
+      // SQL `ORDER BY` is a second implementation of it and had nothing holding
+      // it.
+      const repo = yield* ProjectionChannelRepository;
+      const busy = ChannelId.make("order-busy");
+      const quiet = ChannelId.make("order-quiet");
+      const member = { memberKind: "human" as const, memberId: "order-member" };
+      yield* repo.upsertChannel(
+        channelWithMembers(busy, "order-busy", [{ handle: "walt", ...member }], {
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      yield* repo.upsertChannel(
+        channelWithMembers(quiet, "order-quiet", [{ handle: "walt", ...member }], {
+          createdAt: "2026-01-05T00:00:00.000Z",
+        }),
+      );
+      yield* repo.insertPost({
+        ...post("order-post-busy", busy, 1),
+        createdAt: "2026-01-09T00:00:00.000Z",
+      });
+      yield* repo.insertPost({
+        ...post("order-post-quiet", quiet, 2),
+        createdAt: "2026-01-06T00:00:00.000Z",
+      });
+
+      const rows = yield* repo.listChannelsForMember(member);
+
+      assert.deepStrictEqual(
+        rows.map((row) => row.name),
+        ["order-busy", "order-quiet"],
+      );
+    }),
+  );
+
+  it.effect("carries the latest post's time, and null for a channel with none", () =>
+    Effect.gen(function* () {
+      // `latestPostAt` is what the deleted `channel-post-appended` shell event
+      // was traded for: a post reaches the client because this value moves. A
+      // query returning null here would make the sidebar say "nothing here yet"
+      // over a channel that had just been posted in, and the argument for
+      // deleting that event would be false.
+      //
+      // The MAX matters, not merely non-null: two posts, and the LATER one is
+      // what the row must carry.
+      const repo = yield* ProjectionChannelRepository;
+      const posted = ChannelId.make("activity-posted");
+      const empty = ChannelId.make("activity-empty");
+      const member = { memberKind: "human" as const, memberId: "activity-member" };
+      yield* repo.upsertChannel(
+        channelWithMembers(posted, "activity-posted", [{ handle: "walt", ...member }]),
+      );
+      yield* repo.upsertChannel(
+        channelWithMembers(empty, "activity-empty", [{ handle: "walt", ...member }]),
+      );
+      yield* repo.insertPost({
+        ...post("activity-post-early", posted, 1),
+        createdAt: "2026-01-02T00:00:00.000Z",
+      });
+      yield* repo.insertPost({
+        ...post("activity-post-late", posted, 2),
+        createdAt: "2026-01-03T00:00:00.000Z",
+      });
+
+      const rows = yield* repo.listChannelsForMember(member);
+
+      assert.strictEqual(
+        rows.find((row) => row.channelId === posted)?.latestPostAt,
+        "2026-01-03T00:00:00.000Z",
+      );
+      assert.strictEqual(rows.find((row) => row.channelId === empty)?.latestPostAt, null);
+    }),
+  );
+
+  it.effect("does not multiply a channel by its member count", () =>
+    Effect.gen(function* () {
+      // The `GROUP BY` over a membership JOIN. Without it a channel with three
+      // members returns three rows and the sidebar renders it three times. The
+      // existing fixtures give channels one or two members; three makes the
+      // duplication unambiguous rather than a possible off-by-one.
+      const repo = yield* ProjectionChannelRepository;
+      const crowded = ChannelId.make("group-crowded");
+      const member = { memberKind: "human" as const, memberId: "group-member" };
+      yield* repo.upsertChannel(
+        channelWithMembers(crowded, "group-crowded", [
+          { handle: "walt", ...member },
+          { handle: "pm", memberKind: "thread", memberId: "group-thread-pm" },
+          { handle: "boss1", memberKind: "thread", memberId: "group-thread-boss1" },
+        ]),
+      );
+      yield* repo.insertPost(post("group-post-a", crowded, 1));
+      yield* repo.insertPost(post("group-post-b", crowded, 2));
+
+      const rows = yield* repo.listChannelsForMember(member);
+
+      assert.strictEqual(rows.length, 1);
+      assert.strictEqual(rows[0]?.members.length, 3);
     }),
   );
 });
