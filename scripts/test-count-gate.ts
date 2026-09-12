@@ -258,7 +258,11 @@ function runWorkspace(repoRoot: string, workspace: Workspace, reportDir: string)
     );
   }
   const parsed = JSON.parse(NodeFS.readFileSync(outputFile, "utf8")) as RunnerReport;
-  return toSuite(parsed, repoRoot, workspace.name);
+  // THE WORKSPACE *AND* THE TREE. Naming only the workspace cost a
+  // reproduction: the same workspace passes in one revision and fails to load
+  // in the other, and "failed to load in @t3tools/desktop" does not say which
+  // side to go and look at.
+  return toSuite(parsed, repoRoot, `${workspace.name} in ${repoRoot}`);
 }
 
 /**
@@ -272,14 +276,28 @@ function runWorkspace(repoRoot: string, workspace: Workspace, reportDir: string)
  * can be added or removed by the very PR being measured; this describes HEAD.
  */
 export function describeScope(repoRoot: string) {
-  const selected = listWorkspaces(repoRoot).filter((workspace) =>
-    selectsWorkspace(TEST_TARGET, workspace, repoRoot),
+  return splitScope(
+    listWorkspaces(repoRoot).filter((workspace) =>
+      selectsWorkspace(TEST_TARGET, workspace, repoRoot),
+    ),
   );
-  return {
-    measured: selected.filter((w) => w.testScript !== undefined).map((w) => w.name),
-    skipped: selected.filter((w) => w.testScript === undefined).map((w) => w.name),
-  };
 }
+
+/**
+ * Which of these will be measured, and which skipped for having no `test`.
+ *
+ * PURE, because the version that read the repo could not be told apart from one
+ * that called every workspace measured: a test asserting the split was
+ * "consistent" passed against `measured: all, skipped: []`, since with nothing
+ * skipped there is nothing to contradict. Consistency was never the property.
+ * The property is that a workspace WITHOUT a `test` script lands on the skipped
+ * side, and saying so needs a workspace without one — which a fixture has and
+ * this repo might not, a year from now.
+ */
+export const splitScope = (workspaces: ReadonlyArray<Workspace>) => ({
+  measured: workspaces.filter((w) => w.testScript !== undefined).map((w) => w.name),
+  skipped: workspaces.filter((w) => w.testScript === undefined).map((w) => w.name),
+});
 
 /**
  * Every selected workspace, merged.
