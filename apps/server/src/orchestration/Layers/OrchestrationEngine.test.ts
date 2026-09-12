@@ -2271,7 +2271,12 @@ describe("OrchestrationEngine", () => {
         "boss1",
         "boss3",
         "pm",
+        "walt",
       ]);
+      // The operator is a HUMAN member of #seniors, not a fourth thread. A
+      // thread member is something a mention can wake, and waking the operator
+      // is not a thing this system can do.
+      expect(seniors?.members.find((member) => member.handle === "walt")?.memberKind).toBe("human");
       const projectChannel = seeded.channels.find((channel) => channel.name === "project");
       expect(projectChannel?.members.map((member) => member.handle).sort()).toEqual(["pm", "walt"]);
       // The human is a human: a human member carrying a thread's id is the
