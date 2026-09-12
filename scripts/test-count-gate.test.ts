@@ -109,6 +109,25 @@ describe("workspace enumeration", () => {
     expect(scope.skipped).toEqual(["@t3tools/marketing"]);
   });
 
+  it("puts a workspace declared unmeasurable in a cold tree in its OWN bucket", () => {
+    // A THIRD BUCKET, and it is not the same as having no tests: this one HAS a
+    // test script and the gate still cannot run it against a cold base. It must
+    // not land in `measured`, because the scope line would then claim a
+    // workspace nobody measured.
+    //
+    // BY FIXTURE, not by arithmetic. A mutant that reported it as measured was
+    // first caught only by a count identity over the real repo — sum of the
+    // three buckets equals the workspace list — which reds for the wrong
+    // reason and stops reding the day the identity is restored some other way.
+    const scope = splitScope([
+      workspace("t3", "apps/server", "vp test run"),
+      workspace("@t3tools/desktop", "apps/desktop", "vp test run"),
+    ]);
+    expect(scope.measured).toEqual(["t3"]);
+    expect(scope.unmeasurable).toEqual(["@t3tools/desktop"]);
+    expect(scope.skipped).toEqual([]);
+  });
+
   it("describes the real repo's scope as a split of its real workspaces", () => {
     // The wiring, once: `describeScope` really does run the enumeration through
     // the split rather than computing something of its own. THREE buckets — a
