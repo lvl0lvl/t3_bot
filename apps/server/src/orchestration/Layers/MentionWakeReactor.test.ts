@@ -67,6 +67,9 @@ import { MentionWakeBudgetRepositoryLive } from "../../persistence/Layers/Mentio
 import {
   COLLIDING_CHANNEL_ID,
   COLLIDING_CHANNEL_NAME,
+  COLLIDING_HUMAN_ISSUER,
+  COLLIDING_THREAD_HANDLE,
+  COLLIDING_THREAD_ID,
   COLLIDING_THREAD_ISSUER,
   seedCollidingRoster,
 } from "../testing/collidingRoster.ts";
@@ -977,6 +980,66 @@ describe("MentionWakeReactor", () => {
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
       expect(await noWakes(system)).toHaveLength(0);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("wakes a thread mentioned by the HUMAN who shares its id", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      // THE COLLIDING ROSTER, through the aggregate rather than a fake row:
+      // one id, a human under it and a thread under it, seated in the only
+      // order the shape guard admits (`collidingRoster.ts`).
+      await system.run(
+        seedCollidingRoster({
+          engine: system.engine,
+          projectId: PROJECT_ID,
+          issuer: WALT,
+          now: NOW,
+        }),
+      );
+      await system.startReactor();
+
+      // THE HUMAN POSTS, MENTIONING THE TWIN. The author exclusion reads
+      // `!(authorRef.memberKind === "thread" && authorRef.memberId ===
+      // member.memberId)` — an agent is not woken by its own post. Drop the
+      // kind clause and it reads "not anyone with the author's id", which on
+      // this roster means the human can never wake the thread that shares
+      // their id. A sweep found that clause deletable with every test green:
+      // no fixture had a human author whose id matched a mentioned thread.
+      await post(system, {
+        id: "post-from-the-human-twin",
+        mentions: [COLLIDING_THREAD_HANDLE],
+        channelId: COLLIDING_CHANNEL_ID,
+        issuer: COLLIDING_HUMAN_ISSUER,
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // THE TWIN IS WOKEN. The author is a human; the thread of the same id is
+      // somebody else, and it was mentioned.
+      const woken = await wakeMessages(system, COLLIDING_THREAD_ID);
+      expect(woken).toHaveLength(1);
+      expect(woken[0]).toContain('post "post-from-the-human-twin"');
+
+      // AND THE OTHER DIRECTION, or this only proves the exclusion is gone: the
+      // twin mentioning ITSELF is not woken, because now the author IS the
+      // member — same id, same kind.
+      await post(system, {
+        id: "post-from-the-thread-twin",
+        mentions: [COLLIDING_THREAD_HANDLE],
+        channelId: COLLIDING_CHANNEL_ID,
+        issuer: COLLIDING_THREAD_ISSUER,
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      expect(await wakeMessages(system, COLLIDING_THREAD_ID)).toHaveLength(1);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
