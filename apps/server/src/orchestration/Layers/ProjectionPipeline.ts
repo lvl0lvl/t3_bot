@@ -24,6 +24,8 @@ import {
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
+import { ProjectionChannelRepositoryLive } from "../../persistence/Layers/ProjectionChannels.ts";
+import { ProjectionChannelRepository } from "../../persistence/Services/ProjectionChannels.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
@@ -74,6 +76,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   threadTurns: "projection.thread-turns",
   checkpoints: "projection.checkpoints",
   pendingApprovals: "projection.pending-approvals",
+  channels: "projection.channels",
 } as const;
 
 type ProjectorName =
@@ -482,6 +485,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const eventStore = yield* OrchestrationEventStore;
     const projectionStateRepository = yield* ProjectionStateRepository;
     const projectionProjectRepository = yield* ProjectionProjectRepository;
+    const projectionChannelRepository = yield* ProjectionChannelRepository;
     const projectionThreadRepository = yield* ProjectionThreadRepository;
     const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
     const projectionThreadProposedPlanRepository = yield* ProjectionThreadProposedPlanRepository;
@@ -495,6 +499,88 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
+
+    const applyChannelsProjection: ProjectorDefinition["apply"] = Effect.fn(
+      "applyChannelsProjection",
+    )(function* (event, _attachmentSideEffects) {
+      switch (event.type) {
+        case "channel.created":
+          yield* projectionChannelRepository.upsertChannel({
+            channelId: event.payload.channelId,
+            name: event.payload.name,
+            members: event.payload.members,
+            archivedAt: null,
+            createdAt: event.payload.createdAt,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+
+        case "channel.meta-updated":
+        case "channel.archived":
+        case "channel.unarchived": {
+          const existing = yield* projectionChannelRepository.getChannelById(
+            event.payload.channelId,
+          );
+          if (Option.isNone(existing)) {
+            return;
+          }
+          yield* projectionChannelRepository.upsertChannel({
+            ...existing.value,
+            ...(event.type === "channel.meta-updated" && event.payload.name !== undefined
+              ? { name: event.payload.name }
+              : {}),
+            ...(event.type === "channel.archived"
+              ? { archivedAt: event.payload.archivedAt }
+              : event.type === "channel.unarchived"
+                ? { archivedAt: null }
+                : {}),
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "channel.member-added":
+        case "channel.member-removed": {
+          const existing = yield* projectionChannelRepository.getChannelById(
+            event.payload.channelId,
+          );
+          if (Option.isNone(existing)) {
+            return;
+          }
+          const members =
+            event.type === "channel.member-added"
+              ? [
+                  ...existing.value.members.filter(
+                    (member) => member.handle !== event.payload.member.handle,
+                  ),
+                  event.payload.member,
+                ]
+              : existing.value.members.filter((member) => member.handle !== event.payload.handle);
+          yield* projectionChannelRepository.replaceMembers({
+            channelId: event.payload.channelId,
+            members,
+          });
+          return;
+        }
+
+        case "channel.post-created":
+          yield* projectionChannelRepository.insertPost({
+            postId: event.payload.postId,
+            channelId: event.payload.channelId,
+            // The event sequence is the channel's post order and the cursor.
+            sequence: event.sequence,
+            authorHandle: event.payload.authorHandle,
+            body: event.payload.body,
+            mentions: event.payload.mentions,
+            parentPostId: event.payload.parentPostId,
+            createdAt: event.payload.createdAt,
+          });
+          return;
+
+        default:
+          return;
+      }
+    });
 
     const applyProjectsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyProjectsProjection",
@@ -1913,6 +1999,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         apply: applyProjectsProjection,
       },
       {
+        name: ORCHESTRATION_PROJECTOR_NAMES.channels,
+        apply: applyChannelsProjection,
+      },
+      {
         name: ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
         apply: applyThreadMessagesProjection,
       },
@@ -2168,6 +2258,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   makeOrchestrationProjectionPipeline(),
 ).pipe(
   Layer.provideMerge(ProjectionProjectRepositoryLive),
+  Layer.provideMerge(ProjectionChannelRepositoryLive),
   Layer.provideMerge(ProjectionThreadRepositoryLive),
   Layer.provideMerge(ProjectionThreadMessageRepositoryLive),
   Layer.provideMerge(ProjectionThreadProposedPlanRepositoryLive),
