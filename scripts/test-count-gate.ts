@@ -137,18 +137,15 @@ export interface FileTests {
 export type Suite = Map<string, FileTests>;
 
 /**
- * WHAT TO MEASURE, and the default is EVERYTHING.
+ * WHICH WORKSPACES TO MEASURE, and the default is all of them.
  *
- * Empty means no filter, which is the runner's own "run every test in the
- * workspace". It defaulted to `apps/server` — 329 of the repo's ~1,177 test
- * files — so a deletion in `apps/web` (363 files), mobile, desktop, packages or
- * infra produced no row and a green line, and the gate could not even measure
- * its own tests, which live here in `scripts/`. Three lanes found that
- * independently and the PM ruled: CI pays for the whole repo, humans narrow.
+ * A substring matched against the workspace's package NAME and its directory,
+ * so `apps/server`, `server` and `t3` all select the server. Narrowing is
+ * printed in the table's first line, so a narrowed run cannot be pasted into a
+ * PR body as a full one.
  *
- * A value here is a runner FILTER, not a directory: it is matched against test
- * file paths as a substring. Narrowing is printed in the table's first line, so
- * a narrowed run cannot be pasted into a PR body as a full one.
+ * IT USED TO BE A RUNNER FILTER FOR ONE ROOT-PROJECT RUN, and that is the bug
+ * this file was rewritten for (`t3_bot-x4v`): see `listWorkspaces`.
  */
 const TEST_TARGET = process.env["TEST_COUNT_GATE_TARGET"] ?? "";
 
@@ -161,25 +158,166 @@ const TEST_TARGET = process.env["TEST_COUNT_GATE_TARGET"] ?? "";
  * line. Then `JSON.parse` throws on the banner instead, which is why the throw
  * below carries the head of the stream rather than a bare SyntaxError.
  */
-function runSuite(cwd: string): Suite {
-  const result = NodeChildProcess.spawnSync(
-    "./node_modules/.bin/vp",
-    // A FILTER, omitted entirely when empty: an empty positional would be
-    // matched against every path and select nothing.
-    ["test", "run", ...(TEST_TARGET === "" ? [] : [TEST_TARGET]), "--reporter=json"],
-    { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
-  );
+/** One workspace, as the package manager reports it. */
+export interface Workspace {
+  readonly name: string;
+  /** Absolute, from the package manager — never from walking directories. */
+  readonly path: string;
+  /** Its own `test` script, or undefined when it declares none. */
+  readonly testScript: string | undefined;
+}
+
+/**
+ * The workspaces, FROM THE PACKAGE MANAGER.
+ *
+ * NOT BY WALKING DIRECTORIES, and that is not a stylistic preference: a walk
+ * finds `.claude/worktrees/<other branch>` and measures another branch's tests
+ * as this tree's. That happened — the PM's gate run on main collected
+ * `scripts/build-desktop-artifact.test.ts` out of a senior's nested checkout
+ * and failed to load it against this tree's config. `pnpm ls` answers from
+ * `pnpm-workspace.yaml`, so a nested checkout is not a member and cannot be
+ * found by construction rather than by an exclusion someone has to maintain.
+ *
+ * THE ROOT PACKAGE IS DROPPED. Its `test` script is `vp run -r test` — an
+ * aggregator that runs every other workspace — so including it would run the
+ * whole repo once more inside a loop that is already running it.
+ */
+export function listWorkspaces(repoRoot: string): ReadonlyArray<Workspace> {
+  const result = NodeChildProcess.spawnSync("pnpm", ["ls", "-r", "--depth", "-1", "--json"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
   const stdout = result.stdout ?? "";
-  const start = stdout.indexOf("{");
+  const start = stdout.indexOf("[");
   if (start === -1) {
     throw new CannotMeasure(
-      `no JSON from the runner in ${cwd}. A suite that cannot RUN is not a suite with zero tests, ` +
-        `and reporting it as an empty map would turn a broken base into a clean pass.\n` +
+      `could not list the workspaces in ${repoRoot}. Without them there is nothing to measure, ` +
+        `and measuring nothing must not report a pass.\n` +
         (result.stderr ?? "").slice(-2000),
     );
   }
-  const parsed = JSON.parse(stdout.slice(start)) as RunnerReport;
-  return toSuite(parsed, cwd);
+  const listed = JSON.parse(stdout.slice(start)) as ReadonlyArray<{
+    readonly name?: string;
+    readonly path?: string;
+  }>;
+  const realRoot = NodeFS.realpathSync(repoRoot);
+  const workspaces: Array<Workspace> = [];
+  for (const entry of listed) {
+    if (entry.name === undefined || entry.path === undefined) continue;
+    if (NodeFS.realpathSync(entry.path) === realRoot) continue;
+    const manifest = JSON.parse(
+      NodeFS.readFileSync(NodePath.join(entry.path, "package.json"), "utf8"),
+    ) as { readonly scripts?: Record<string, string> };
+    workspaces.push({
+      name: entry.name,
+      path: entry.path,
+      testScript: manifest.scripts?.["test"],
+    });
+  }
+  return workspaces;
+}
+
+/** Whether `TEST_COUNT_GATE_TARGET` selects this workspace. */
+export const selectsWorkspace = (target: string, workspace: Workspace, repoRoot: string) =>
+  target === "" ||
+  workspace.name.includes(target) ||
+  NodePath.relative(repoRoot, workspace.path).includes(target);
+
+/**
+ * One workspace's own test run, read from a FILE rather than from stdout.
+ *
+ * `--outputFile` exists and stdout does not survive contact with a package
+ * manager: `pnpm` prints `[WARN] Unsupported engine: wanted: {"node":"^24.13.1"}`
+ * ahead of the payload, and the old "parse from the first brace" tolerance
+ * would have sliced from the brace inside that warning. That was the exact
+ * breaking input the old comment named, reached the first time this ran through
+ * a package script.
+ *
+ * THE PACKAGE'S OWN SCRIPT, not a `vp test run` this file invents. `apps/web`
+ * runs `--project unit` and `apps/desktop` runs `--passWithNoTests`; a gate that
+ * substituted its own invocation would measure a configuration nobody ships,
+ * which is the whole defect being repaired here.
+ */
+function runWorkspace(repoRoot: string, workspace: Workspace, reportDir: string): Suite {
+  const outputFile = NodePath.join(
+    reportDir,
+    `${workspace.name.replace(/[^A-Za-z0-9_-]/g, "-")}.json`,
+  );
+  const result = NodeChildProcess.spawnSync(
+    "pnpm",
+    ["--filter", workspace.name, "run", "test", "--reporter=json", `--outputFile=${outputFile}`],
+    { cwd: repoRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  if (!NodeFS.existsSync(outputFile)) {
+    throw new CannotMeasure(
+      `${workspace.name} produced no report in ${repoRoot}. A workspace that cannot RUN is not a ` +
+        `workspace with no tests, and reporting it as empty would turn a broken tree into a ` +
+        `clean pass.\n` +
+        (result.stderr ?? "").slice(-2000),
+    );
+  }
+  const parsed = JSON.parse(NodeFS.readFileSync(outputFile, "utf8")) as RunnerReport;
+  return toSuite(parsed, repoRoot, workspace.name);
+}
+
+/**
+ * What a run of this tree would measure, and what it would not.
+ *
+ * SEPARATE FROM RUNNING IT so `main` can print the scope on the first line of
+ * the table, before minutes of test runs. A skipped workspace is scope, and
+ * scope that is not printed is the thing this gate exists to stop.
+ *
+ * The BASE tree enumerates its own workspaces when it runs, because a workspace
+ * can be added or removed by the very PR being measured; this describes HEAD.
+ */
+export function describeScope(repoRoot: string) {
+  const selected = listWorkspaces(repoRoot).filter((workspace) =>
+    selectsWorkspace(TEST_TARGET, workspace, repoRoot),
+  );
+  return {
+    measured: selected.filter((w) => w.testScript !== undefined).map((w) => w.name),
+    skipped: selected.filter((w) => w.testScript === undefined).map((w) => w.name),
+  };
+}
+
+/**
+ * Every selected workspace, merged.
+ *
+ * Keys are repo-root-relative on both sides, so two workspaces cannot collide
+ * and base and head stay comparable.
+ */
+function runSuite(cwd: string): Suite {
+  const repoRoot = cwd;
+  const all = listWorkspaces(repoRoot);
+  const selected = all.filter((workspace) => selectsWorkspace(TEST_TARGET, workspace, repoRoot));
+  if (selected.length === 0) {
+    throw new CannotMeasure(
+      `no workspace in ${repoRoot} matches '${TEST_TARGET}'. A gate that selected nothing must ` +
+        `not report a pass.`,
+    );
+  }
+  const reportDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-count-gate-reports-"));
+  try {
+    const merged: Suite = new Map();
+    for (const workspace of selected) {
+      // A WORKSPACE WITH NO `test` SCRIPT IS SKIPPED AND SAID. Skipping is
+      // scope, and unprinted scope is the thing this gate exists to stop.
+      if (workspace.testScript === undefined) continue;
+      for (const [path, tests] of runWorkspace(repoRoot, workspace, reportDir)) {
+        merged.set(path, tests);
+      }
+    }
+    if (merged.size === 0) {
+      throw new CannotMeasure(
+        `the selected workspaces measured no test files in ${repoRoot}. A gate that measured ` +
+          `nothing must not report a pass.`,
+      );
+    }
+    return merged;
+  } finally {
+    NodeFS.rmSync(reportDir, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -190,7 +328,7 @@ function runSuite(cwd: string): Suite {
  * (exit 2), never a decrease: a head that does not compile reported as "coverage
  * went DOWN" sends the author hunting for deleted tests that are still there.
  */
-export function toSuite(parsed: RunnerReport, cwd: string): Suite {
+export function toSuite(parsed: RunnerReport, cwd: string, workspace?: string): Suite {
   const suite: Suite = new Map();
   const realCwd = NodeFS.realpathSync(cwd);
   for (const file of parsed.testResults ?? []) {
@@ -229,7 +367,7 @@ export function toSuite(parsed: RunnerReport, cwd: string): Suite {
     // green while measuring less than it claims.
     if (assertions.length === 0 && file.status === "failed") {
       throw new CannotMeasure(
-        `${relative} failed to load in ${cwd}, so its tests were never counted. ` +
+        `${relative} failed to load in ${workspace ?? cwd}, so its tests were never counted. ` +
           `Fix the file and re-run: a file that cannot load is not a file with no tests.` +
           // THE RUNNER ALREADY SAYS WHAT BROKE. A bug lane counted three signals
           // separating "did not load" from "has no tests" — this status, the
@@ -254,11 +392,11 @@ export function toSuite(parsed: RunnerReport, cwd: string): Suite {
   // measured nothing at all. A security lane executed exactly that against the
   // real runner — a target matching no files gives `success: false`, exit 1, and
   // valid JSON — and the gate said "no test name lost" and exited 0.
-  if (suite.size === 0) {
+  if (suite.size === 0 && workspace !== undefined) {
     throw new CannotMeasure(
-      `the runner measured no test files in ${cwd}` +
-        (TEST_TARGET === "" ? "" : ` with filter '${TEST_TARGET}'`) +
-        `. A gate that measured nothing must not report a pass.`,
+      `${workspace} reported no test files. A workspace that declares a \`test\` script and then ` +
+        `measures nothing is a broken invocation, not a workspace with no tests — a workspace ` +
+        `with none is skipped by name and printed.`,
     );
   }
   return suite;
@@ -458,14 +596,21 @@ function main(): number {
     throw new CannotMeasure(`run this from the repo root (${top}), not ${process.cwd()}`);
   }
 
+  const scope = describeScope(process.cwd());
   const head = runSuite(process.cwd());
   const baseSuite = withBaseWorktree(base, (cwd) => runSuite(cwd));
   const rows = compare(baseSuite, head);
 
   const width = Math.max(...rows.map((row) => row.path.length), 4);
   // SCOPE ON THE ARTIFACT ITSELF, so a table pasted into a PR body records what
-  // it measured instead of implying the repo.
-  write(`measured ${TEST_TARGET === "" ? "the whole repo" : TEST_TARGET} against ${base}`);
+  // it measured instead of implying the repo — including what it did NOT.
+  write(
+    `measured ${scope.measured.length} workspace(s) against ${base}: ${scope.measured.join(", ")}` +
+      (TEST_TARGET === "" ? "" : ` [narrowed by '${TEST_TARGET}']`),
+  );
+  if (scope.skipped.length > 0) {
+    write(`skipped, no \`test\` script: ${scope.skipped.join(", ")}`);
+  }
   write(`${"file".padEnd(width)}  base  head`);
   for (const row of rows) {
     if (row.before === row.after && row.lost.length === 0) continue;
@@ -517,7 +662,7 @@ function main(): number {
     // lost went on to say no name was lost — and this is the line the PM reads
     // before merging.
     write(
-      `\nMeasured ${TEST_TARGET === "" ? "the whole repo" : TEST_TARGET} against ${base}: ` +
+      `\nMeasured ${scope.measured.length} workspace(s) against ${base}: ` +
         (lostUnderAllow === 0
           ? "no test lost by count or by name."
           : `${lostUnderAllow} lost name(s), each explained by --allow above.`),

@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
 import {
   CannotMeasure,
   compare,
+  describeScope,
   isRegression,
+  listWorkspaces,
+  selectsWorkspace,
   toSuite,
   type RunnerReport,
   type Suite,
+  type Workspace,
 } from "./test-count-gate.ts";
 
 const suite = (entries: Record<string, ReadonlyArray<string>>): Suite =>
@@ -41,6 +48,79 @@ const headReportWithBrokenFile: RunnerReport = {
 const baseReportWithBrokenFile: RunnerReport = {
   testResults: [neverLoaded(FILE), loaded("apps/server/src/ok.test.ts")],
 };
+
+const REPO = NodePath.resolve(import.meta.dirname, "..");
+
+const workspace = (name: string, path: string, testScript?: string): Workspace => ({
+  name,
+  path: NodePath.join(REPO, path),
+  testScript,
+});
+
+describe("workspace enumeration", () => {
+  it("drops the ROOT package, whose test script runs every other workspace", () => {
+    // `@t3tools/monorepo`'s `test` is `vp run -r test` — an aggregator. Left in
+    // the list it runs the whole repo once more inside the loop that is already
+    // running it: every file measured twice, and the second pass nested.
+    const names = listWorkspaces(REPO).map((entry) => entry.name);
+    expect(names).not.toContain("@t3tools/monorepo");
+    // And the enumeration is not empty, so the assertion above is about the
+    // root rather than about listWorkspaces returning nothing.
+    expect(names).toContain("@t3tools/scripts");
+  });
+
+  it("finds no workspace outside the repo, and none in a nested checkout", () => {
+    // THE REASON THIS ASKS THE PACKAGE MANAGER INSTEAD OF WALKING DIRECTORIES.
+    // A walk finds `.claude/worktrees/<other branch>` — a full checkout of
+    // somebody else's branch — and measures its tests as this tree's. That is
+    // not hypothetical: it is what the PM's gate run on main did, collecting
+    // `scripts/build-desktop-artifact.test.ts` out of a senior's worktree.
+    // `pnpm ls` answers from pnpm-workspace.yaml, so a nested checkout is not a
+    // member and cannot be found — by construction, not by an exclusion list
+    // someone has to remember to extend.
+    const real = NodeFS.realpathSync(REPO);
+    for (const entry of listWorkspaces(REPO)) {
+      expect(NodeFS.realpathSync(entry.path).startsWith(real)).toBe(true);
+      expect(entry.path).not.toContain(`${NodePath.sep}.claude${NodePath.sep}`);
+      expect(entry.path).not.toContain(`${NodePath.sep}node_modules${NodePath.sep}`);
+    }
+  });
+
+  it("splits the scope into measured and skipped, and the two do not overlap", () => {
+    // A WORKSPACE WITH NO `test` SCRIPT IS SCOPE THE GATE DOES NOT COVER, so it
+    // is named in the output rather than dropped silently. Asserted as a
+    // property rather than by naming today's package, so adding a test script
+    // to one does not red this.
+    const scope = describeScope(REPO);
+    expect(scope.measured.length).toBeGreaterThan(0);
+    for (const name of scope.skipped) expect(scope.measured).not.toContain(name);
+    const listed = listWorkspaces(REPO);
+    expect(scope.measured.length + scope.skipped.length).toBe(listed.length);
+    // Every skipped name really does lack a test script — the split is not a
+    // coin toss that happens to partition.
+    for (const name of scope.skipped) {
+      expect(listed.find((entry) => entry.name === name)?.testScript).toBeUndefined();
+    }
+  });
+
+  it("selects a workspace by package name, by directory, or by nothing at all", () => {
+    const server = workspace("t3", "apps/server", "vp test run");
+    const web = workspace("@t3tools/web", "apps/web", "vp test run");
+    // An empty target is every workspace: the default is the whole repo.
+    expect(selectsWorkspace("", server, REPO)).toBe(true);
+    expect(selectsWorkspace("", web, REPO)).toBe(true);
+    // By directory, which is how the interim ruling narrowed it.
+    expect(selectsWorkspace("apps/server", server, REPO)).toBe(true);
+    expect(selectsWorkspace("apps/server", web, REPO)).toBe(false);
+    // By package name, because `t3` is what the server is called and a reader
+    // who knows the filter from CI will reach for it.
+    expect(selectsWorkspace("t3", server, REPO)).toBe(true);
+    // A target that matches nothing selects nothing — `main` turns that into a
+    // refusal rather than an empty, green run.
+    expect(selectsWorkspace("apps/nonexistent", server, REPO)).toBe(false);
+    expect(selectsWorkspace("apps/nonexistent", web, REPO)).toBe(false);
+  });
+});
 
 describe("test-count-gate", () => {
   it("passes a file that only gained tests", () => {
@@ -129,14 +209,22 @@ describe("test-count-gate", () => {
     expect(() => toSuite(baseReportWithBrokenFile, REPO_ROOT)).toThrow(/failed to load/);
   });
 
-  it("refuses to measure when the runner matched no test files at all", () => {
-    // A GATE THAT MEASURED NOTHING MUST NOT REPORT A PASS. A runner given a
-    // filter that matches nothing emits valid JSON with an empty `testResults`
-    // and exits non-zero; read as an empty suite, every row is `before: 0`,
-    // nothing can regress, and the gate prints a green line. A security lane
-    // executed exactly that and the gate exited 0 over a real deletion.
-    expect(() => toSuite({ testResults: [] }, REPO_ROOT)).toThrow(CannotMeasure);
-    expect(() => toSuite({ testResults: [] }, REPO_ROOT)).toThrow(/measured no test files/);
+  it("refuses to measure when a workspace that has tests reported none", () => {
+    // A GATE THAT MEASURED NOTHING MUST NOT REPORT A PASS. A runner that
+    // matched nothing emits valid JSON with an empty `testResults`; read as an
+    // empty suite, every row is `before: 0`, nothing can regress, and the gate
+    // prints a green line. A security lane executed exactly that and the gate
+    // exited 0 over a real deletion.
+    //
+    // PER WORKSPACE SINCE `t3_bot-x4v`, and the workspace NAME is what makes
+    // the refusal actionable: "nothing measured" over sixteen workspaces does
+    // not say which one to go and look at. A workspace that legitimately has no
+    // tests declares no `test` script and is skipped by name in the scope line,
+    // so it never reaches here.
+    expect(() => toSuite({ testResults: [] }, REPO_ROOT, "@t3tools/web")).toThrow(CannotMeasure);
+    expect(() => toSuite({ testResults: [] }, REPO_ROOT, "@t3tools/web")).toThrow(
+      /@t3tools\/web reported no test files/,
+    );
   });
 
   it("says nothing about a file neither side runs", () => {
