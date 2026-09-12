@@ -524,14 +524,18 @@ const makeWsRpcLayer = (
       const connectionMember = refFromOperatorSession();
       /**
        * The same identity as `connectionMember`, in the type the WRITE path
-       * needs. Not a duplicate: an issuer is encoded onto the command and
-       * becomes a post's `authorRef` in the stored event, so it must be a plain
-       * `CommandIssuer` struct — a nominal class cannot survive being decoded
-       * back out of a row. `CommandIssuer` also admits `system`, which is not a
-       * channel member kind at all.
+       * needs.
        *
-       * The constant these two replaced served both jobs because a plain object
-       * satisfies both structurally, which is exactly what hid the distinction.
+       * NOT because a class instance would corrupt the stored event: a verifier
+       * drove a real post through with one and the persisted row is
+       * byte-identical, since `requireIssuerCanAuthor` rebuilds the `authorRef`
+       * as a fresh literal and the issuer is never persisted. That was this
+       * comment's first reason and it was wrong.
+       *
+       * The reason is that `CommandIssuer` is a different SET: it admits
+       * `system`, for seeds and reactors, which is not a channel member kind at
+       * all. The constant these two replaced served both jobs because a plain
+       * object satisfies both structurally, which is exactly what hid it.
        */
       const connectionIssuer = operatorCommandIssuer();
       const threadDeletionReactor = yield* ThreadDeletionReactor;

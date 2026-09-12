@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 
 import { ProjectionChannelRepositoryLive } from "./ProjectionChannels.ts";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
+import { HUMAN_OPERATOR_MEMBER_ID, refFromOperatorSession } from "@t3tools/contracts";
 import type { ChannelMemberRef } from "@t3tools/contracts";
 import { ProjectionChannelRepository } from "../Services/ProjectionChannels.ts";
 
@@ -98,6 +99,43 @@ function post(postId: string, channelId: ChannelId, sequence: number, mentions: 
 }
 
 layer("ProjectionChannelRepository", (it) => {
+  it.effect("accepts a REAL member ref, not just the plain object the tests forge", () =>
+    Effect.gen(function* () {
+      // THE ONE THING THE NOMINAL REF CHANGED AT THIS CALL SITE IS THE ONE
+      // THING NOTHING EXERCISED. `unsafeRefForTest` returns a plain object, and
+      // `server.test.ts` stubs this repository — so every existing test here
+      // asks "does the query filter on both fields" and none asks "does it
+      // accept the type production actually passes".
+      //
+      // Production hands it `refFromOperatorSession()`: a class instance whose
+      // prototype is not `Object` and which carries a third own property,
+      // `nominal`, straight into a `SqlSchema` request struct. A fixture that
+      // can only produce plain objects cannot tell "the repository accepts the
+      // nominal type" from "the repository accepts anything", which is exactly
+      // the distinction moving the ref into contracts was for. Found by a blind
+      // verifier as a coverage hole rather than a bug — Effect Schema reads the
+      // struct's fields by key and ignores the excess — but an untested
+      // load-bearing property is one Schema upgrade away from an outage.
+      const repo = yield* ProjectionChannelRepository;
+      yield* repo.upsertChannel(
+        channelWithMembers(ChannelId.make("real-ref"), "real-ref", [
+          {
+            handle: "walt",
+            memberKind: "human",
+            memberId: HUMAN_OPERATOR_MEMBER_ID,
+          },
+        ]),
+      );
+
+      const rows = yield* repo.listChannelsForMember(refFromOperatorSession());
+
+      assert.deepStrictEqual(
+        rows.map((row) => row.name),
+        ["real-ref"],
+      );
+    }),
+  );
+
   it.effect("round-trips a channel and its members by name and by id", () =>
     Effect.gen(function* () {
       const repo = yield* ProjectionChannelRepository;

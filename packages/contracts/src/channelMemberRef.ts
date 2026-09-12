@@ -25,8 +25,23 @@ import { HUMAN_OPERATOR_MEMBER_ID, type CommandIssuer } from "./orchestration.ts
  * copies the brand along with everything else, so
  * `{ ...someRealRef, memberId: "someone-else" }` typechecks — the exact mistake
  * the brand exists to stop, expressible by copying a legitimate ref and
- * changing one field. A PRIVATE field is the version a spread cannot carry,
- * because spreading an instance yields a plain object without it.
+ * changing one field. A PRIVATE field refuses that spread.
+ *
+ * IT REFUSES IT IN THE TYPE SYSTEM, NOT AT RUNTIME, and the difference is worth
+ * being exact about because an earlier version of this comment got it backwards.
+ * It said a spread "yields a plain object without it". It does not:
+ * `useDefineForClassFields: true` means `nominal` is emitted as a real own
+ * property, so `Object.keys` on an instance is
+ * `["nominal", "memberKind", "memberId"]` and a spread CARRIES it. What stops
+ * the spread is TypeScript's private-member nominality — a structural type can
+ * never satisfy a class with a private field, whatever the runtime holds.
+ *
+ * THE RUNTIME FIELD IS VISIBLE AND HAS CONSEQUENCES, which is the other half of
+ * why the false version mattered: an instance is not `deepStrictEqual` to a
+ * two-field literal, which reddened four server-seam tests on the rebase that
+ * introduced this. `JSON.stringify` drops it (it is `undefined`) and
+ * `structuredClone` silently returns a plain object — losing the brand at
+ * runtime though not in the type system. No production path does either.
  *
  * `erasableSyntaxOnly` is why the fields are assigned in the body rather than
  * declared as parameter properties.
@@ -106,13 +121,22 @@ export const refFromThreadCredential = (threadId: ThreadId): ChannelMemberRef =>
  * The operator's identity on the WRITE path, which is a different type from its
  * identity on the read path and must stay one.
  *
- * TWO SHAPES FOR ONE IDENTITY, ON PURPOSE. `CommandIssuer` is a `Schema.Struct`
- * that the engine stamps onto a command and the decider turns into a post's
- * `authorRef` — a value that is ENCODED AND STORED IN THE EVENT LOG.
- * `ChannelMemberRef` is a nominal class that exists to be unconstructible. An
- * event payload is the one place a class must not appear: it is decoded from
- * rows written before the class existed, and a private field cannot survive
- * that round trip.
+ * TWO SHAPES FOR ONE IDENTITY, ON PURPOSE, and the reason is the DOMAIN rather
+ * than the storage.
+ *
+ * NOT BECAUSE A CLASS WOULD CORRUPT THE STORED EVENT — that was this comment's
+ * first claim and a verifier disproved it end to end: dispatching a real post
+ * with a class-instance issuer stores a byte-identical row, because
+ * `requireIssuerCanAuthor` rebuilds the `authorRef` as a fresh literal and the
+ * issuer itself is never persisted. The claim was plausible and wrong, and it
+ * is corrected here rather than quietly dropped.
+ *
+ * THE REAL REASON IS THAT THEY ARE NOT THE SAME SET. `CommandIssuer` has a third
+ * kind, `system`, for seeds and reactors — deliberately NOT a channel member
+ * kind, because a reactor has no handle and cannot author a post, only
+ * administer. A ref that admitted `system` would be claiming a reactor can be a
+ * member. And `CommandIssuer` is a `Schema.Struct` decoded from values the
+ * server did not construct, where a nominal class has nothing to add.
  *
  * They are also not the same domain. `CommandIssuer` has a third kind,
  * `system`, for seeds and reactors — which is deliberately NOT a channel member
@@ -124,7 +148,8 @@ export const refFromThreadCredential = (threadId: ThreadId): ChannelMemberRef =>
  * because a plain object satisfies both structurally, and that coincidence is
  * what hid the distinction. Found by the rebase gate: making the read ref
  * nominal turned four server-seam tests red, all of them asserting the ISSUER
- * of a dispatched command. The tests were right.
+ * of a dispatched command. The tests were right — reverting this split still
+ * reds two of them by name.
  */
 export const operatorCommandIssuer = (): CommandIssuer => ({
   memberKind: "human",

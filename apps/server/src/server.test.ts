@@ -8916,14 +8916,23 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // WHICH MEMBER WAS ASKED. Without this the assertion above is satisfied by
       // a handler that hands the query a member it invented, as long as the stub
       // happens to answer for it.
-      // FIELD BY FIELD rather than deep-equal against a literal, because a
-      // `ChannelMemberRef` is a class now and cannot be deep-equal to a plain
-      // object by construction — which is the whole of what makes it
-      // unforgeable. Both fields are still asserted, so this is not weaker: a
-      // memberId-only check is the mutation `t3_bot-46h` exists for.
+      // A TWO-FIELD PROJECTION, compared STRICTLY. A `ChannelMemberRef` is a
+      // class and carries a third own property, so it can never be
+      // `deepStrictEqual` to a two-field literal — that much is forced.
+      //
+      // WEAKER ON SHAPE, AND THAT IS UNAVOIDABLE; not weaker on anything else,
+      // and the difference matters. The first rewrite used three loose
+      // `assert.equal` calls and claimed "this is not weaker", which a verifier
+      // disproved on two axes: `==` admits `["human"]` for `"human"`, `1` for
+      // `"1"`, and a boxed `String`. Projecting the two fields and comparing
+      // with `deepStrictEqual` gives the strictness back and still works
+      // against the class. What is genuinely lost is the old form's implicit
+      // "and no other own properties", which a class instance cannot satisfy.
       assert.equal(asked.length, 1);
-      assert.equal(asked[0]?.memberKind, "human");
-      assert.equal(asked[0]?.memberId, HUMAN_OPERATOR_MEMBER_ID);
+      assert.deepStrictEqual(
+        { memberKind: asked[0]?.memberKind, memberId: asked[0]?.memberId },
+        { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
@@ -8964,14 +8973,23 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ["channel-project"],
       );
       assert.equal(snapshot.channels?.[0]?.latestPostAt, "2026-01-01T00:00:01.000Z");
-      // FIELD BY FIELD rather than deep-equal against a literal, because a
-      // `ChannelMemberRef` is a class now and cannot be deep-equal to a plain
-      // object by construction — which is the whole of what makes it
-      // unforgeable. Both fields are still asserted, so this is not weaker: a
-      // memberId-only check is the mutation `t3_bot-46h` exists for.
+      // A TWO-FIELD PROJECTION, compared STRICTLY. A `ChannelMemberRef` is a
+      // class and carries a third own property, so it can never be
+      // `deepStrictEqual` to a two-field literal — that much is forced.
+      //
+      // WEAKER ON SHAPE, AND THAT IS UNAVOIDABLE; not weaker on anything else,
+      // and the difference matters. The first rewrite used three loose
+      // `assert.equal` calls and claimed "this is not weaker", which a verifier
+      // disproved on two axes: `==` admits `["human"]` for `"human"`, `1` for
+      // `"1"`, and a boxed `String`. Projecting the two fields and comparing
+      // with `deepStrictEqual` gives the strictness back and still works
+      // against the class. What is genuinely lost is the old form's implicit
+      // "and no other own properties", which a class instance cannot satisfy.
       assert.equal(asked.length, 1);
-      assert.equal(asked[0]?.memberKind, "human");
-      assert.equal(asked[0]?.memberId, HUMAN_OPERATOR_MEMBER_ID);
+      assert.deepStrictEqual(
+        { memberKind: asked[0]?.memberKind, memberId: asked[0]?.memberId },
+        { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
