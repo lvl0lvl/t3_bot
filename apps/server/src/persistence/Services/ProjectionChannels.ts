@@ -132,8 +132,8 @@ export interface ProjectionChannelRepositoryShape {
    * return the SAME shape — including `latestPostAt`. A refetch that returned a
    * channel without its activity would let a live update overwrite a snapshot's
    * real value with a null, which is worse than sending nothing: the sidebar
-   * would reorder to the bottom and render "nothing here yet" over a channel
-   * that had just received a post.
+   * would reorder to the bottom and show "No posts yet" over a channel that had
+   * just received a post.
    *
    * Membership is not filtered for the reason `getChannelById` gives: the
    * conflation belongs where the caller's identity is known, and the projector

@@ -461,7 +461,7 @@ layer("ProjectionChannelRepository", (it) => {
     Effect.gen(function* () {
       // `latestPostAt` is what the deleted `channel-post-appended` shell event
       // was traded for: a post reaches the client because this value moves. A
-      // query returning null here would make the sidebar say "nothing here yet"
+      // query returning null here would make the sidebar show "No posts yet"
       // over a channel that had just been posted in, and the argument for
       // deleting that event would be false.
       //

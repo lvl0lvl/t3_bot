@@ -951,17 +951,19 @@ const makeWsRpcLayer = (
        * the client does not have is a harmless no-op.
        *
        * MEMBERSHIP IS DECIDED HERE rather than in the repository, because this
-       * is the layer that knows who is connected. `getChannelById` deliberately
-       * does not filter by member — its docstring says the conflation belongs
-       * where the caller's identity is known, so that the projector can still
-       * see rows it has to update.
+       * is the layer that knows who is connected. The projection's by-id reads
+       * deliberately do not filter by member — `getChannelByName`'s docstring
+       * carries the reason for both: the conflation belongs where the caller's
+       * identity is known, so that the projector can still see rows it has to
+       * update.
        *
        * `latestPostAt` on the returned shell is how a post reaches the client:
        * there is no per-post event, because coalescing keeps one event per
        * aggregate per window and a per-post event would name one post and drop
        * the rest of the burst. That is also why the refetch reads the
-       * activity-aware projection and not `getChannelById` — the field has to
-       * be real here or the argument for deleting the post event is false.
+       * activity-aware projection rather than the plain by-id one — the field
+       * has to be real here or the argument for deleting the post event is
+       * false.
        */
       const channelUpsertOrRemove = (
         aggregateId: string,
@@ -1045,9 +1047,9 @@ const makeWsRpcLayer = (
                     // Two copies of it is how one of them comes to drop
                     // `latestPostAt` — which would overwrite the snapshot's real
                     // value on every live update, reorder the sidebar to the
-                    // bottom, and render "nothing here yet" over a channel that
-                    // had just received a post, with the post event deleted on
-                    // the grounds that this field carries the fact.
+                    // bottom, and show "No posts yet" over a channel that had
+                    // just received a post, with the post event deleted on the
+                    // grounds that this field carries the fact.
                     rowHasMember(row, connectionMember)
                       ? {
                           kind: "channel-upserted" as const,

@@ -8613,7 +8613,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // THE FIELD, not merely the event. A refetch that sent null here would
       // overwrite the snapshot's value on every update, and this test would pass
       // on the event's presence alone while the sidebar reordered to the bottom
-      // and said "nothing here yet" over a channel that had just been posted in.
+      // and showed "No posts yet" over a channel that had just been posted in.
       assert.equal(upserted.channel.latestPostAt, "2026-01-01T00:00:01.000Z");
       assert.equal(upserted.channel.id, "channel-project");
       assert.deepEqual(items[2], { kind: "synchronized" });

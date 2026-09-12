@@ -548,11 +548,18 @@ export const HUMAN_OPERATOR_MEMBER_ID = "human-walt";
  * going around this, and going around it is a thing a reviewer sees.
  *
  * It is here beside `HUMAN_OPERATOR_MEMBER_ID` rather than in the socket because
- * three entry points need it — the websocket's shell subscription, the HTTP
- * shell snapshot the client actually bootstraps from, and the seeder that writes
- * this member into the seeded channels' rosters. The socket half alone was the
- * bug: a client bootstrapping over HTTP and resuming by sequence saw no channels
- * at all, and nothing about the socket's own correctness could reveal it.
+ * TWO entry points need it: the websocket's shell subscription and the HTTP
+ * shell snapshot the client actually bootstraps from. The socket half alone was
+ * the bug — a client bootstrapping over HTTP and resuming by sequence saw no
+ * channels at all, and nothing about the socket's own correctness could reveal
+ * it.
+ *
+ * THE SEEDER IS NOT A CONSUMER, though it writes this same member into the
+ * seeded rosters. It hand-spells `{ memberKind: "human", memberId:
+ * WALT_MEMBER_ID }` from `HUMAN_OPERATOR_MEMBER_ID` instead. That is the third
+ * spelling of one identity and it is the drift this constant exists to stop, so
+ * it is a gap rather than a design — an earlier version of this docstring
+ * claimed the seeder as a consumer, which was simply false.
  *
  * Replace it when accounts exist. At that point the operator arrives on an
  * authenticated session and this becomes a function of that session — never of a

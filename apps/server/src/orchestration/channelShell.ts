@@ -15,8 +15,8 @@ import {
  * channel shell from the same row, and two copies of this mapping is how one of
  * them comes to drop `latestPostAt` — the field the sidebar orders by and the
  * only reason the per-post event could be deleted. A refetch that sent null
- * there would reorder the channel to the bottom and render "nothing here yet"
- * over a channel that had just received a post.
+ * there would reorder the channel to the bottom and show "No posts yet" over a
+ * channel that had just received a post.
  *
  * MEMBERS ARE DROPPED, deliberately. `OrchestrationChannelShell` has no members
  * field: the channels a client is sent are the ones it belongs to, so a roster

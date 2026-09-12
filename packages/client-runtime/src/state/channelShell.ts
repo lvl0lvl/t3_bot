@@ -29,8 +29,10 @@ export interface ScopedChannelRef {
  * contain gives two different refs one key — the wake key hit exactly that with
  * a colon and had to escape both halves.
  */
+const KEY_SEPARATOR = "\u0000";
+
 export function channelKey(ref: ScopedChannelRef): string {
-  return `${ref.environmentId}\u0000${ref.channelId}`;
+  return `${ref.environmentId}${KEY_SEPARATOR}${ref.channelId}`;
 }
 
 /**
@@ -131,7 +133,11 @@ export function createEnvironmentChannelShellAtoms(input: {
 
   const channelAtomFamily = Atom.family((key: string) =>
     Atom.make((get): EnvironmentChannelShell | null => {
-      const separator = key.indexOf("\u0000");
+      // The SAME constant `channelKey` writes. Hand-spelling it here would be
+      // the two-sides-must-agree shape again: a writer and a reader of one
+      // convention, free to disagree — which is how the mention boundary came
+      // to have an opener set and a terminator set that did not match.
+      const separator = key.indexOf(KEY_SEPARATOR);
       if (separator < 0) return null;
       const environmentId = key.slice(0, separator) as EnvironmentId;
       const channelId = key.slice(separator + 1) as ChannelId;
