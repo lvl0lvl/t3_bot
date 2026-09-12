@@ -1,4 +1,4 @@
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { mentionedHandles } from "@t3tools/client-runtime/channel-mentions";
 import type { EnvironmentChannelShell } from "@t3tools/client-runtime/state/shell";
 import type { ChannelId, EnvironmentId, OrchestrationChannelPost } from "@t3tools/contracts";
@@ -69,7 +69,7 @@ export function ChannelView({
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       <ChannelHeader channel={channel} />
-      <ChannelPostRegion environmentId={environmentId} channelId={channelId} />
+      <ChannelPostRegion channel={channel} />
       <ChannelComposer channel={channel} />
     </div>
   );
@@ -142,13 +142,8 @@ function ChannelHeader({ channel }: { readonly channel: EnvironmentChannelShell 
  */
 const CHANNEL_POST_PAGE_SIZE = 50;
 
-function ChannelPostRegion({
-  environmentId,
-  channelId,
-}: {
-  readonly environmentId: EnvironmentId;
-  readonly channelId: ChannelId;
-}) {
+function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelShell }) {
+  const { environmentId, id: channelId } = channel;
   // The cursor this region is currently asking with. `undefined` is the newest
   // page, which is what opening a channel wants.
   const [cursor, setCursor] = useState<string | undefined>(undefined);
@@ -156,19 +151,38 @@ function ChannelPostRegion({
   const [reachedStart, setReachedStart] = useState(false);
   const bottom = useRef<HTMLDivElement | null>(null);
 
-  const page = useAtomValue(
-    orchestrationEnvironment.channelPosts({
-      environmentId,
-      input: {
-        channelId,
-        direction: "backward",
-        limit: CHANNEL_POST_PAGE_SIZE,
-        ...(cursor === undefined ? {} : { cursor }),
-      },
-    }),
-  );
+  const request = orchestrationEnvironment.channelPosts({
+    environmentId,
+    input: {
+      channelId,
+      direction: "backward",
+      limit: CHANNEL_POST_PAGE_SIZE,
+      ...(cursor === undefined ? {} : { cursor }),
+    },
+  });
+  const page = useAtomValue(request);
+  const refresh = useAtomRefresh(request);
 
   const arrived = Option.getOrUndefined(AsyncResult.value(page));
+
+  // LIVE ARRIVAL, from the shell rather than from a per-post event.
+  //
+  // There is no per-post event to subscribe to, and that is a property of the
+  // stream rather than a gap: the shell coalescer keeps only the LATEST event
+  // per aggregate per 50ms window, which is the whole reason `latestPostAt` is
+  // on the channel shell. Two posts inside one window arrive as ONE event
+  // carrying the newer timestamp, so the event cannot carry a post and the
+  // client has to re-read.
+  //
+  // Only when the channel is showing its newest page. A reader who has paged
+  // upward is holding an older cursor, and re-reading under it would answer
+  // with the same old page while the new post sat unread below them; the next
+  // return to the bottom picks it up.
+  useEffect(() => {
+    if (cursor === undefined) {
+      refresh();
+    }
+  }, [channel.latestPostAt, cursor, refresh]);
 
   useEffect(() => {
     if (arrived === undefined) {
