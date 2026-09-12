@@ -68,15 +68,21 @@ export { canonicalChannelHandle, canonicalChannelName };
  * usually coincide; that is a reason to keep emitting the stored bytes, not a
  * reason to stop, because it is exactly the coincidence that hid this bug.
  *
- * AN EXACT MATCH WINS, and it is a guard against a state the aggregate no
- * longer admits. Two members could once share a canonical key — "boss1" and
- * "@boss1" both key on "boss1" — and the forgiving map keeps whichever came
- * last, so an agent naming one member byte-for-byte could wake the other and
- * be told it succeeded. `requireChannelHandlesUnique` runs on canonical
- * handles now (decider.ts, channel.create and channel.member.add), so a
- * channel cannot hold both. This stays because the gateway's membership is a
- * read model, not the aggregate: rows written before that rule existed still
- * carry their original bytes, and an exact match is what reaches them.
+ * AN EXACT MATCH WINS, and the reason is narrower than it looks. It is NOT
+ * what reaches a row stored in an older form: a lone member stored "Boss1" is
+ * keyed "boss1" in the forgiving map and the canonical path reaches it with
+ * identical output. Delete this precedence and every test over a single legacy
+ * row still passes.
+ *
+ * What it buys is the COLLIDING roster - two members sharing one canonical key,
+ * which only a pre-canonicalisation read model can hold, since
+ * `requireChannelHandlesUnique` runs on canonical handles now. The forgiving
+ * map keeps whichever came last, so without this an agent typing one member's
+ * exact bytes wakes the OTHER one: a different memberId, on a call that returns
+ * success. Trying the raw spelling first means the byte-exact spelling reaches
+ * the member who owns it. Only that spelling - "@Boss1" and "BOSS1" still fall
+ * to the forgiving map and are decided by insertion order, which is a real
+ * remaining gap and not something this precedence closes.
  */
 export function resolveMentions(
   requested: ReadonlyArray<string>,

@@ -52,6 +52,12 @@ it("exposes the shared canonicaliser itself, not a copy of it", () => {
  * the two implementations actually disagreed on 2026-09-12.
  */
 const SKEW_ROWS: ReadonlyArray<readonly [input: string, canonical: string]> = [
+  // The sigil rows, which are what the "#" -> "@" derivation below actually
+  // exercises. Every other row here is sigil-free, so without these the handle
+  // test is the name test wearing a different title.
+  ["#ops", "ops"],
+  ["## ops", "ops"],
+  ["# #ops", "ops"],
   // NFC after the fold, not before: lowercasing can make a sequence newly
   // composable, so "H" + U+0331 must reach the precomposed U+1E96.
   ["H̱", "ẖ"],
@@ -74,6 +80,11 @@ it("keeps the handle rows too, since the sigil is the only difference", () => {
   // Derived rather than retyped: a row added above is asserted on both paths and
   // there is no second list to forget. Retyping is how two lists that are meant
   // to be identical stop being identical.
+  //
+  // The derivation was a NO-OP until the sigil rows were added above - no row
+  // contained a "#", so replaceAll("#", "@") renamed nothing and this test
+  // asserted the name rule a second time under a different name. Shown by
+  // mutation: replaceAll("q", "z") left all three tests green.
   const handleRows = SKEW_ROWS.map(
     ([input, canonical]) => [input.replaceAll("#", "@"), canonical.replaceAll("#", "@")] as const,
   );

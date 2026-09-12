@@ -41,6 +41,7 @@ import type { Tool } from "effect/unstable/ai";
 // The real decider-side rules. If these move, this file must fail.
 import {
   canonicalChannelName,
+  requireCanonicalChannelHandle,
   requireCanonicalChannelMember,
   requireChannelHandlesUnique,
   requireChannelMentionsResolve,
@@ -103,11 +104,32 @@ const makeSeam = Effect.fn("commsSeam")(function* (opts: {
       createPost: (input) =>
         Effect.gen(function* () {
           yield* Ref.update(created, (r) => [...r, input]);
-          const verdict = yield* requireChannelMentionsResolve({
-            command: { type: "channel.post.create" } as never,
-            channel: { id: ChannelId.make(CHANNEL_ID), members: opts.members } as never,
-            mentions: input.mentions as never,
-          }).pipe(Effect.result);
+          // ALL THREE STEPS, in the decider's order (decider.ts, case
+          // "channel.post.create"): canonicalise every mention - which can
+          // itself fail - then dedupe, then resolve.
+          //
+          // Running only the third made this a fake of the seam, which is the
+          // one thing this file exists not to be. requireChannelMentionsResolve
+          // does no canonicalising of its own; it is a bare Set.has over
+          // member.handle. So the step that makes the two sides disagree never
+          // ran, and on a membership stored in an older form this reported a
+          // post LANDING where production rejects it whole.
+          const verdict = yield* Effect.forEach(input.mentions, (handle) =>
+            requireCanonicalChannelHandle({
+              command: { type: "channel.post.create" } as never,
+              handle,
+            }),
+          ).pipe(
+            Effect.map((canonical) => [...new Set(canonical)]),
+            Effect.flatMap((mentions) =>
+              requireChannelMentionsResolve({
+                command: { type: "channel.post.create" } as never,
+                channel: { id: ChannelId.make(CHANNEL_ID), members: opts.members } as never,
+                mentions: mentions as never,
+              }),
+            ),
+            Effect.result,
+          );
           if (verdict._tag === "Failure") {
             yield* Ref.update(deciderRejections, (r) => [
               ...r,
@@ -305,22 +327,53 @@ describe("comms toolkit against the real aggregate invariants", () => {
     }),
   );
 
-  it("the toolkit's name rule and the decider's agree, input for input", () => {
-    const cases = [
-      "seniors",
-      "#seniors",
-      "Seniors",
-      "#SENIORS",
-      "  ##SENIORS  ",
-      "# seniors",
-      "###ops",
-      "# #ops",
-      "a#b",
-    ];
-    expect(cases.map((raw) => [raw, toolkitCanonicalChannelName(raw)])).toEqual(
-      cases.map((raw) => [raw, canonicalChannelName(raw)]),
-    );
-  });
+  it.effect("sees the two sides disagree on a row stored under an older rule", () =>
+    Effect.gen(function* () {
+      // THE OBSERVATION THIS FILE EXISTS FOR, and it was not possible until the
+      // fake ran the decider's whole post path. A membership row written under
+      // an older form of the rule is not canonical: the toolkit correctly emits
+      // the STORED bytes, the decider canonicalises the mention, and the two no
+      // longer meet - so the aggregate rejects the POST, whole, for one mention.
+      // That is the PR #5 regression class, and with the old one-step fake it
+      // reported Success.
+      //
+      // Not constructible through today's decider, and not a faked state: the
+      // gateway reads a read model, and a read model can hold what the
+      // aggregate would now refuse.
+      const legacy: ReadonlyArray<ChannelGateway.ChannelMember> = [
+        { handle: "Boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
+        { handle: "boss3", memberKind: "thread", memberId: THREAD_ID },
+      ];
+      const seam = yield* makeSeam({
+        channelName: "seniors",
+        members: legacy,
+        memberThreadIds: [THREAD_ID, OTHER_THREAD_ID],
+      });
+
+      // The toolkit does its job: it finds the member and emits what is stored.
+      expect(resolveMentions(["boss1"], legacy)).toEqual({ handles: ["Boss1"] });
+
+      // And the aggregate refuses it, which the agent sees as its whole post
+      // failing on a handle comms_read_channel showed it.
+      const error = yield* seam
+        .call("comms_post", { channel: "seniors", body: "please review", mentions: ["boss1"] })
+        .pipe(Effect.flip);
+      // The agent is told its handle was not found - by the toolkit, which
+      // DID find it. That is the shape of the original regression: the tool
+      // that produced the handle reports it as unknown, because the gateway
+      // maps the aggregate's refusal onto the same error.
+      expect((error as { _tag: string })._tag).toBe("CommsMemberNotFoundError");
+      const rejections = yield* Ref.get(seam.deciderRejections);
+      expect(rejections).toHaveLength(1);
+      // And the handle the decider names as unresolvable is the CANONICAL one,
+      // which appears nowhere the agent could have read it: comms_read_channel
+      // showed "Boss1", the toolkit emitted "Boss1", and the refusal is about
+      // "boss1". Three spellings, one member, and no way for the agent to tell
+      // from the error which of them to try next.
+      expect(rejections[0]).toContain("boss1");
+      expect(rejections[0]).not.toContain("Boss1");
+    }),
+  );
 
   it.effect("a non-member and a non-existent channel are one answer, byte for byte", () =>
     Effect.gen(function* () {

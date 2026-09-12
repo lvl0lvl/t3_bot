@@ -56,17 +56,6 @@ the form the lookup actually used is the only diagnostic that error can carry. I
 must not say _why_ the lookup missed — "no such channel" and "you are not a
 member" are deliberately one answer.
 
-## An exact match wins
-
-Two members could once share a canonical key: `boss1` and `@boss1` both key on
-`boss1`. The forgiving map keeps whichever came last, so an agent naming one
-member byte-for-byte could wake the other and be told it succeeded — a different
-memberId, on a call returning success.
-
-`requireChannelHandlesUnique` runs on canonical handles now, so a channel cannot
-hold both. The toolkit still tries the raw spelling first, because its membership
-comes from a **read model**, which can hold rows written before that rule existed.
-
 ## Canonicalisation runs to a fixpoint
 
 Strip, trim, repeat until nothing more comes off. One pass is not enough: a sigil
@@ -100,15 +89,26 @@ stored value must canonicalise to itself.
 The rule applies from the change that introduced it. It does not rewrite history,
 and nothing migrates the projection.
 
-A member stored non-canonically — `Boss1` — in a channel created before handles
-were canonicalised is **unmentionable and unremovable**: `channel.post.create`
-canonicalises the mention to `boss1` and compares it to the stored `Boss1`, and
-`channel.member.remove` canonicalises its argument the same way and then requires
-an exact member match. The only remedy is to recreate the channel.
+A member whose stored handle does not canonicalise to itself is **unmentionable
+and unremovable**: `channel.post.create` canonicalises the mention and compares it
+to the stored bytes, and `channel.member.remove` canonicalises its argument the
+same way and then requires an exact member match. The only remedy is to recreate
+the channel.
 
-No such row is known to exist: channels are created only through the decider, and
-at the time this landed nothing on the wire could issue `channel.create`. That is
-why there is no migration rather than an oversight. A database that turns out to
-hold one needs the projector to canonicalise on apply, so that replaying old
-events produces canonical membership; rewriting the rows alone would be undone by
-the next rebuild.
+**It is not the row you would look for.** Case folding shipped in the same commit
+as the members table, so no channel ever stored `Boss1` — auditing a database for
+uppercase handles finds nothing and proves nothing. The rows that can be stuck are
+the ones canonical under the rule as it first shipped (trim, strip one run of
+sigils, trim, lowercase) and not under its later refinement (strip to a fixpoint,
+collapse whitespace runs, strip variation selectors, NFC **after** the fold):
+`"@ @pm"` stored as `@pm`, a handle with a no-break space or a doubled space, a
+decomposed `café`, `boss1` followed by a variation selector, a CJK name with an
+ideographic space.
+
+None exist, and the reason is the load-bearing one rather than the audit: channels
+are created only through the decider, and at the time this landed nothing on the
+wire could issue `channel.create` — the gateway is still the unwired layer. That
+is why there is no migration rather than an oversight. A database that turns out
+to hold such a row needs the **projector** to canonicalise on apply, so replaying
+old events produces canonical membership; rewriting the rows alone would be undone
+by the next rebuild.

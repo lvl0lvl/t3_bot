@@ -368,11 +368,14 @@ describe("comms toolkit handlers", () => {
     }),
   );
 
-  it.effect("passes a mention through with its case intact", () =>
+  it.effect("emits the stored handle, whatever case the agent typed", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({
-        // A handle the aggregate accepts and stores as typed: ChannelMemberHandle
-        // is a trimmed non-empty string with no case rule.
+        // A row the aggregate would refuse to store TODAY - it canonicalises
+        // every handle on the way in - and one a read model can still hold from
+        // before that rule. The fixture is deliberately that shape: it is the
+        // only shape where emitting the key and emitting the stored bytes
+        // differ, which is the rule under test.
         members: [{ handle: "Boss1", memberKind: "thread", memberId: OTHER_THREAD_ID }],
       });
       const result = yield* harness.call("comms_post", {
@@ -381,11 +384,13 @@ describe("comms toolkit handlers", () => {
         mentions: ["@Boss1"],
       });
       // Byte-identical to the stored handle, because that is what the aggregate
-      // compares against. Folding case here makes the post fail as a whole:
-      // requireChannelMentionsResolve tests an exact Set, so "boss1" resolves to
-      // nobody and the agent is told the member it just named does not exist —
-      // under a name it never typed. Channel NAMES fold; handles do not, until
-      // the aggregate canonicalizes them (t3_bot-iin).
+      // compares against. Emitting the canonical key instead makes the post
+      // fail as a whole against a row like this one: requireChannelMentionsResolve
+      // tests an exact Set, so the agent is told the member it just named does
+      // not exist — under a name it never typed.
+      //
+      // The lookup folds; the OUTPUT does not. Those are different halves and
+      // the comment that used to be here ran them together.
       expect(result.mentioned).toEqual(["Boss1"]);
       expect((yield* Ref.get(harness.created))[0]?.mentions).toEqual(["Boss1"]);
     }),
@@ -726,8 +731,12 @@ describe("comms toolkit helpers", () => {
     // canonicalizes onto the shared key and is byte-identical to neither
     // member, so there is nothing to choose between them and last-writer-wins
     // is as good an answer as any. Asserted so that if it ever stops being
-    // arbitrary, someone has to say why. (Case is NOT a route here — handles
-    // are not folded, so "BOSS1" reaches nobody and reports unknown.)
+    // arbitrary, someone has to say why.
+    //
+    // Case IS a route here now, which is why this fixture still has something
+    // to say: "BOSS1" also canonicalizes onto the shared key and lands on the
+    // same arbitrary member. The parenthetical that used to be here said the
+    // opposite, and stayed after the fold went back in.
     expect(
       resolveMentions(
         ["@@boss1"],
@@ -798,6 +807,36 @@ describe("comms toolkit helpers", () => {
       { handle: "Boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
     ];
     expect(resolveMentions(["boss1"], legacy)).toEqual({ handles: ["Boss1"] });
+
+    // And this row reaches its member through the FORGIVING map, not through
+    // exact-match precedence: "Boss1" keys "boss1" there too. Said out loud
+    // because the precedence's own docstring used to claim this case as its
+    // justification, which would have let a maintainer test the guard, find it
+    // redundant here, and delete the collision behaviour it actually buys.
+  });
+
+  it("gives a padded exact spelling to the member who owns it, not to a collided twin", () => {
+    // The trim in `byExactHandle.get(entry.trim())` kills NOTHING in the suite -
+    // found by mutation, not by reading - and it is load-bearing on exactly one
+    // input: a roster where two members share a canonical key, where the
+    // forgiving map keeps whichever came last.
+    //
+    // NOT A FAKED STATE, which is the question worth asking of any fixture the
+    // aggregate would refuse. requireChannelHandlesUnique runs on canonical
+    // handles now, so a channel cannot be CREATED this way - but this membership
+    // comes from a read model, which can hold rows written under an older form
+    // of the rule. That is the same population the legacy row above belongs to.
+    const collided: ReadonlyArray<ChannelGateway.ChannelMember> = [
+      { handle: "@boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
+      { handle: "boss1", memberKind: "human", memberId: "human-boss1" },
+    ];
+    // Both key on "boss1"; the map holds the second. Without the trim the
+    // padded spelling misses the exact map and wakes the HUMAN - a different
+    // memberId, on a call that returns success.
+    expect(resolveMentions(["  @boss1  "], collided)).toEqual({ handles: ["@boss1"] });
+    // The unpadded exact spelling reaches its own member either way, which is
+    // why only the padded one distinguishes the implementations.
+    expect(resolveMentions(["@boss1"], collided)).toEqual({ handles: ["@boss1"] });
   });
 
   it("reports an unresolved handle in canonical form, not as typed", () => {
