@@ -462,9 +462,13 @@ export const ProjectIconOverride = Schema.Union([
 export type ProjectIconOverride = typeof ProjectIconOverride.Type;
 
 /**
- * A channel member. `memberId` of a thread member is its ThreadId, but the
- * field is never named `threadId`: a top-level `threadId` on a `channel.*`
- * payload routes the command to the thread aggregate, and nothing catches it.
+ * A channel member. `memberId` of a thread member is its ThreadId, and the
+ * field is deliberately not named `threadId`.
+ *
+ * Routing switches on `command.type` today, so nothing currently reads that
+ * name — the rule guards against a catch-all branch being reintroduced, which
+ * is the one shape that would route a channel command by the fields it happens
+ * to carry rather than by what it is.
  */
 export const ChannelMember = Schema.Struct({
   handle: ChannelMemberHandle,

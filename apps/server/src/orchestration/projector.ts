@@ -1066,7 +1066,7 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           channels: [
-            ...(nextBase.channels ?? []).filter((entry) => entry.id !== payload.channelId),
+            ...nextBase.channels.filter((entry) => entry.id !== payload.channelId),
             {
               id: payload.channelId,
               name: payload.name,
@@ -1083,7 +1083,7 @@ export function projectEvent(
       return decodeForEvent(ChannelMetaUpdatedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => ({
           ...nextBase,
-          channels: (nextBase.channels ?? []).map((entry) =>
+          channels: nextBase.channels.map((entry) =>
             entry.id === payload.channelId
               ? {
                   ...entry,
@@ -1099,7 +1099,7 @@ export function projectEvent(
       return decodeForEvent(ChannelArchivedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => ({
           ...nextBase,
-          channels: (nextBase.channels ?? []).map((entry) =>
+          channels: nextBase.channels.map((entry) =>
             entry.id === payload.channelId
               ? { ...entry, archivedAt: payload.archivedAt, updatedAt: payload.updatedAt }
               : entry,
@@ -1111,7 +1111,7 @@ export function projectEvent(
       return decodeForEvent(ChannelUnarchivedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => ({
           ...nextBase,
-          channels: (nextBase.channels ?? []).map((entry) =>
+          channels: nextBase.channels.map((entry) =>
             entry.id === payload.channelId
               ? { ...entry, archivedAt: null, updatedAt: payload.updatedAt }
               : entry,
@@ -1123,7 +1123,7 @@ export function projectEvent(
       return decodeForEvent(ChannelMemberAddedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => ({
           ...nextBase,
-          channels: (nextBase.channels ?? []).map((entry) =>
+          channels: nextBase.channels.map((entry) =>
             entry.id === payload.channelId
               ? {
                   ...entry,
@@ -1142,7 +1142,7 @@ export function projectEvent(
       return decodeForEvent(ChannelMemberRemovedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => ({
           ...nextBase,
-          channels: (nextBase.channels ?? []).map((entry) =>
+          channels: nextBase.channels.map((entry) =>
             entry.id === payload.channelId
               ? {
                   ...entry,
