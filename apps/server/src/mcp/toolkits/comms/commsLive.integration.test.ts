@@ -897,6 +897,93 @@ describe("the comms toolkit on the live gateway", () => {
   );
 
   it.effect(
+    "reports a malformed channel id rather than throwing while being called",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const gateway = yield* ChannelGateway;
+
+        // `Effect.exit` can only produce an Exit VALUE if the Effect was built
+        // at all. A throw while the function is being CALLED never reaches it
+        // and fails the test uncatchably instead - which looks identical in a
+        // summary line, so an assertion that only checks THAT it failed cannot
+        // tell the two apart. That distinction is the whole of what the
+        // `Effect.suspend` buys.
+        //
+        // What comes back is a DEFECT, not a typed failure: a Failure whose
+        // cause is a Die. `getPost` declares only `ChannelStoreUnavailable`, so
+        // a malformed id is still a caller bug - the suspend makes the bug
+        // reportable rather than escaping.
+        const unbrandable = yield* gateway.getPost("not a channel id", "post-1").pipe(Effect.exit);
+        expect(unbrandable._tag).toBe("Failure");
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "honours createPost's declared failures on a parent id the brand refuses",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const gateway = yield* ChannelGateway;
+
+        // `createPost` declares five typed failures. A malformed parent used to
+        // come out as a raw schema Die carrying a serialised AST, so a caller
+        // writing an exhaustive `catchTags` would look correct and be wrong.
+        // The toolkit never reaches it - `comms_reply` resolves the parent
+        // first - which is exactly why nothing tested it until it was broken.
+        for (const malformed of ["a:b", "has space", "   ", "post-\u{1F525}"]) {
+          const refused = yield* gateway
+            .createPost({
+              channelId: CHANNEL_ID,
+              threadId: BOSS3,
+              body: "replying to nothing",
+              mentions: [],
+              parentPostId: malformed,
+            })
+            .pipe(Effect.exit);
+          expect(refused._tag).toBe("Failure");
+          // THE TAG, because `Effect.flip` cannot tell a typed refusal from a
+          // defect - it propagates a die rather than yielding it as a value.
+          expect(String(refused)).toContain("ChannelWriteConflict");
+          expect(String(refused)).not.toContain("SchemaIssue");
+        }
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "refuses a whitespace-only mention typed, which is NOT the same site",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const gateway = yield* ChannelGateway;
+
+        // `ChannelMemberHandle` is a trimmed non-empty string, so a handle of
+        // only whitespace LOOKS like it should throw the way the ids did. It
+        // does not: `.make` checks `isNonEmpty` against the UNTRIMMED value,
+        // which has length 3, so it constructs - and the DECIDER refuses it by
+        // canonicalising. The result is a typed `ChannelWriteConflict`.
+        //
+        // Not provenance and not luck: a chain of three non-obvious facts. A
+        // defect appearing here later means one of them changed.
+        const blankHandle = yield* gateway
+          .createPost({
+            channelId: CHANNEL_ID,
+            threadId: BOSS3,
+            body: "mentioning nobody in particular",
+            mentions: ["   "],
+            parentPostId: null,
+          })
+          .pipe(Effect.exit);
+        expect(blankHandle._tag).toBe("Failure");
+        expect(String(blankHandle)).toContain("ChannelWriteConflict");
+        expect(String(blankHandle)).not.toContain("SchemaIssue");
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
     "tells a THREAD member from a HUMAN member carrying the same id",
     () =>
       Effect.gen(function* () {
