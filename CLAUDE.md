@@ -53,7 +53,9 @@ message types: `comms/README.md` there.
   Every surviving mutant on 2026-09-11 had a careful assertion over a fixture that could not exercise
   the property (both orderings gave the same error on clean handles; idempotence over rows with no
   hidden sigil; a guard tested only in the permissive direction). Choose the fixture from the property.
-- A test is proven by a named mutant going red, not by being green. Restore mutations from a byte copy.
+- A test is proven by a named mutant going red, not by being green. **Commit before you mutate.** A restore is only as good as its reference point, and git's is the last
+  commit — the one thing guaranteed not to include the work you just did; three of us lost an uncommitted fix
+  to `git checkout --` in one night.
 - **Mutate each guard in both directions: inert AND wider.** An inert mutant proves what the guard
   refuses; a wider mutant proves what it must admit. Every guard has an admit side, and the admit side
   is usually the feature (an author exclusion widened to "threads wake nobody" stayed green over a reactor
