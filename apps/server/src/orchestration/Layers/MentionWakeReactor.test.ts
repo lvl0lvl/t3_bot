@@ -70,6 +70,7 @@ const removeDirectory = (directory: string) =>
 
 const PROJECT_ID = ProjectId.make("project-comms");
 const WOKEN = ThreadId.make("thread-woken");
+const BYSTANDER = ThreadId.make("thread-bystander");
 const CHANNEL_ID = ChannelId.make("channel-seniors");
 const MENTION = ChannelMemberHandle.make("woken");
 const NOW = "2026-01-01T00:00:00.000Z";
@@ -170,12 +171,36 @@ const seedChannel = async (system: System) => {
   );
   await system.run(
     system.engine.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("cmd-thread-bystander"),
+      projectId: PROJECT_ID,
+      threadId: BYSTANDER,
+      title: "Bystander",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: NOW,
+    }),
+  );
+  await system.run(
+    system.engine.dispatch({
       type: "channel.create",
       commandId: CommandId.make("cmd-channel"),
       channelId: CHANNEL_ID,
       name: "seniors",
       members: [
         { handle: ChannelMemberHandle.make("woken"), memberKind: "thread", memberId: WOKEN },
+        // In the channel, never mentioned. Without a member like this every
+        // fixture has exactly one thread, and "wakes the mentioned thread" is
+        // indistinguishable from "wakes every member thread" - which is the
+        // whole routing decision.
+        {
+          handle: ChannelMemberHandle.make("bystander"),
+          memberKind: "thread",
+          memberId: BYSTANDER,
+        },
         // The author has to be a member too - the decider refuses a post from a
         // non-member, which is the control that keeps an outsider from learning
         // a channel exists.
@@ -209,8 +234,8 @@ const post = async (
  * UI reads. "Was it woken" is a question about the thread's messages, not about
  * whether a command was dispatched.
  */
-const wakeMessages = async (system: System) => {
-  const detail = await system.run(system.threads.getThreadDetailById(WOKEN));
+const wakeMessages = async (system: System, threadId: ThreadId = WOKEN) => {
+  const detail = await system.run(system.threads.getThreadDetailById(threadId));
   return Option.isNone(detail)
     ? []
     : detail.value.messages
@@ -250,6 +275,10 @@ describe("MentionWakeReactor", () => {
       expect(messages[0]).toContain("[comms] #seniors · @walt mentioned you · post post-1");
       expect(messages[0]).toContain("have a look at this");
       expect(messages[0]).toContain("Do not answer here");
+      // The routing assertion: a member thread the post did not name stays
+      // asleep. A reactor that woke every member would satisfy every other
+      // assertion in this file.
+      expect(await wakeMessages(system, BYSTANDER)).toHaveLength(0);
 
       // Restarting with nothing new must not wake the thread a second time.
       //
@@ -586,6 +615,42 @@ describe("MentionWakeReactor", () => {
       expect(lines.findIndex((line) => line.includes("untrusted channel content"))).toBeLessThan(
         begin,
       );
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("does not wake a thread because a HUMAN member carries its id", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      // memberId is a TrimmedNonEmptyString on both member kinds, so nothing
+      // stops a human member being added with a thread's id. Mentioning that
+      // human must not wake the thread: memberKind is what separates them, and
+      // the thread lookup alone does not - it happily finds a real thread.
+      await system.run(
+        system.engine.dispatch({
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-member-impostor"),
+          channelId: CHANNEL_ID,
+          member: {
+            handle: ChannelMemberHandle.make("impostor"),
+            memberKind: "human",
+            memberId: WOKEN,
+          },
+        }),
+      );
+      await system.startReactor();
+      await post(system, {
+        id: "post-impostor",
+        mentions: [ChannelMemberHandle.make("impostor")],
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      expect(await wakeMessages(system)).toHaveLength(0);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
