@@ -220,7 +220,7 @@ describe("comms toolkit handlers", () => {
       expect(yield* Ref.get(harness.created)).toEqual([
         {
           channelId: CHANNEL_ID,
-          authorRef: { memberKind: "thread", memberId: THREAD_ID },
+          threadId: THREAD_ID,
           body: "status update",
           mentions: [],
           parentPostId: null,
@@ -239,7 +239,12 @@ describe("comms toolkit handlers", () => {
         ["comms"],
         OTHER_THREAD_ID,
       );
-      expect((yield* Ref.get(harness.created)).map((input) => input.authorRef.memberId)).toEqual([
+      // The credential's thread, which the live layer passes as the command's
+      // ISSUER rather than as a field on it. The seam used to carry an
+      // authorRef for the layer to translate, and translating it into a field
+      // that no longer exists is how a correct-looking gateway ends up
+      // refusing every post for want of an issuer.
+      expect((yield* Ref.get(harness.created)).map((input) => input.threadId)).toEqual([
         THREAD_ID,
         OTHER_THREAD_ID,
       ]);

@@ -121,20 +121,27 @@ export interface ChannelPage {
   readonly nextCursor: string | null;
 }
 
-/** Identifies the author. Never a value the agent supplies. */
-export interface ChannelAuthorRef {
-  readonly memberKind: "thread" | "human";
-  readonly memberId: string;
-}
-
 export interface CreatePostInput {
   readonly channelId: string;
   /**
-   * Derived from the calling thread's credential, never from tool input. The
-   * live layer translates this to the `authorRef` its command carries and
-   * resolves `authorHandle` from the channel's membership.
+   * The calling thread, from its MCP credential and never from tool input.
+   *
+   * THE LIVE LAYER PASSES THIS AS AN ISSUER, NOT AS A COMMAND FIELD:
+   *
+   *   engine.dispatch(command, { issuer: { memberKind: "thread", memberId: threadId } })
+   *
+   * `channel.post.create` has no author field at all. It used to, and a command
+   * carrying its own author is what made authorship forgeable — the decider
+   * derives the author from an engine-stamped issuer now, and refuses a channel
+   * command that arrives without one. So a gateway wired from the old
+   * instruction dispatches with no issuer and every agent post is refused with
+   * "arrived without an issuer and cannot be authorized": a correct-looking
+   * implementation that declines everything.
+   *
+   * `authorHandle` is resolved by the decider from the channel's membership,
+   * which is why nothing here carries it either.
    */
-  readonly authorRef: ChannelAuthorRef;
+  readonly threadId: ThreadId;
   readonly body: string;
   /** Handles, already resolved against the channel's membership. */
   readonly mentions: ReadonlyArray<string>;

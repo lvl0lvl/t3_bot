@@ -229,7 +229,7 @@ const make = Effect.gen(function* () {
     const created = yield* channels
       .createPost({
         channelId: input.channel.channelId,
-        authorRef: { memberKind: "thread", memberId: input.threadId },
+        threadId: input.threadId,
         body,
         mentions: resolved.handles,
         parentPostId: input.parentPostId,
