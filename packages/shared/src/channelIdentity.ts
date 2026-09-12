@@ -47,8 +47,12 @@ export const FORBIDDEN_IN_CANONICAL_IDENTITY =
   /[\p{C}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u034F\u2800]/u;
 
 /**
- * Collapse whitespace runs to one plain space, strip leading sigils to a
- * fixpoint, lowercase, and normalise to NFC LAST.
+ * Strip variation selectors, collapse whitespace runs to one plain space and
+ * trim, strip leading sigils to a fixpoint, lowercase, and normalise to NFC
+ * LAST.
+ *
+ * Selectors go FIRST so one sitting between two spaces collapses with them
+ * rather than holding them apart.
  *
  * The fixpoint carries "# #seniors" to "seniors": one pass leaves "#seniors",
  * which canonicalises again to something else, so a stored name would not match

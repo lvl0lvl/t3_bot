@@ -87,6 +87,23 @@ export class CommsMembershipLostError extends Schema.TaggedError<CommsMembership
   }
 }
 
+/**
+ * The channel is archived. Says so, rather than "not found".
+ *
+ * The agent can read this channel — it just resolved it — so an error claiming
+ * it does not exist would be false to the one reader who can see otherwise, and
+ * would send it to `comms_read_channel`, which would show the channel and no
+ * reason for the refusal. It names the state and the one action that changes it.
+ */
+export class CommsChannelArchivedError extends Schema.TaggedError<CommsChannelArchivedError>()(
+  "CommsChannelArchivedError",
+  { channel: Schema.String },
+) {
+  override get message(): string {
+    return `Channel '${this.channel}' is archived: you can read it, but nothing can be posted to it. Nothing was posted. Ask a human to unarchive it if this still needs saying.`;
+  }
+}
+
 export class CommsPostFailedError extends Schema.TaggedError<CommsPostFailedError>()(
   "CommsPostFailedError",
   { detail: Schema.String, retryable: Schema.Boolean },
@@ -110,6 +127,7 @@ export class CommsReadFailedError extends Schema.TaggedError<CommsReadFailedErro
 export const CommsToolError = Schema.Union([
   McpCapabilityUnavailableError,
   CommsChannelNotFoundError,
+  CommsChannelArchivedError,
   CommsMemberNotFoundError,
   CommsPostNotFoundError,
   CommsEmptyBodyError,
@@ -142,8 +160,33 @@ export const ChannelPost = Schema.Struct({
 });
 export type ChannelPost = typeof ChannelPost.Type;
 
+/**
+ * A cursor is the `nextCursor` of an earlier read, handed back verbatim.
+ *
+ * Opaque to the agent and a decimal sequence underneath.
+ *
+ * BOUNDED AT FIFTEEN DIGITS, and the bound is not decoration.
+ * `Number.MAX_SAFE_INTEGER` is 9007199254740991 - sixteen digits - and the
+ * gateway turns this string into a number. An unbounded `^[0-9]+$` admits
+ * "9007199254740993", which is numeric, passes every check here, and then
+ * throws in the gateway while the query argument is being built, where no
+ * guard is attached yet: agent input crossing into a server defect. Fifteen
+ * digits is the widest bound that cannot overflow, and an event sequence
+ * reaching 10^15 is not a thing this server will see.
+ */
+const CURSOR_PATTERN = /^[0-9]{1,15}$/;
+
 export const ReadChannelResult = Schema.Struct({
   channel: Schema.String,
+  // NAMED FOR THE DECISION, not for the state. An agent reading this has one
+  // question - can I write here - and `archived: true` makes it infer the
+  // consequence from a word about the channel's lifecycle. Without the field
+  // the only way to find out is to post and be refused, which costs a call and
+  // still does not say whether the refusal is permanent.
+  postable: Schema.Boolean.annotate({
+    description:
+      "False when the channel is archived: you can read it, and a post will be refused. Do not retry a post to an unpostable channel.",
+  }),
   members: Schema.Array(Schema.String).annotate({
     description: "Handles of everyone in the channel, so you know who you can mention.",
   }),
@@ -216,9 +259,16 @@ const ReadChannelTool = Tool.make("comms_read_channel", {
       }),
     ),
     cursor: Schema.optional(
-      Schema.String.check(Schema.isNonEmpty()).annotate({
+      // DIGITS ONLY, checked here so a cursor that is not a cursor is refused
+      // before any read rather than answered with an empty page. `Number()` on
+      // an arbitrary string has no failure case: "post-2" and "abc" become NaN
+      // and match no row, which reaches the agent as `nextCursor: null` - the
+      // wire shape of "you are caught up" - while "  ", "-1" and "1.5" rewind
+      // to the oldest page. A post id is the likely wrong value, since posts
+      // and cursors are both bare strings in the result.
+      Schema.String.check(Schema.isPattern(CURSOR_PATTERN)).annotate({
         description:
-          "nextCursor from a previous read, to get the posts after that page. Omit for the oldest posts.",
+          "nextCursor from a previous read, to get the posts after that page. Omit for the oldest posts. Pass it back exactly as given.",
       }),
     ),
   }),

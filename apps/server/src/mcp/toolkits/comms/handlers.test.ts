@@ -57,7 +57,8 @@ interface GatewayFailures {
     | ChannelGateway.ChannelStoreUnavailable
     | ChannelGateway.ChannelWriteConflict
     | ChannelGateway.ChannelMembershipRevoked
-    | ChannelGateway.ChannelMentionUnresolvable;
+    | ChannelGateway.ChannelMentionUnresolvable
+    | ChannelGateway.ChannelArchived;
   /** Raised as a DEFECT rather than a typed failure. */
   readonly dieOn?: "getChannel" | "createPost" | "readPosts" | "getPost";
 }
@@ -65,6 +66,7 @@ interface GatewayFailures {
 interface HarnessOptions {
   readonly channels?: ReadonlyArray<{
     readonly name: string;
+    readonly archivedAt?: string;
     readonly memberThreadIds: ReadonlyArray<string>;
   }>;
   readonly posts?: ReadonlyArray<ChannelGateway.ChannelPostRecord>;
@@ -106,6 +108,7 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
               Option.map((channel): ChannelGateway.Channel => ({
                 channelId: CHANNEL_ID,
                 name: channel.name,
+                archivedAt: channel.archivedAt ?? null,
                 members,
               })),
             ),
@@ -130,20 +133,24 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
       // Pages honestly: `cursor` points AFTER the last post returned, `limit`
       // is respected, `nextCursor` is null only when no newer posts remain.
       // A fake that ignores limit and cursor cannot see a paging bug at all.
+      //
+      // DIGITS, like the live layer's, rather than a post id. The two used to
+      // disagree about what a cursor even is - this one looked the cursor up
+      // by postId, and `findIndex` returning -1 for an unknown cursor made
+      // `-1 + 1` the FIRST page, where the live layer returns an empty one. A
+      // fake that answers a bad input differently from the thing it stands in
+      // for is the one place a paging bug can hide from both.
       readPosts: (input) =>
         die("readPosts").pipe(
           Effect.andThen(fail.readPosts ? Effect.fail(fail.readPosts) : Effect.void),
           Effect.andThen(Ref.update(reads, (seen) => [...seen, input])),
           Effect.map(() => {
-            const startIndex =
-              input.cursor === undefined
-                ? 0
-                : allPosts.findIndex((entry) => entry.postId === input.cursor) + 1;
+            const startIndex = input.cursor === undefined ? 0 : Number(input.cursor);
             const page = allPosts.slice(startIndex, startIndex + input.limit);
             const consumed = startIndex + page.length;
             return {
               posts: page,
-              nextCursor: consumed < allPosts.length ? (page.at(-1)?.postId ?? null) : null,
+              nextCursor: consumed < allPosts.length ? String(consumed) : null,
             } satisfies ChannelGateway.ChannelPage;
           }),
         ),
@@ -220,7 +227,7 @@ describe("comms toolkit handlers", () => {
       expect(yield* Ref.get(harness.created)).toEqual([
         {
           channelId: CHANNEL_ID,
-          authorRef: { memberKind: "thread", memberId: THREAD_ID },
+          threadId: THREAD_ID,
           body: "status update",
           mentions: [],
           parentPostId: null,
@@ -239,10 +246,74 @@ describe("comms toolkit handlers", () => {
         ["comms"],
         OTHER_THREAD_ID,
       );
-      expect((yield* Ref.get(harness.created)).map((input) => input.authorRef.memberId)).toEqual([
+      // The credential's thread, which the live layer passes as the command's
+      // ISSUER rather than as a field on it. The seam used to carry an
+      // authorRef for the layer to translate, and translating it into a field
+      // that no longer exists is how a correct-looking gateway ends up
+      // refusing every post for want of an issuer.
+      expect((yield* Ref.get(harness.created)).map((input) => input.threadId)).toEqual([
         THREAD_ID,
         OTHER_THREAD_ID,
       ]);
+    }),
+  );
+
+  it.effect("says a channel is ARCHIVED rather than missing, to a member who can see it", () =>
+    Effect.gen(function* () {
+      // NO GATEWAY FAILURE in this fixture. `publish` decides archived from
+      // the channel it already proved membership on, so the gateway is never
+      // reached - and a `failures.createPost` here would be dead weight that
+      // made this test look like it covered the gateway branch too. It does
+      // not; the test below does.
+      const harness = yield* makeHarness({
+        channels: [
+          { name: "seniors", archivedAt: "2026-09-11T00:00:00.000Z", memberThreadIds: [THREAD_ID] },
+        ],
+      });
+      const error = yield* harness
+        .call("comms_post", { channel: "seniors", body: "anyone still here" })
+        .pipe(Effect.flip);
+
+      // READABLE, NOT POSTABLE. The caller resolved this channel to get here,
+      // so it can see the channel exists; "no such channel" would be false to
+      // the one reader able to check, and would send it to comms_read_channel,
+      // which would show the channel and no reason for the refusal. That is the
+      // loop this area has already shipped once.
+      expect(error).toMatchObject({ _tag: "CommsChannelArchivedError", channel: "seniors" });
+      expect((error as { message: string }).message).toContain("archived");
+      expect((error as { message: string }).message).toContain("Nothing was posted");
+      // And it names WHICH channel: an agent is in several, and a refusal that
+      // does not say which one it may no longer post to is not actionable.
+      expect((error as { message: string }).message).toContain("seniors");
+
+      // Reading it still works. That is the half that makes the distinction
+      // worth having rather than a nicer word for the same refusal.
+      const read = yield* harness.call("comms_read_channel", { channel: "seniors" });
+      expect(read.channel).toBe("seniors");
+    }),
+  );
+
+  it.effect("maps the gateway's ARCHIVED refusal, for the race the pre-check cannot see", () =>
+    Effect.gen(function* () {
+      // NOT archived in the read model, so `publish`'s pre-check passes and the
+      // gateway is actually called. That is the only fixture that reaches
+      // `onCreateFailure.ChannelArchived`, and it is the real state: a channel
+      // archived between the membership read and the dispatch.
+      //
+      // It exists because adding the pre-check disarmed the test that used to
+      // cover this. That fixture set archivedAt AND a gateway failure, so the
+      // pre-check short-circuited and the mapping could be pointed at any error
+      // in the union with all 65 comms tests still green.
+      const harness = yield* makeHarness({
+        channels: [{ name: "seniors", memberThreadIds: [THREAD_ID] }],
+        failures: { createPost: new ChannelGateway.ChannelArchived() },
+      });
+      const error = yield* harness
+        .call("comms_post", { channel: "seniors", body: "lost the race" })
+        .pipe(Effect.flip);
+
+      expect(error).toMatchObject({ _tag: "CommsChannelArchivedError", channel: "seniors" });
+      expect((error as { message: string }).message).toContain("archived");
     }),
   );
 
@@ -542,6 +613,7 @@ describe("comms toolkit handlers", () => {
       const result = yield* harness.call("comms_read_channel", { channel: "#seniors" });
       expect(result).toEqual({
         channel: "seniors",
+        postable: true,
         members: ["pm", "boss1", "boss3", "walt"],
         posts: [
           {
@@ -565,7 +637,11 @@ describe("comms toolkit handlers", () => {
 
       const first = yield* harness.call("comms_read_channel", { channel: "seniors", limit: 2 });
       expect(first.posts.map((entry) => entry.postId)).toEqual(["post-1", "post-2"]);
-      expect(first.nextCursor).toEqual("post-2");
+      // The SHAPE the tool will accept back, not the fake's internal value: a
+      // cursor is opaque to the agent, and asserting the exact string here
+      // pinned this fake's convention rather than the contract. The proof it
+      // is usable is that the next call below is made with it.
+      expect(first.nextCursor).toMatch(/^[0-9]+$/);
 
       const second = yield* harness.call("comms_read_channel", {
         channel: "seniors",
@@ -628,11 +704,18 @@ describe("comms toolkit gateway failure mapping", () => {
     }),
   );
 
-  it.effect("marks a write conflict retryable and a store failure not", () =>
+  it.effect("carries the refusal's own retryability rather than deciding it", () =>
     Effect.gen(function* () {
+      // RETRYABILITY IS A PROPERTY OF THE REFUSAL, not of the tag. The layer
+      // that saw the failure knows whether trying again could work; this one
+      // would be guessing, and guessing "yes" is an instruction to loop on a
+      // post that can never land.
       const conflicted = yield* makeHarness({
         failures: {
-          createPost: new ChannelGateway.ChannelWriteConflict({ detail: "append raced" }),
+          createPost: new ChannelGateway.ChannelWriteConflict({
+            detail: "append raced",
+            retryable: true,
+          }),
         },
       });
       const retryable = yield* conflicted
@@ -649,6 +732,23 @@ describe("comms toolkit gateway failure mapping", () => {
         .call("comms_post", { channel: "seniors", body: "x" })
         .pipe(Effect.flip);
       expect(terminal).toMatchObject({ _tag: "CommsPostFailedError", retryable: false });
+
+      // The same tag, the other way: a conflict the layer knows is permanent
+      // must not tell the agent to try again. Without this the mapping could
+      // hardcode `true` and both assertions above would still pass.
+      const permanent = yield* makeHarness({
+        failures: {
+          createPost: new ChannelGateway.ChannelWriteConflict({
+            detail: "Mentions do not resolve to members of channel 'channel-seniors': ghost.",
+            retryable: false,
+          }),
+        },
+      });
+      const noRetry = yield* permanent
+        .call("comms_post", { channel: "seniors", body: "x" })
+        .pipe(Effect.flip);
+      expect(noRetry).toMatchObject({ _tag: "CommsPostFailedError", retryable: false });
+      expect((noRetry as { message: string }).message).not.toContain("Try again");
     }),
   );
 

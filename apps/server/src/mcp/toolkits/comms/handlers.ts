@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ChannelGateway from "./channelGateway.ts";
 import {
+  CommsChannelArchivedError,
   CommsChannelNotFoundError,
   CommsEmptyBodyError,
   CommsMemberNotFoundError,
@@ -151,15 +152,26 @@ const make = Effect.gen(function* () {
       Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: false })),
   } as const;
 
-  const onCreateFailure = {
-    ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
-      Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: false })),
-    ChannelWriteConflict: (error: ChannelGateway.ChannelWriteConflict) =>
-      Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: true })),
-    ChannelMembershipRevoked: () => Effect.fail(new CommsMembershipLostError()),
-    ChannelMentionUnresolvable: (error: ChannelGateway.ChannelMentionUnresolvable) =>
-      Effect.fail(new CommsMemberNotFoundError({ handles: error.handles })),
-  } as const;
+  // A FUNCTION of the channel, because one of these refusals has to name it.
+  // An archived error carrying no channel is the shape an agent cannot act on:
+  // it is in several, and the message would not say which one it may no longer
+  // post to.
+  const onCreateFailure = (channelName: string) =>
+    ({
+      ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
+        Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: false })),
+      ChannelWriteConflict: (error: ChannelGateway.ChannelWriteConflict) =>
+        // Carried through, not decided here. Whether a retry could work is
+        // known where the failure happened; this layer would be guessing.
+        Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: error.retryable })),
+      ChannelMembershipRevoked: () => Effect.fail(new CommsMembershipLostError()),
+      ChannelMentionUnresolvable: (error: ChannelGateway.ChannelMentionUnresolvable) =>
+        Effect.fail(new CommsMemberNotFoundError({ handles: error.handles })),
+      // Named, never folded into "not found". The caller resolved this channel to
+      // get here, so it can see the channel exists; an error saying otherwise
+      // would be false to the one reader who can check.
+      ChannelArchived: () => Effect.fail(new CommsChannelArchivedError({ channel: channelName })),
+    }) as const;
 
   /**
    * A defect from the gateway is a bug in this server, not something the agent
@@ -222,6 +234,21 @@ const make = Effect.gen(function* () {
     if (body.length === 0) {
       return yield* new CommsEmptyBodyError();
     }
+    // ARCHIVED IS DECIDED HERE, from the channel the caller already proved
+    // membership on, rather than by the gateway re-reading the row.
+    //
+    // The decider runs `requireChannelNotArchived` AFTER
+    // `requireChannelAuthorIsMember` on purpose: "archived" tells the reader
+    // the channel EXISTS, which a non-member must not learn, so the two have to
+    // stay one answer to an outsider. The gateway had no membership check of
+    // its own, so that ordering was held only by this file calling
+    // `requireChannel` first - a rule in another file, about a different
+    // function, which is exactly the coupling the post id taught us not to
+    // rely on. Here the membership proof and the archived check are the same
+    // value.
+    if (input.channel.archivedAt !== null) {
+      return yield* new CommsChannelArchivedError({ channel: input.channel.name });
+    }
     const resolved = resolveMentions(input.mentions ?? [], input.channel.members);
     if ("unknown" in resolved) {
       return yield* new CommsMemberNotFoundError({ handles: resolved.unknown });
@@ -229,12 +256,12 @@ const make = Effect.gen(function* () {
     const created = yield* channels
       .createPost({
         channelId: input.channel.channelId,
-        authorRef: { memberKind: "thread", memberId: input.threadId },
+        threadId: input.threadId,
         body,
         mentions: resolved.handles,
         parentPostId: input.parentPostId,
       })
-      .pipe(Effect.catchTags(onCreateFailure), Effect.catchCause(writeDefect));
+      .pipe(Effect.catchTags(onCreateFailure(input.channel.name)), Effect.catchCause(writeDefect));
     return {
       postId: created.postId,
       channel: input.channel.name,
@@ -274,7 +301,15 @@ const make = Effect.gen(function* () {
           threadId,
           body: input.body,
           mentions: input.mentions,
-          parentPostId: input.parentPostId,
+          // THE PROJECTION'S id, not the agent's string. They are equal
+          // whenever the lookup succeeded, so this changes no behaviour - what
+          // it changes is the ARGUMENT for why the gateway's
+          // `ChannelPostId.make` on this value cannot throw. Passing the
+          // agent's string made that safe by call order: `getPost` above
+          // refuses a malformed id first. Passing the row's makes it safe by
+          // provenance: this value was a valid `ChannelPostId` when it was
+          // stored, so there is no ordering left for anyone to reverse.
+          parentPostId: parent.value.postId,
         });
       }),
 
@@ -292,6 +327,10 @@ const make = Effect.gen(function* () {
           .pipe(Effect.catchTags(storeUnavailableAsRead), Effect.catchCause(readDefect));
         return {
           channel: channel.name,
+          // The same value `publish` refuses on, read off the same channel, so
+          // the two cannot drift into telling an agent it may post and then
+          // refusing it.
+          postable: channel.archivedAt === null,
           // The members' own stored handles, byte for byte. The aggregate
           // matches a mention against its membership exactly, so any tidying
           // here — folding case, stripping a sigil — hands the agent a string
