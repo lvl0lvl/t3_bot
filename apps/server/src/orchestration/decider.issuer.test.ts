@@ -22,6 +22,15 @@ const HUMAN: CommandIssuer = { memberKind: "human", memberId: "human-walt" };
 const SYSTEM: CommandIssuer = { memberKind: "system", memberId: "checkpoint-reactor" };
 const MEMBER_THREAD: CommandIssuer = { memberKind: "thread", memberId: "thread-boss1" };
 const OUTSIDER_THREAD: CommandIssuer = { memberKind: "thread", memberId: "thread-stranger" };
+// The seated human member. Its handle is NOT "walt": that one is added by
+// "accepts a human member whose id is not any thread's", and seating it here
+// too would make that test fail on handle uniqueness rather than on the guard
+// it is about.
+const OWNER = ChannelMemberHandle.make("owner");
+const MEMBER_HUMAN: CommandIssuer = { memberKind: "human", memberId: "human-owner" };
+// Same KIND as the member above and a member id the roster does not contain, so
+// the refusal it triggers is about MEMBERSHIP and not about kind.
+const OUTSIDER_HUMAN: CommandIssuer = { memberKind: "human", memberId: "human-stranger" };
 
 /**
  * The threads a channel's members name.
@@ -65,7 +74,16 @@ function readModel(): OrchestrationReadModel {
       {
         id: CHANNEL,
         name: "seniors",
-        members: [{ handle: BOSS1, memberKind: "thread", memberId: "thread-boss1" }],
+        members: [
+          { handle: BOSS1, memberKind: "thread", memberId: "thread-boss1" },
+          // A HUMAN member, seated because the browser path now reaches these
+          // guards with a `human` issuer. Without one on the roster, no test in
+          // this file puts a human on either side of
+          // `requireChannelAuthorIsMember` — so its refusal was measured only
+          // in the thread direction, which is the direction a browser cannot
+          // take.
+          { handle: OWNER, memberKind: "human", memberId: "human-owner" },
+        ],
         archivedAt: null,
         createdAt: NOW,
         updatedAt: NOW,
@@ -336,6 +354,47 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
         command: channelProbe("channel.post.create") as never,
         readModel: readModel(),
         issuer: OUTSIDER_THREAD,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("Author is not a member");
+      }
+    }),
+  );
+
+  it.effect("a human member authors, and the event names that member", () =>
+    Effect.gen(function* () {
+      // The admitting half in the HUMAN direction, which is the only direction
+      // a browser can take: the wire admits `channel.post.create` and the
+      // WebSocket layer stamps a `human` issuer on it.
+      const decided = yield* decideOrchestrationCommand({
+        command: channelProbe("channel.post.create") as never,
+        readModel: readModel(),
+        issuer: MEMBER_HUMAN,
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events[0]?.type).toBe("channel.post-created");
+      if (events[0]?.type === "channel.post-created") {
+        // The AUTHOR, not just success. `authorHandle` is taken from the
+        // membership row the lookup returns, so a lookup that returned the
+        // wrong row would attribute a human's post to an agent.
+        expect(events[0].payload.authorRef).toEqual(MEMBER_HUMAN);
+        expect(events[0].payload.authorHandle).toBe(OWNER);
+      }
+    }),
+  );
+
+  it.effect("refuses a post from a human that is not a member", () =>
+    Effect.gen(function* () {
+      // The refusing half in the same direction. Before the wire admitted
+      // `channel.post.create`, no human issuer could reach this guard and
+      // measuring it here would have been measuring an unreachable path; after
+      // it, every browser post takes it. Measured: admitting any human
+      // unconditionally left the whole suite green before this test existed.
+      const error = yield* decideOrchestrationCommand({
+        command: channelProbe("channel.post.create") as never,
+        readModel: readModel(),
+        issuer: OUTSIDER_HUMAN,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
