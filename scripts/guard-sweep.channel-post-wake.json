@@ -1,0 +1,119 @@
+{
+  "testCommand": [
+    "pnpm",
+    "exec",
+    "vp",
+    "test",
+    "run",
+    "apps/server/src/mcp/toolkits/comms",
+    "apps/server/src/orchestration/channelPosts.test.ts",
+    "apps/server/src/orchestration/Layers/MentionWakeReactor.test.ts"
+  ],
+  "setupCommand": ["pnpm", "install", "--frozen-lockfile"],
+  "mutations": [
+    {
+      "id": "capture-skipped-entirely",
+      "guard": "ProjectionPipeline/capture-at-delete",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/Layers/ProjectionPipeline.ts",
+      "find": "          if (Option.isSome(pendingTurnStart)) {\n            const wake = parseWakeKey(String(pendingTurnStart.value.messageId));",
+      "replace": "          if (false as boolean) {\n            const wake = parseWakeKey(String(pendingTurnStart.value.messageId));"
+    },
+    {
+      "id": "capture-links-wrong-turn",
+      "guard": "ProjectionPipeline/capture-at-delete",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/Layers/ProjectionPipeline.ts",
+      "find": "                threadId: wake.value.threadId,\n                turnId,\n                linkedAt: event.payload.session.updatedAt,",
+      "replace": "                threadId: wake.value.threadId,\n                turnId: TurnId.make(\"turn-wrong\"),\n                linkedAt: event.payload.session.updatedAt,"
+    },
+    {
+      "id": "parse-admits-non-wake-keys",
+      "guard": "parseWakeKey",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/Layers/MentionWakeReactor.ts",
+      "find": "  if (!key.startsWith(WAKE_KEY_PREFIX)) {\n    return Option.none();\n  }",
+      "replace": "  if (false as boolean) {\n    return Option.none();\n  }"
+    },
+    {
+      "id": "parse-refuses-every-key",
+      "guard": "parseWakeKey",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/Layers/MentionWakeReactor.ts",
+      "find": "  if (!key.startsWith(WAKE_KEY_PREFIX)) {\n    return Option.none();\n  }",
+      "replace": "  if (true as boolean) {\n    return Option.none();\n  }"
+    },
+    {
+      "id": "parse-swaps-channel-and-post",
+      "guard": "parseWakeKey",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/Layers/MentionWakeReactor.ts",
+      "find": "    channelId: decodeURIComponent(rest.slice(0, firstBoundary)),\n    postId: decodeURIComponent(rest.slice(firstBoundary + 1, secondBoundary)),",
+      "replace": "    channelId: decodeURIComponent(rest.slice(firstBoundary + 1, secondBoundary)),\n    postId: decodeURIComponent(rest.slice(0, firstBoundary)),"
+    },
+    {
+      "id": "outcome-interrupted-reads-completed",
+      "guard": "channelPostWakes/outcomeOf",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/channelPostWakes.ts",
+      "find": "    case \"interrupted\":\n      return \"cancelled\";",
+      "replace": "    case \"interrupted\":\n      return \"completed\";"
+    },
+    {
+      "id": "outcome-missing-row-reads-completed",
+      "guard": "channelPostWakes/unknown",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/channelPostWakes.ts",
+      "find": "        outcome: state === undefined ? \"unknown\" : outcomeOf(state),",
+      "replace": "        outcome: state === undefined ? \"completed\" : outcomeOf(state),"
+    },
+    {
+      "id": "join-drops-second-wake-per-post",
+      "guard": "channelPostWakes/one-to-many",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/channelPostWakes.ts",
+      "find": "      } else {\n        existing.push(wake);\n      }",
+      "replace": "      } else {\n        // dropped\n      }"
+    },
+    {
+      "id": "join-empty-array-for-no-wakes",
+      "guard": "channelPostWakes/absent-not-empty",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/channelPosts.ts",
+      "find": "  ...(wakes === undefined ? {} : { wakes }),",
+      "replace": "  wakes: wakes ?? [],"
+    },
+    {
+      "id": "gateway-empty-array-for-no-wakes",
+      "guard": "channelGatewayLive/absent-not-empty",
+      "axis": "wider",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "  ...(wakes === undefined ? {} : { wakes }),",
+      "replace": "  wakes: wakes ?? [],"
+    },
+    {
+      "id": "gateway-drops-wakes",
+      "guard": "channelGatewayLive/wakes-attached",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "                  posts: page.rows.map((row) => toPost(row, wakes.get(row.postId))),",
+      "replace": "                  posts: page.rows.map((row) => toPost(row, undefined)),"
+    },
+    {
+      "id": "handler-drops-wakes",
+      "guard": "handlers/wakes-forwarded",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/handlers.ts",
+      "find": "            ...(post.wakes === undefined ? {} : { wakes: post.wakes }),",
+      "replace": ""
+    },
+    {
+      "id": "turn-states-ignore-thread-half",
+      "guard": "ProjectionTurns/listStatesByTurnIds",
+      "axis": "inert",
+      "file": "apps/server/src/persistence/Layers/ProjectionTurns.ts",
+      "find": "              input.some((pair) => pair.threadId === row.threadId && pair.turnId === row.turnId),",
+      "replace": "              input.some((pair) => pair.turnId === row.turnId),"
+    }
+  ]
+}
