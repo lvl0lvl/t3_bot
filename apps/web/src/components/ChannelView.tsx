@@ -1,18 +1,24 @@
+import { useAtomValue } from "@effect/atom-react";
 import { mentionedHandles } from "@t3tools/client-runtime/channel-mentions";
 import type { EnvironmentChannelShell } from "@t3tools/client-runtime/state/shell";
-import type { ChannelId, EnvironmentId } from "@t3tools/contracts";
+import type { ChannelId, EnvironmentId, OrchestrationChannelPost } from "@t3tools/contracts";
 import { ArchiveIcon, HashIcon, SendIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useChannel, useChannelSupport } from "../state/entities";
+import * as Option from "effect/Option";
+import { AsyncResult } from "effect/unstable/reactivity";
+
 import {
   canSendChannelPost,
+  mergeChannelPosts,
   resolveChannelComposerState,
   resolveChannelViewState,
   resolveSendOutcome,
   type ChannelViewState,
 } from "./ChannelView.logic";
 import { useEnvironmentSettings } from "../hooks/useSettings";
+import { orchestrationEnvironment } from "../state/orchestration";
 import { channelEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { formatDayAwareTimestamp } from "../timestampFormat";
@@ -25,11 +31,15 @@ import { WorkspacePageHeader } from "./WorkspacePageHeader";
 /**
  * One channel: its header, its posts, and the composer.
  *
- * The posts are not here yet — the server has no read for them, only the
- * membership-filtered shell. The region says so in words rather than rendering
- * an empty list, because an empty list is what a channel with no posts looks
- * like and the two are different facts. A reader who cannot tell them apart
- * concludes the channel is quiet when it is actually unreadable.
+ * THREE STATES FOR THE POST REGION, and they are three different facts: posts
+ * this server cannot be asked for, a channel that genuinely has none, and a
+ * list. An empty list looks exactly like the first two, so a reader who cannot
+ * tell them apart concludes a channel is quiet when it is unreadable.
+ *
+ * `PostsUnavailable` therefore stays rather than being deleted. A server that
+ * predates `orchestration.readChannelPosts` still sends the channel shell, so
+ * the channel opens and only its history is missing — the way out of a one-way
+ * door this repository asks for.
  */
 export function ChannelView({
   environmentId,
@@ -59,9 +69,7 @@ export function ChannelView({
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       <ChannelHeader channel={channel} />
-      <div className="flex min-h-0 flex-1 flex-col justify-end overflow-y-auto">
-        <PostsUnavailable />
-      </div>
+      <ChannelPostRegion environmentId={environmentId} channelId={channelId} />
       <ChannelComposer channel={channel} />
     </div>
   );
@@ -103,6 +111,155 @@ function ChannelHeader({ channel }: { readonly channel: EnvironmentChannelShell 
           : `Last post ${formatDayAwareTimestamp(channel.latestPostAt, settings.timestampFormat)}`}
       </span>
     </WorkspacePageHeader>
+  );
+}
+
+/**
+ * A channel's posts: the newest page on open, older pages upward on request.
+ *
+ * ANCHORED AT THE BOTTOM, which is what `justify-end` in the scroll container
+ * does for a list shorter than the viewport and what the effect below does once
+ * it is longer. A channel opens at its newest post because that is where a
+ * reader wants to be, and it is the one scroll position that does not need
+ * restoring.
+ *
+ * PAGING IS A CONTROL, NOT A SCROLL HANDLER, for now. A scroll-triggered fetch
+ * fires repeatedly while the momentum of one flick carries the container past
+ * the threshold, and guarding that needs the request to be in flight before the
+ * next event arrives — which the atom family does not expose. A button asks once
+ * and says what it is doing. `t3_bot-ajw` carries the scroll refinement.
+ *
+ * THE CURSOR IS OPAQUE HERE TOO. This component holds whatever `nextCursor` the
+ * server last gave it and hands it back verbatim; it never builds one, which is
+ * the property `decodeChannelCursor` refuses to let a caller break.
+ */
+/**
+ * How many posts a page asks for.
+ *
+ * WELL UNDER `CHANNEL_POST_PAGE_LIMIT_MAX`, which is the server's ceiling and
+ * not a target: this is the number that fills a tall pane once with room to
+ * scroll, so opening a channel is one request rather than two.
+ */
+const CHANNEL_POST_PAGE_SIZE = 50;
+
+function ChannelPostRegion({
+  environmentId,
+  channelId,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly channelId: ChannelId;
+}) {
+  // The cursor this region is currently asking with. `undefined` is the newest
+  // page, which is what opening a channel wants.
+  const [cursor, setCursor] = useState<string | undefined>(undefined);
+  const [posts, setPosts] = useState<ReadonlyArray<OrchestrationChannelPost>>([]);
+  const [reachedStart, setReachedStart] = useState(false);
+  const bottom = useRef<HTMLDivElement | null>(null);
+
+  const page = useAtomValue(
+    orchestrationEnvironment.channelPosts({
+      environmentId,
+      input: {
+        channelId,
+        direction: "backward",
+        limit: CHANNEL_POST_PAGE_SIZE,
+        ...(cursor === undefined ? {} : { cursor }),
+      },
+    }),
+  );
+
+  const arrived = Option.getOrUndefined(AsyncResult.value(page));
+
+  useEffect(() => {
+    if (arrived === undefined) {
+      return;
+    }
+    setPosts((existing) => mergeChannelPosts({ existing, incoming: arrived.posts }));
+    if (arrived.nextCursor === null) {
+      setReachedStart(true);
+    }
+  }, [arrived]);
+
+  // ANCHORED ON THE NEWEST POST, not on every merge. Scrolling to the bottom
+  // when an OLDER page arrives would throw the reader back to the present the
+  // moment they paged up, which is the one thing paging upward must not do.
+  const newestId = posts[posts.length - 1]?.id;
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ block: "end" });
+  }, [newestId]);
+
+  if (AsyncResult.isFailure(page) && posts.length === 0) {
+    return <PostsUnavailable />;
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col justify-end overflow-y-auto">
+      <div className="flex flex-col gap-3 p-4">
+        {reachedStart || posts.length === 0 ? null : (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="self-center"
+            disabled={page.waiting}
+            onClick={() => {
+              const next = arrived?.nextCursor;
+              if (next !== null && next !== undefined) {
+                setCursor(next);
+              }
+            }}
+          >
+            {page.waiting ? "Loading earlier posts…" : "Earlier posts"}
+          </Button>
+        )}
+        {posts.length === 0 && !page.waiting ? <NoPostsYet /> : null}
+        {posts.map((post) => (
+          <ChannelPost key={post.id} environmentId={environmentId} post={post} />
+        ))}
+        <div ref={bottom} />
+      </div>
+    </div>
+  );
+}
+
+/** One post. The author's handle, when it landed, and the body as written. */
+function ChannelPost({
+  environmentId,
+  post,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly post: OrchestrationChannelPost;
+}) {
+  const settings = useEnvironmentSettings(environmentId);
+  return (
+    <article className="flex flex-col gap-1">
+      <div className="flex items-baseline gap-2">
+        <span className="text-sm font-medium text-foreground">@{post.authorHandle}</span>
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {formatDayAwareTimestamp(post.createdAt, settings.timestampFormat)}
+        </span>
+      </div>
+      {/*
+        `whitespace-pre-wrap`: a post is what its author typed, and newlines are
+        the only formatting the composer offers. No markdown rendering — the
+        body is not trusted markup and this is not the thread view.
+      */}
+      <p className="whitespace-pre-wrap text-sm text-foreground">{post.body}</p>
+    </article>
+  );
+}
+
+/**
+ * A channel that really has no posts, which is NOT `PostsUnavailable`.
+ *
+ * One says "nobody has written here", the other says "this server cannot tell
+ * you". Rendering the same thing for both is how a reader concludes a channel is
+ * quiet when its history is simply unreachable.
+ */
+function NoPostsYet() {
+  return (
+    <p className="self-center text-sm text-muted-foreground">
+      No posts yet. Say something to start the channel.
+    </p>
   );
 }
 
