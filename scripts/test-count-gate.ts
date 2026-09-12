@@ -442,7 +442,7 @@ export function describeScope(repoRoot: string, target: string = TEST_TARGET) {
         `evidence for a claim about nothing.`,
     );
   }
-  return splitScope(listed.filter((workspace) => selectsWorkspace(target, workspace, repoRoot)));
+  return splitScope(select(listed, target, repoRoot));
 }
 
 /**
@@ -456,22 +456,58 @@ export function describeScope(repoRoot: string, target: string = TEST_TARGET) {
  * side, and saying so needs a workspace without one — which a fixture has and
  * this repo might not, a year from now.
  */
-export const splitScope = (workspaces: ReadonlyArray<Workspace>) => ({
-  measured: workspaces
-    .filter((w) => w.testScript !== undefined && !isUnmeasurable(w.name))
-    .map((w) => w.name),
-  skipped: workspaces.filter((w) => w.testScript === undefined).map((w) => w.name),
-  unmeasurable: workspaces
-    .filter((w) => w.testScript !== undefined && isUnmeasurable(w.name))
-    .map((w) => w.name),
-  // THE WORKSPACES THEMSELVES, for the one caller that needs a path rather than
-  // a name: `main` refuses a PR that touches an unmeasurable workspace, and
-  // "touches" is decided against the workspace's directory. Returning it here is
-  // what lets that refusal share this predicate instead of re-deriving it.
-  unmeasurableWorkspaces: workspaces.filter(
+/**
+ * The workspaces a target picked, refusing rather than returning none.
+ *
+ * ONE SPELLING FOR BOTH SELECTIONS — `describeScope` describes HEAD and
+ * `runSuite` selects again in each tree, because a workspace can be added or
+ * removed by the PR being measured. A gate that selected nothing must not report
+ * a pass, and that has to hold on both sides.
+ *
+ * ASKED BEFORE THE BASE REF IS, which is not only tidiness. A target matching no
+ * workspace is a configuration error answerable with no git history at all, and
+ * the refusal used to come second: on a shallow CI checkout `origin/main` cannot
+ * be diffed, so a bogus target was reported as an undiffable base. Both are exit
+ * 2, so only the message said which — and the message was wrong.
+ */
+const select = (
+  workspaces: ReadonlyArray<Workspace>,
+  target: string,
+  repoRoot: string,
+): ReadonlyArray<Workspace> => {
+  const selected = workspaces.filter((workspace) => selectsWorkspace(target, workspace, repoRoot));
+  if (selected.length === 0) {
+    throw new CannotMeasure(
+      `no workspace in ${repoRoot} matches '${target}'. A gate that selected nothing must ` +
+        `not report a pass.`,
+    );
+  }
+  return selected;
+};
+
+export const splitScope = (workspaces: ReadonlyArray<Workspace>) => {
+  // THE WORKSPACES THEMSELVES, because one caller needs a PATH rather than a
+  // name: `main` refuses a PR that touches an unmeasurable workspace, and
+  // "touches" is decided against the workspace's directory. It used to
+  // re-enumerate the repo for them under a different predicate.
+  //
+  // AND THE NAME LIST IS DERIVED FROM IT, not filtered again beside it. Two
+  // expressions of one rule is what this whole finding was; a second `.filter`
+  // here would be the same mistake moved four lines, and no test can see two
+  // predicates agree while the only fixture that separates them is one nobody
+  // has written yet.
+  const unmeasurableWorkspaces = workspaces.filter(
     (w) => w.testScript !== undefined && isUnmeasurable(w.name),
-  ),
-});
+  );
+  return {
+    measured: workspaces
+      .filter((w) => w.testScript !== undefined && !isUnmeasurable(w.name))
+      .map((w) => w.name),
+    skipped: workspaces.filter((w) => w.testScript === undefined).map((w) => w.name),
+    unmeasurable: unmeasurableWorkspaces.map((w) => w.name),
+    unmeasurableWorkspaces,
+  };
+};
 
 /**
  * The UNMEASURABLE workspaces this diff touches, which the gate must refuse.
@@ -571,14 +607,7 @@ export const workspacesToRun = (workspaces: ReadonlyArray<Workspace>): ReadonlyA
  */
 function runSuite(cwd: string): Suite {
   const repoRoot = cwd;
-  const all = listWorkspaces(repoRoot);
-  const selected = all.filter((workspace) => selectsWorkspace(TEST_TARGET, workspace, repoRoot));
-  if (selected.length === 0) {
-    throw new CannotMeasure(
-      `no workspace in ${repoRoot} matches '${TEST_TARGET}'. A gate that selected nothing must ` +
-        `not report a pass.`,
-    );
-  }
+  const selected = select(listWorkspaces(repoRoot), TEST_TARGET, repoRoot);
   const reportDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-count-gate-reports-"));
   try {
     const merged: Suite = new Map();
