@@ -17,7 +17,7 @@
  * @module channelPosts
  */
 import {
-  type ChannelId,
+  ChannelId,
   type OrchestrationChannelPost,
   type OrchestrationChannelPostPage,
   type OrchestrationChannelPostPageRequest,
@@ -44,7 +44,7 @@ import { decodeChannelCursor, encodeChannelCursor } from "./channelCursor.ts";
  */
 export class ChannelPostsUnreadable extends Schema.TaggedError<ChannelPostsUnreadable>()(
   "ChannelPostsUnreadable",
-  { channelId: Schema.String },
+  { channelId: ChannelId },
 ) {}
 
 /**
@@ -57,7 +57,7 @@ export class ChannelPostsUnreadable extends Schema.TaggedError<ChannelPostsUnrea
  */
 export class ChannelCursorRejected extends Schema.TaggedError<ChannelCursorRejected>()(
   "ChannelCursorRejected",
-  { channelId: Schema.String, cursor: Schema.String },
+  { channelId: ChannelId, cursor: Schema.String },
 ) {}
 
 const toPost = (row: ProjectionChannelPost): OrchestrationChannelPost => ({

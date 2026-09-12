@@ -27,13 +27,17 @@ import {
 import {
   DpopFailureReason,
   AuthSessionId,
+  ChannelId,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
+  CHANNEL_POST_PAGE_LIMIT_MAX,
+  ChannelPostReadDirection,
   ClientOrchestrationCommand,
   DispatchResult,
+  OrchestrationChannelPostPage,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
@@ -67,6 +71,10 @@ export const EnvironmentRequestInvalidReason = Schema.Literals([
   "invalid_scope",
   "scope_not_granted",
   "invalid_command",
+  // A cursor this channel did not issue. A BAD REQUEST rather than an empty
+  // page, because an empty page is byte for byte what "you are caught up" looks
+  // like — the defect `t3_bot-e60` was filed for.
+  "invalid_cursor",
 ]);
 export type EnvironmentRequestInvalidReason = typeof EnvironmentRequestInvalidReason.Type;
 
@@ -191,7 +199,16 @@ export class EnvironmentInternalError extends Schema.TaggedError<EnvironmentInte
   }
 }
 
-export const EnvironmentResourceNotFoundReason = Schema.Literals(["thread_not_found"]);
+/**
+ * `channel_not_found` covers a channel that does not exist AND one the caller is
+ * not a member of, which is one answer on purpose: two would let a caller
+ * enumerate the channels it cannot read by asking for each and reading which
+ * refusal came back.
+ */
+export const EnvironmentResourceNotFoundReason = Schema.Literals([
+  "thread_not_found",
+  "channel_not_found",
+]);
 export type EnvironmentResourceNotFoundReason = typeof EnvironmentResourceNotFoundReason.Type;
 
 export class EnvironmentResourceNotFoundError extends Schema.TaggedError<EnvironmentResourceNotFoundError>()(
@@ -335,6 +352,19 @@ const EnvironmentOrchestrationThreadSnapshotErrors = [
 const EnvironmentOrchestrationDispatchErrors = [
   EnvironmentRequestInvalidError,
   EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+] as const;
+/**
+ * A foreign cursor is an INVALID REQUEST, not an empty page and not a 404.
+ *
+ * The empty page is what `t3_bot-e60` was filed for — indistinguishable from
+ * "you are caught up". A 404 would be the channel's answer, and the channel is
+ * fine; it is the cursor that belongs elsewhere.
+ */
+const EnvironmentChannelPostsErrors = [
+  EnvironmentRequestInvalidError,
+  EnvironmentScopeRequiredError,
+  EnvironmentResourceNotFoundError,
   EnvironmentInternalError,
 ] as const;
 
@@ -494,6 +524,33 @@ const EnvironmentOrchestrationThreadSnapshotParams = Schema.Struct({
   threadId: ThreadId,
 });
 
+const EnvironmentChannelPostsParams = Schema.Struct({
+  channelId: ChannelId,
+});
+
+/**
+ * A GET payload arrives as query strings, so the numbers decode FROM strings —
+ * which is why `limit` cannot simply reuse `ChannelPostPageLimit`.
+ *
+ * The BOUND is shared even though the decoder cannot be:
+ * `CHANNEL_POST_PAGE_LIMIT_MAX` is the one place the ceiling lives, so the two
+ * doors cannot come to disagree about it. Two spellings of one number is the
+ * drift this repository keeps finding.
+ *
+ * `direction` is required rather than defaulted. A default would make the
+ * most consequential field of the request invisible at the call site, and
+ * "which end of history" is not a thing to infer.
+ */
+const EnvironmentChannelPostsQuery = {
+  direction: ChannelPostReadDirection,
+  limit: Schema.FiniteFromString.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(CHANNEL_POST_PAGE_LIMIT_MAX),
+  ),
+  cursor: Schema.optional(TrimmedNonEmptyString),
+};
+
 // Query-string window for windowed thread snapshots (GET payloads must encode
 // to strings). Both fields optional: omitting them keeps the full-snapshot
 // behavior, so pagination stays opt-in per request.
@@ -526,6 +583,24 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
       payload: EnvironmentOrchestrationThreadSnapshotQuery,
       success: OrchestrationThreadDetailSnapshot,
       error: EnvironmentOrchestrationThreadSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    /**
+     * The twin of the `orchestration.readChannelPosts` socket RPC.
+     *
+     * IT EXISTS BECAUSE THE BROWSER BOOTSTRAPS OVER HTTP. `#20` gave the channel
+     * shell to `subscribeShell` and not to `GET /api/orchestration/shell`, so
+     * the sidebar was permanently empty while every socket-side test passed. The
+     * decision is shared with the socket — one handler — and only the error
+     * vocabulary differs, because these errors carry HTTP statuses.
+     */
+    HttpApiEndpoint.get("channelPosts", "/api/orchestration/channels/:channelId/posts", {
+      headers: OptionalBearerHeaders,
+      params: EnvironmentChannelPostsParams,
+      payload: EnvironmentChannelPostsQuery,
+      success: OrchestrationChannelPostPage,
+      error: EnvironmentChannelPostsErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(

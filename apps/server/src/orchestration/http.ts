@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
+import { readChannelPostPage } from "./channelPosts.ts";
 import { withMemberChannels } from "./channelShell.ts";
 import { cleanupFailedUploadedAttachments, normalizeDispatchCommand } from "./Normalizer.ts";
 import {
@@ -95,6 +96,39 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
             return yield* failEnvironmentNotFound("thread_not_found");
           }
           return projectThreadDetailSnapshot(snapshot.value);
+        }),
+      )
+      .handle(
+        "channelPosts",
+        Effect.fn("environment.orchestration.channelPosts")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          // DECODE, CALL, TRANSLATE. Membership, the cursor's channel half, the
+          // over-fetch and which end the extra row comes off are all in
+          // `readChannelPostPage`, shared with the socket RPC — so the two doors
+          // cannot come to answer differently, which is the defect #20 shipped.
+          return yield* readChannelPostPage({
+            request: {
+              channelId: args.params.channelId,
+              direction: args.payload.direction,
+              limit: args.payload.limit,
+              ...(args.payload.cursor === undefined ? {} : { cursor: args.payload.cursor }),
+            },
+            member: refFromOperatorSession(),
+          }).pipe(
+            Effect.catchTag("ChannelPostsUnreadable", () =>
+              failEnvironmentNotFound("channel_not_found"),
+            ),
+            // A FOREIGN CURSOR IS A BAD REQUEST, not an empty page. The empty
+            // page is byte for byte "you are caught up", which is what
+            // `t3_bot-e60` was filed for.
+            Effect.catchTag("ChannelCursorRejected", () =>
+              failEnvironmentInvalidRequest("invalid_cursor"),
+            ),
+            Effect.catch((cause) =>
+              failEnvironmentInternal("orchestration_snapshot_failed", cause),
+            ),
+          );
         }),
       )
       .handle(

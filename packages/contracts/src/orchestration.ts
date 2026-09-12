@@ -41,6 +41,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
+  readChannelPosts: "orchestration.readChannelPosts",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
@@ -1079,6 +1080,33 @@ export const OrchestrationChannelPostPageRequest = Schema.Struct({
   cursor: Schema.optional(TrimmedNonEmptyString),
 });
 export type OrchestrationChannelPostPageRequest = typeof OrchestrationChannelPostPageRequest.Type;
+
+/**
+ * The caller asked for a channel it is not in, or one that does not exist.
+ *
+ * ONE ANSWER FOR BOTH, deliberately. Two tags would let a caller enumerate the
+ * channels it cannot read by asking for each and reading which refusal came
+ * back — the same disclosure `listChannelsForMember` keeps inside its query
+ * rather than leaving to a caller's discretion.
+ */
+export class ChannelPostsUnreadableError extends Schema.TaggedError<ChannelPostsUnreadableError>()(
+  "ChannelPostsUnreadableError",
+  { channelId: ChannelId },
+) {}
+
+/**
+ * The cursor was not issued by this channel.
+ *
+ * A REFUSAL, NEVER AN EMPTY PAGE, and it is on the wire for that reason. An
+ * empty page is byte for byte what "you are caught up" looks like, so a door
+ * that answered with one would reintroduce `t3_bot-e60`: a cursor earned in one
+ * channel reported a second channel holding unread posts as read, and nothing
+ * in the reply said otherwise.
+ */
+export class ChannelCursorRejectedError extends Schema.TaggedError<ChannelCursorRejectedError>()(
+  "ChannelCursorRejectedError",
+  { channelId: ChannelId, cursor: Schema.String },
+) {}
 
 export const OrchestrationShellStreamEvent = Schema.Union([
   Schema.Struct({
@@ -2743,6 +2771,10 @@ export const OrchestrationRpcSchemas = {
     input: OrchestrationSubscribeShellInput,
     output: OrchestrationShellStreamItem,
   },
+  readChannelPosts: {
+    input: OrchestrationChannelPostPageRequest,
+    output: OrchestrationChannelPostPage,
+  },
 } as const;
 
 export class OrchestrationGetSnapshotError extends Schema.TaggedError<OrchestrationGetSnapshotError>()(
@@ -2780,6 +2812,23 @@ export class OrchestrationGetFullThreadDiffError extends Schema.TaggedError<Orch
 
 export class OrchestrationSearchThreadsError extends Schema.TaggedError<OrchestrationSearchThreadsError>()(
   "OrchestrationSearchThreadsError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+/**
+ * The post store could not answer.
+ *
+ * DISTINCT FROM THE TWO REFUSALS. `ChannelPostsUnreadableError` and
+ * `ChannelCursorRejectedError` are answers — the caller asked for something it
+ * may not have, or handed back a cursor from elsewhere. This one means the
+ * server does not know, and a caller must not retry it as though the page were
+ * empty.
+ */
+export class OrchestrationReadChannelPostsError extends Schema.TaggedError<OrchestrationReadChannelPostsError>()(
+  "OrchestrationReadChannelPostsError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),

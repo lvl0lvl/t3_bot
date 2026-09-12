@@ -28,6 +28,9 @@ import {
   ClientWebDeployment,
   CommandId,
   type DiscoveredLocalServerList,
+  ChannelCursorRejectedError,
+  ChannelPostsUnreadableError,
+  OrchestrationReadChannelPostsError,
   EventId,
   operatorCommandIssuer,
   refFromOperatorSession,
@@ -98,6 +101,7 @@ import {
 } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
+import { readChannelPostPage } from "./orchestration/channelPosts.ts";
 import { rowHasMember, toChannelShell, withMemberChannels } from "./orchestration/channelShell.ts";
 
 /**
@@ -1808,6 +1812,51 @@ const makeWsRpcLayer = (
                     cause,
                   }),
               ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        // THE SECOND DOOR ONTO `readChannelPostPage`, added with the HTTP twin
+        // rather than after it. Both call the shared handler and neither decides
+        // anything: membership, the cursor's channel half and the paging
+        // arithmetic all live there, so the two cannot drift into answering
+        // differently — which is exactly what #20 did with the channel shell.
+        //
+        // `connectionMember` rather than a fresh `refFromOperatorSession()`: it
+        // is already this connection's read identity, the same value the shell
+        // stream filters by, and one connection has one of those.
+        [ORCHESTRATION_WS_METHODS.readChannelPosts]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.readChannelPosts,
+            readChannelPostPage({ request: input, member: connectionMember }).pipe(
+              // ONE TOTAL MAPPING, so a new error in the handler is a type error
+              // here rather than a leak. A STORE FAILURE IS NOT AN ANSWER and
+              // gets its own tag: a caller told "unreadable" would stop asking,
+              // and one told "bad cursor" would discard a cursor that was fine.
+              Effect.catchTags({
+                ChannelPostsUnreadable: (cause) =>
+                  Effect.fail(new ChannelPostsUnreadableError({ channelId: cause.channelId })),
+                ChannelCursorRejected: (cause) =>
+                  Effect.fail(
+                    new ChannelCursorRejectedError({
+                      channelId: cause.channelId,
+                      cursor: cause.cursor,
+                    }),
+                  ),
+                PersistenceDecodeError: (cause) =>
+                  Effect.fail(
+                    new OrchestrationReadChannelPostsError({
+                      message: "Failed to read the channel's posts",
+                      cause,
+                    }),
+                  ),
+                PersistenceSqlError: (cause) =>
+                  Effect.fail(
+                    new OrchestrationReadChannelPostsError({
+                      message: "Failed to read the channel's posts",
+                      cause,
+                    }),
+                  ),
+              }),
             ),
             { "rpc.aggregate": "orchestration" },
           ),
