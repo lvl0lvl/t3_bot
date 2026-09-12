@@ -461,4 +461,33 @@ describe("ChannelPostRegion", () => {
     expect(occurrences(tree, "No posts yet")).toBe(1);
     expect(occurrences(tree, "No posts yet. Say something to start the channel.")).toBe(1);
   });
+  it("says the history could not be read, and offers a retry", async () => {
+    // The FIRST read failing, which is a different state from a later page failing and
+    // was covered by nothing. `HIST-25-03`: the copy here came from #20, when the read
+    // genuinely did not exist, and told the operator their server was too old — now one
+    // of several ways to reach this, and the only one retrying cannot fix. A store
+    // failure, a dropped socket and a refused cursor all land here.
+    reset();
+    answerFailure(CHANNEL_A);
+    const tree = await mount(CHANNEL_A);
+
+    expect(bodies(tree)).toEqual([]);
+    const rendered = JSON.stringify(tree.toJSON());
+    expect(rendered).toContain("could not be read");
+    // NOT the old advice as the only explanation. A reader whose socket dropped should
+    // not be sent to update a server.
+    expect(rendered).not.toContain("reading the history needs a newer server");
+
+    // AND A WAY FORWARD, which this state did not have. `refresh()` re-issues the read
+    // that failed.
+    expect(buttonLabels(tree)).toContain("Try again");
+    const before = harness.refreshes;
+    const retry = tree.root
+      .findAll((node) => node.type === "button")
+      .find((button) => button.findAll((node) => node.children?.[0] === "Try again").length > 0);
+    await act(async () => {
+      retry?.props.onClick?.();
+    });
+    expect(harness.refreshes).toBe(before + 1);
+  });
 });

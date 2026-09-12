@@ -105,8 +105,10 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
           // DECODE, CALL, TRANSLATE. Membership, the cursor's channel half, the
           // over-fetch and which end the extra row comes off are all in
-          // `readChannelPostPage`, shared with the socket RPC — so the two doors
-          // cannot come to answer differently, which is the defect #20 shipped.
+          // `readChannelPostPage`, shared with the socket RPC — so the two doors cannot
+          // come to answer differently, which is the #19 divergence. This door exists at
+          // all because of #20: a browser bootstraps over HTTP before resuming the
+          // socket, so a read wired only to the socket is a read a user cannot reach.
           return yield* readChannelPostPage({
             request: {
               channelId: args.params.channelId,

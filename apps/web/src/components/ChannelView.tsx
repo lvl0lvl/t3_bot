@@ -179,7 +179,10 @@ const CHANNEL_POST_PAGE_SIZE = 50;
  * dispatch. A ref that flips synchronously where the fetch is dispatched is what
  * that needs — three lines, and none of them are missing from the atom family, which
  * does report in-flight reads and is what disables this button. A button asks once
- * and says what it is doing. `t3_bot-ajw` carries the scroll refinement.
+ * and says what it is doing.
+ *
+ * `t3_bot-ef1` carries the scroll refinement, NOT `t3_bot-ajw`: ajw is the bead this
+ * work closes, so a deferral parked on it would have been closed along with it.
  *
  * THE CURSOR IS OPAQUE HERE TOO. This component holds whatever `nextCursor` the
  * server last gave it and hands it back verbatim; it never builds one, which is
@@ -276,7 +279,7 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   }, [newestId]);
 
   if (AsyncResult.isFailure(page) && posts.length === 0) {
-    return <PostsUnavailable />;
+    return <PostsUnavailable onRetry={refresh} />;
   }
   // A FAILURE WITH POSTS ALREADY ON SCREEN IS NOT THE SAME STATE, and it used to be
   // reported as nothing at all: the guard above only fires while the channel has shown
@@ -418,11 +421,17 @@ function NoPostsYet() {
 /**
  * Why there are no posts on screen, stated rather than implied.
  *
- * Deliberately not an empty list and not a spinner: nothing is loading, the
- * read does not exist. A spinner here would be the lying spinner this repo
- * names as a defect — it would keep claiming progress forever.
+ * Deliberately not an empty list and not a spinner: a spinner here would be the lying
+ * spinner this repo names as a defect, claiming progress forever over a read that has
+ * already answered.
+ *
+ * BOTH CAUSES, because this used to name only one. The text came from `#20`, when the
+ * read genuinely did not exist, and it told the operator their server was too old —
+ * which is now one of several ways to get here and the only one they cannot fix by
+ * retrying. A store failure, a dropped socket and a refused cursor all land on this
+ * state, and "update the server on that machine" is advice that will not help them.
  */
-function PostsUnavailable() {
+function PostsUnavailable({ onRetry }: { readonly onRetry: () => void }) {
   return (
     <Empty className="flex-1">
       <EmptyHeader className="max-w-md">
@@ -432,7 +441,7 @@ function PostsUnavailable() {
           minimum for adjacent type levels. Every other full-pane empty state in
           the app keeps or raises the primitive's size.
         */}
-        <EmptyTitle className="text-foreground">Posts aren’t readable yet</EmptyTitle>
+        <EmptyTitle className="text-foreground">Posts aren’t readable</EmptyTitle>
         {/*
           No opacity modifier: `/78` measured 3.11:1 in light and 3.51:1 in
           dark, and `EmptyDescription`'s own `text-muted-foreground` measures
@@ -440,9 +449,13 @@ function PostsUnavailable() {
           component was an opacity modifier I added to an already-muted token.
         */}
         <EmptyDescription className="mt-2 text-sm">
-          This server sends the channels you are in, but not yet their posts. You can post here and
-          the channel’s last-post time will update; reading the history needs a newer server.
+          This channel’s history could not be read. Trying again may work; a server that predates
+          channel posts cannot send it at all, and needs updating on that machine. Either way you
+          can post here, and the channel’s last-post time will update.
         </EmptyDescription>
+        <Button variant="outline" size="sm" className="mt-4 self-center" onClick={onRetry}>
+          Try again
+        </Button>
       </EmptyHeader>
     </Empty>
   );

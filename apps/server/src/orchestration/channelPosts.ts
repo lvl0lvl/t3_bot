@@ -2,17 +2,22 @@
  * One page of a channel's posts, for every client door.
  *
  * ONE HANDLER, TWO THIN TRANSPORTS, and that is the shape rather than a
- * preference. `#19` exists because `ClientOrchestrationCommand` is the payload of
- * both the WebSocket RPC and `POST /api/orchestration/dispatch`, and a change
- * taught one of them to stamp an issuer: a guard wired at two call sites and
- * present at one. `#20` exists because the shell snapshot reaches the client
- * through both `subscribeShell` and `GET /api/orchestration/shell`, and only the
- * socket was given channels — while the browser bootstraps over HTTP, so the
- * sidebar was permanently empty and every socket-side test passed.
+ * preference. `#19` is the two-site divergence: `ClientOrchestrationCommand` is the
+ * payload of both the WebSocket RPC and `POST /api/orchestration/dispatch`, and a
+ * change taught one of them to stamp an issuer — a guard wired at two call sites and
+ * present at one.
  *
- * Twice is a pattern. So the decisions live here, once, and each transport does
- * nothing but decode, call this, and encode. A new door either calls it or
- * visibly does not.
+ * `#20` IS A DIFFERENT LESSON, and this docstring used to get it wrong by claiming the
+ * socket had channels and HTTP did not. Neither snapshot door had them (`be65225fc`:
+ * "The snapshot the client keeps had no `channels` field at all"), and the stream that
+ * did only fires when a channel CHANGES — so two seeded channels, sitting still, were
+ * invisible forever. What #20 teaches about doors is the other half of that commit:
+ * "the HTTP shell route is the one a browser actually bootstraps from … so wiring the
+ * socket alone fixes nothing a user can see." Fixing one door is not fixing a feature.
+ *
+ * So the decisions live here, once, and each transport does nothing but decode, call
+ * this, and encode. A new door either calls it or visibly does not — which is the PM's
+ * condition on this work, N sites and N tests.
  *
  * @module channelPosts
  */

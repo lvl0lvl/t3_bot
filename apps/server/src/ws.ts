@@ -1819,7 +1819,10 @@ const makeWsRpcLayer = (
         // rather than after it. Both call the shared handler and neither decides
         // anything: membership, the cursor's channel half and the paging
         // arithmetic all live there, so the two cannot drift into answering
-        // differently — which is exactly what #20 did with the channel shell.
+        // differently — the #19 divergence, where a guard was wired at two call sites
+        // and present at one. (NOT #20: neither of its snapshot doors carried channels.
+        // What #20 says about doors is that fixing the socket alone fixes nothing a
+        // user can see, because the browser bootstraps over HTTP.)
         //
         // `connectionMember` rather than a fresh `refFromOperatorSession()`: it
         // is already this connection's read identity, the same value the shell
