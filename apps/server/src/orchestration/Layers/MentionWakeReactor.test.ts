@@ -72,6 +72,7 @@ import {
   WAKE_BUDGET_PER_CHANNEL,
   WAKE_BUDGET_WINDOW_MINUTES,
   wakeKey,
+  parseWakeKey,
   wakeMessageText,
 } from "./MentionWakeReactor.ts";
 
@@ -1461,6 +1462,47 @@ describe("MentionWakeReactor", () => {
     expect(wakeKey(CHANNEL_ID, "post-1", WOKEN)).not.toBe(
       wakeKey(CHANNEL_ID, "post-1", ThreadId.make("thread-other")),
     );
+  });
+
+  it("parses back exactly what wakeKey produced, and refuses what it did not", () => {
+    // THE INVERSE, TESTED AS ONE, because `parseWakeKey` is how the projector
+    // decides which pending-turn rows are wakes at all (`t3_bot-j6o`). Every
+    // ordinary user turn stages a row under a plain message id; a parser that
+    // admitted one would link a human's turn to a post that never existed.
+    for (const [channelId, postId] of [
+      [CHANNEL_ID, "post-1"],
+      // The pair `wakeKey`'s escaping exists for, round-tripped rather than
+      // only proven distinct: the parser has to undo the escaping, not just
+      // split on the separator.
+      [CHANNEL_ID, "x:post-1"],
+      [`${CHANNEL_ID}:x`, "post-1"],
+    ] as const) {
+      const parsed = parseWakeKey(wakeKey(channelId, postId, WOKEN));
+      expect(Option.isSome(parsed) ? parsed.value : null).toEqual({
+        channelId,
+        postId,
+        threadId: WOKEN,
+      });
+    }
+
+    // THE INPUT THAT SEPARATES THE IMPLEMENTATIONS. A parser with no prefix
+    // check refuses a plain message id anyway — no colons, so it fails at the
+    // second boundary — and a sweep measured exactly that: removing the check
+    // left every test green. What the check refuses is a NON-wake id that has
+    // the colons, which nothing here had ever handed it. Two of these are ids
+    // the entity brand would accept today; the third is `wakeKey`'s own shape
+    // under a different prefix, which is the one a wrong prefix check admits.
+    for (const notAWake of [
+      "message-1",
+      "msg:with:colons",
+      `not-a-wake:${encodeURIComponent(CHANNEL_ID)}:post-1:${WOKEN}`,
+      "",
+      "comms-wake:",
+      "comms-wake:only-one-part",
+      `comms-wake:${encodeURIComponent(CHANNEL_ID)}:post-1:`,
+    ]) {
+      expect(Option.isNone(parseWakeKey(notAWake))).toBe(true);
+    }
   });
 
   it("dispatches the DERIVED key and the ASSEMBLED text, not its own", async () => {
