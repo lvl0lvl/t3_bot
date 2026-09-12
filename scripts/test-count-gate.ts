@@ -158,6 +158,31 @@ const TEST_TARGET = process.env["TEST_COUNT_GATE_TARGET"] ?? "";
  * line. Then `JSON.parse` throws on the banner instead, which is why the throw
  * below carries the head of the stream rather than a bare SyntaxError.
  */
+/**
+ * Workspaces that cannot be measured in a COLD BASE TREE, with the reason.
+ *
+ * DECLARED, NOT DISCOVERED. The gate could notice a base-side load failure and
+ * skip that workspace by itself, and that would be the fail-open this whole
+ * file exists to prevent: a real deletion inside a workspace that happened to
+ * break would vanish into the same silence. An exception a human wrote down,
+ * printed on every run, is the only honest kind.
+ *
+ * MEASURED, not assumed: `@t3tools/desktop` runs 1260 tests in a working tree
+ * and fails to LOAD `src/backend/DesktopBackendConfiguration.test.ts` in a fresh
+ * checkout of the base with its own `pnpm install --frozen-lockfile`. Something
+ * that tree needs is not produced by the install; WHICH thing is `t3_bot-wjt`,
+ * and until that is proven this is an observation rather than a diagnosis.
+ *
+ * THE SKIP IS NOT A LICENCE. If the PR's own diff touches a skipped workspace,
+ * the gate exits 2 rather than skipping it: scope you changed is scope you have
+ * to measure, and the author prepares that tree by hand for that PR.
+ */
+const UNMEASURABLE_IN_COLD_TREE: Readonly<Record<string, string>> = {
+  "@t3tools/desktop":
+    "fails to load src/backend/DesktopBackendConfiguration.test.ts in a cold base checkout " +
+    "(runs 1260 tests in a prepared tree) — t3_bot-wjt",
+};
+
 /** One workspace, as the package manager reports it. */
 export interface Workspace {
   readonly name: string;
@@ -295,9 +320,54 @@ export function describeScope(repoRoot: string) {
  * this repo might not, a year from now.
  */
 export const splitScope = (workspaces: ReadonlyArray<Workspace>) => ({
-  measured: workspaces.filter((w) => w.testScript !== undefined).map((w) => w.name),
+  measured: workspaces
+    .filter((w) => w.testScript !== undefined && UNMEASURABLE_IN_COLD_TREE[w.name] === undefined)
+    .map((w) => w.name),
   skipped: workspaces.filter((w) => w.testScript === undefined).map((w) => w.name),
+  unmeasurable: workspaces
+    .filter((w) => w.testScript !== undefined && UNMEASURABLE_IN_COLD_TREE[w.name] !== undefined)
+    .map((w) => w.name),
 });
+
+/**
+ * The skipped workspaces this diff touches, which the gate must refuse to skip.
+ *
+ * PURE, and both directions are tested: a PR that touches only `apps/server`
+ * while `apps/desktop` is skipped measures fine, and a PR that touches
+ * `apps/desktop` while it is skipped is a refusal. A skip is acceptable scope
+ * only while the PR did not change it.
+ */
+export const skippedWorkspacesTouched = (
+  changedPaths: ReadonlyArray<string>,
+  skipped: ReadonlyArray<Workspace>,
+  repoRoot: string,
+): ReadonlyArray<string> => {
+  const touched = new Set<string>();
+  for (const workspace of skipped) {
+    const prefix = `${NodePath.relative(repoRoot, workspace.path)}/`;
+    for (const changed of changedPaths) {
+      if (changed.startsWith(prefix)) touched.add(workspace.name);
+    }
+  }
+  return [...touched];
+};
+
+/** The files this PR changed, from git rather than from the working tree. */
+export function changedPaths(repoRoot: string, base: string): ReadonlyArray<string> {
+  const result = NodeChildProcess.spawnSync("git", ["diff", "--name-only", `${base}...HEAD`], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    throw new CannotMeasure(
+      `could not diff ${base}...HEAD in ${repoRoot}, so the gate cannot tell whether this PR ` +
+        `touched a skipped workspace.\n` +
+        (result.stderr ?? "").slice(-2000),
+    );
+  }
+  return (result.stdout ?? "").split("\n").filter((line) => line !== "");
+}
 
 /**
  * Every selected workspace, merged.
@@ -322,6 +392,9 @@ function runSuite(cwd: string): Suite {
       // A WORKSPACE WITH NO `test` SCRIPT IS SKIPPED AND SAID. Skipping is
       // scope, and unprinted scope is the thing this gate exists to stop.
       if (workspace.testScript === undefined) continue;
+      // Declared unmeasurable in a cold tree. `main` has already refused if the
+      // diff touches it, so reaching here means the PR did not.
+      if (UNMEASURABLE_IN_COLD_TREE[workspace.name] !== undefined) continue;
       for (const [path, tests] of runWorkspace(repoRoot, workspace, reportDir)) {
         merged.set(path, tests);
       }
@@ -615,6 +688,26 @@ function main(): number {
   }
 
   const scope = describeScope(process.cwd());
+
+  // SCOPE YOU CHANGED IS SCOPE YOU HAVE TO MEASURE. A workspace skipped for
+  // being unmeasurable in a cold tree is acceptable only while the PR did not
+  // touch it; the moment it did, "could not measure" is the true answer.
+  const skippedWorkspaces = listWorkspaces(process.cwd()).filter(
+    (workspace) => UNMEASURABLE_IN_COLD_TREE[workspace.name] !== undefined,
+  );
+  const touched = skippedWorkspacesTouched(
+    changedPaths(process.cwd(), base),
+    skippedWorkspaces,
+    process.cwd(),
+  );
+  if (touched.length > 0) {
+    throw new CannotMeasure(
+      `this PR changes ${touched.join(", ")}, which the gate skips as unmeasurable in a cold ` +
+        `base tree. A skipped workspace is acceptable scope only while the PR did not change it. ` +
+        `Prepare that workspace's base tree by hand and measure it for this PR.`,
+    );
+  }
+
   const head = runSuite(process.cwd());
   const baseSuite = withBaseWorktree(base, (cwd) => runSuite(cwd));
   const rows = compare(baseSuite, head);
@@ -628,6 +721,11 @@ function main(): number {
   );
   if (scope.skipped.length > 0) {
     write(`skipped, no \`test\` script: ${scope.skipped.join(", ")}`);
+  }
+  for (const name of scope.unmeasurable) {
+    write(
+      `SKIPPED, unmeasurable in a cold base tree: ${name} — ${UNMEASURABLE_IN_COLD_TREE[name]}`,
+    );
   }
   write(`${"file".padEnd(width)}  base  head`);
   for (const row of rows) {

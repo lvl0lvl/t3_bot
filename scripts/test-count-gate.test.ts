@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
+// @effect-diagnostics nodeBuiltinImport:off - tests a CLI gate that reads the
+// filesystem; the subject under test is the node API, not an Effect service.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
@@ -10,6 +12,7 @@ import {
   isRegression,
   listWorkspaces,
   selectsWorkspace,
+  skippedWorkspacesTouched,
   splitScope,
   toSuite,
   type RunnerReport,
@@ -108,11 +111,43 @@ describe("workspace enumeration", () => {
 
   it("describes the real repo's scope as a split of its real workspaces", () => {
     // The wiring, once: `describeScope` really does run the enumeration through
-    // the split rather than computing something of its own.
+    // the split rather than computing something of its own. THREE buckets — a
+    // workspace is measured, skipped for having no `test` script, or skipped as
+    // unmeasurable in a cold base tree — and every workspace lands in exactly
+    // one, so a workspace cannot fall out of the scope line entirely.
     const scope = describeScope(REPO);
     const listed = listWorkspaces(REPO);
-    expect(scope.measured.length + scope.skipped.length).toBe(listed.length);
+    expect(scope.measured.length + scope.skipped.length + scope.unmeasurable.length).toBe(
+      listed.length,
+    );
     expect(scope.measured).toContain("@t3tools/scripts");
+  });
+
+  it("does not refuse a PR that touches only workspaces it measures", () => {
+    // THE ADMIT SIDE, and without it the refusal below is satisfied by a gate
+    // that refuses every PR. A skip is acceptable scope while the PR did not
+    // change it — which is the ordinary case and must stay ordinary.
+    const desktop = workspace("@t3tools/desktop", "apps/desktop", "vp test run");
+    expect(
+      skippedWorkspacesTouched(
+        ["apps/server/src/ws.ts", "scripts/test-count-gate.ts"],
+        [desktop],
+        REPO,
+      ),
+    ).toEqual([]);
+  });
+
+  it("refuses a PR that touches a workspace the gate skips", () => {
+    // SCOPE YOU CHANGED IS SCOPE YOU HAVE TO MEASURE. Skipping apps/desktop is
+    // tolerable until the PR edits apps/desktop, at which point a green gate
+    // would be asserting something it never looked at.
+    const desktop = workspace("@t3tools/desktop", "apps/desktop", "vp test run");
+    expect(
+      skippedWorkspacesTouched(["apps/desktop/src/backend/Thing.ts"], [desktop], REPO),
+    ).toEqual(["@t3tools/desktop"]);
+    // A path that merely STARTS with the same letters is not inside it: the
+    // comparison is on a directory boundary, not a string prefix.
+    expect(skippedWorkspacesTouched(["apps/desktop-notes/x.ts"], [desktop], REPO)).toEqual([]);
   });
 
   it("selects a workspace by package name, by directory, or by nothing at all", () => {
