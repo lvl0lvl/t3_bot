@@ -293,9 +293,20 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // refuse half of them and the loop would prove nothing.
       let compared = 0;
       for (const command of commands) {
+        const base = makeReadModel();
+        // channel.unarchive is refused on a live channel, so it gets an archived
+        // one. A single fixture would refuse it, and a refused command emits no
+        // events and would drop out of this loop silently.
+        const readModel =
+          command.type === "channel.unarchive"
+            ? {
+                ...base,
+                channels: base.channels.map((channel) => ({ ...channel, archivedAt: NOW })),
+              }
+            : base;
         const decided = yield* decideOrchestrationCommand({
           command,
-          readModel: makeReadModel(),
+          readModel,
           issuer: command.type === "channel.post.create" ? PM_ISSUER : ADMIN,
         });
         const events = Array.isArray(decided) ? decided : [decided];

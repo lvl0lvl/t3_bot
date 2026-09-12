@@ -47,6 +47,7 @@ import {
   requireChannelAuthorIsMember,
   requireChannelHandlesUnique,
   requireChannelMentionsResolve,
+  requireChannelArchived,
   requireChannelNameAvailable,
   requireChannelNotArchived,
   requireIssuerCanAdminister,
@@ -2118,7 +2119,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         issuer: yield* requireCommandIssuer({ command, issuer }),
       });
-      yield* requireChannel({ readModel, command, channelId: command.channelId });
+      yield* requireChannelNotArchived({
+        command,
+        channel: yield* requireChannel({ readModel, command, channelId: command.channelId }),
+      });
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -2141,7 +2145,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         issuer: yield* requireCommandIssuer({ command, issuer }),
       });
-      yield* requireChannel({ readModel, command, channelId: command.channelId });
+      yield* requireChannelArchived({
+        command,
+        channel: yield* requireChannel({ readModel, command, channelId: command.channelId }),
+      });
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -2164,6 +2171,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         issuer: yield* requireCommandIssuer({ command, issuer }),
       });
       const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
+      // A retired channel's roster does not move: adding a member to a channel
+      // nobody can post to, or removing one from a channel nobody is reading,
+      // are both changes with no effect anyone can observe.
+      yield* requireChannelNotArchived({ command, channel });
       const member = yield* requireCanonicalChannelMember({ command, member: command.member });
       yield* requireChannelHandlesUnique({
         command,
@@ -2192,6 +2203,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         issuer: yield* requireCommandIssuer({ command, issuer }),
       });
       const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
+      // A retired channel's roster does not move: adding a member to a channel
+      // nobody can post to, or removing one from a channel nobody is reading,
+      // are both changes with no effect anyone can observe.
+      yield* requireChannelNotArchived({ command, channel });
       // Canonical on both sides, or "@Boss1" fails to remove the member it names.
       const handle = yield* requireCanonicalChannelHandle({ command, handle: command.handle });
       if (!channel.members.some((member) => member.handle === handle)) {
@@ -2238,9 +2253,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // After the author check, never before: canonicalising can itself fail on
       // a handle of only sigils, and a guard that fires earlier would let a
       // non-member tell a malformed mention from being excluded.
-      const mentions = yield* Effect.forEach(command.mentions, (handle) =>
+      const canonicalMentions = yield* Effect.forEach(command.mentions, (handle) =>
         requireCanonicalChannelHandle({ command, handle }),
       );
+      // Folding makes distinct spellings one handle, so "@Boss1" and "boss1" in
+      // one post now collapse — and would otherwise land as two identical
+      // mentions in the persisted event, waking the same member twice for one
+      // post. Dedupe here rather than in the reactor: the event is what replays.
+      const mentions = [...new Set(canonicalMentions)];
       yield* requireChannelMentionsResolve({ command, channel, mentions });
       return {
         ...(yield* withEventBase({

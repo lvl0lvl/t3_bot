@@ -22,6 +22,7 @@ const { commandToAggregateRef } = __testing;
 const PROJECT_ID = ProjectId.make("project-under-test");
 const THREAD_ID = ThreadId.make("thread-under-test");
 const CHANNEL_ID = ChannelId.make("channel-under-test");
+const ARCHIVED_CHANNEL_ID = ChannelId.make("channel-archived-under-test");
 const CHANNEL_HANDLE = ChannelMemberHandle.make("boss1");
 
 /**
@@ -220,6 +221,8 @@ const PROBE_EXTRAS: Readonly<Record<string, Readonly<Record<string, unknown>>>> 
     members: [],
     createdAt: NOW,
   },
+  // The live channel refuses this; the archived one is its only valid target.
+  "channel.unarchive": { channelId: ARCHIVED_CHANNEL_ID },
   // A handle the seeded channel does not already hold; the seeded one collides.
   "channel.member.add": {
     member: {
@@ -354,6 +357,17 @@ const readModel = (): OrchestrationReadModel => ({
       name: "seniors",
       members: [{ handle: CHANNEL_HANDLE, memberKind: "thread" as const, memberId: THREAD_ID }],
       archivedAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    },
+    // channel.unarchive is refused on a live channel, and channel.archive on an
+    // archived one, so one channel cannot serve both probes. Without this the
+    // unarchive probe emits no events and drops out of the comparison.
+    {
+      id: ARCHIVED_CHANNEL_ID,
+      name: "retired",
+      members: [{ handle: CHANNEL_HANDLE, memberKind: "thread" as const, memberId: THREAD_ID }],
+      archivedAt: NOW,
       createdAt: NOW,
       updatedAt: NOW,
     },

@@ -55,6 +55,17 @@ const TABLE: ReadonlyArray<readonly [input: string, canonical: string]> = [
   ["#CAF\u0045\u0301", "caf\u00e9"],
 ];
 
+/**
+ * The rows split once, with a tripwire on each side.
+ *
+ * Every loop below is driven from these. A filter that silently returns nothing
+ * runs no loop body and passes green having asserted nothing — which would
+ * retire the only coverage the empty-canonical refusals have. The counts are
+ * what stop a trimmed table taking a guard with it.
+ */
+const EMPTY_ROWS = TABLE.filter(([, canonical]) => canonical.length === 0);
+const NAMED_ROWS = TABLE.filter(([, canonical]) => canonical.length > 0);
+
 /** Rows as "input -> result", so a failure names the input that moved. */
 function render(rows: ReadonlyArray<readonly [string, string]>): ReadonlyArray<string> {
   return rows.map(([input, canonical]) => `${input} -> ${canonical}`);
@@ -74,6 +85,18 @@ const CREATE_COMMAND = {
   ],
   createdAt: "2026-01-01T00:00:00.000Z",
 } as const;
+
+it("keeps every row of the table reachable by the loops below", () => {
+  // The tripwire. Each count is the number of rows some loop depends on, so a
+  // trimmed table fails here rather than quietly emptying a filter and leaving
+  // a loop that asserts nothing.
+  expect(EMPTY_ROWS.length, "the empty rows are the only coverage the refusals have").toBe(3);
+  expect(NAMED_ROWS.length).toBe(TABLE.length - 3);
+  expect(
+    HANDLE_EMPTY_ROWS.length,
+    "the handle loop derives its own rows and needs its own count",
+  ).toBe(3);
+});
 
 it("canonicalises every row of the shared table", () => {
   const actual = render(TABLE.map(([input]) => [input, canonicalChannelName(input)] as const));
@@ -101,6 +124,7 @@ it("is idempotent, so a stored name canonicalises to itself", () => {
 const HANDLE_TABLE = TABLE.map(
   ([input, canonical]) => [input.replaceAll("#", "@"), canonical.replaceAll("#", "@")] as const,
 );
+const HANDLE_EMPTY_ROWS = HANDLE_TABLE.filter(([, canonical]) => canonical.length === 0);
 
 it("applies the same rule to handles, with @ as the sigil", () => {
   // The toolkit is to fold "@Boss1" to "boss1" when resolving a mention against
@@ -113,7 +137,7 @@ it("applies the same rule to handles, with @ as the sigil", () => {
 
 it.effect("refuses a handle that is only sigils and whitespace", () =>
   Effect.gen(function* () {
-    for (const [input] of HANDLE_TABLE.filter(([, out]) => out.length === 0)) {
+    for (const [input] of HANDLE_EMPTY_ROWS) {
       const error = yield* requireCanonicalChannelHandle({
         command: CREATE_COMMAND,
         handle: input,
@@ -128,7 +152,7 @@ it.effect("refuses a handle that is only sigils and whitespace", () =>
 
 it.effect("returns the canonical name for every row that has one", () =>
   Effect.gen(function* () {
-    for (const [input, canonical] of TABLE.filter(([, out]) => out.length > 0)) {
+    for (const [input, canonical] of NAMED_ROWS) {
       const result = yield* requireCanonicalChannelName({ command: CREATE_COMMAND, name: input });
       expect(result, `input <${input}>`).toBe(canonical);
     }
@@ -140,9 +164,7 @@ it.effect("refuses a name that is only sigils and whitespace", () =>
     // The command schema validates the RAW name, so "#" passes TrimmedNonEmptyString
     // and canonicalises to "". Without this check the event carries name "", which
     // no toolkit lookup can ever reach while it holds the empty-string slot.
-    const empties = TABLE.filter(([, out]) => out.length === 0);
-    expect(empties.length, "the empty rows are what make the non-empty check meaningful").toBe(3);
-    for (const [input] of empties) {
+    for (const [input] of EMPTY_ROWS) {
       const error = yield* requireCanonicalChannelName({
         command: CREATE_COMMAND,
         name: input,

@@ -189,6 +189,30 @@ function canonicalise(value: string, sigil: RegExp): string {
 }
 
 /**
+ * Characters that must never reach a stored name or handle.
+ *
+ * `String.trim()` removes 25 code points and no control or format character, so
+ * "non-empty after trimming" admits a handle of one zero-width space, and an
+ * invisible-prefixed "boss1" that renders exactly like the real one. It also
+ * admits ANSI escapes, and both a name and a handle are echoed straight back to
+ * agent and CLI output — a stored name carrying a screen-clear sequence is a
+ * terminal write, not a label.
+ *
+ * `\p{C}` covers control, format, surrogate, private-use and unassigned. The
+ * separators and U+034F are added because they are not in that category: U+034F
+ * is a combining mark. Confusables are deliberately NOT here — Cyrillic "о" is a
+ * real letter and rejecting it would refuse legitimate names; see canonicalise.
+ */
+const FORBIDDEN_IN_CANONICAL = /[\p{C}\p{Zl}\p{Zp}\u034F]/u;
+
+function describeForbidden(value: string): string {
+  const found = [...value].find((character) => FORBIDDEN_IN_CANONICAL.test(character));
+  return found === undefined
+    ? "an invisible character"
+    : `U+${found.codePointAt(0)?.toString(16).toUpperCase().padStart(4, "0")}`;
+}
+
+/**
  * The canonical name to store, refusing one that canonicalises to empty.
  *
  * The command schema validates the RAW name, so a name of only sigils and
@@ -204,15 +228,23 @@ export function requireCanonicalChannelName(input: {
   readonly name: string;
 }): Effect.Effect<string, OrchestrationCommandInvariantError> {
   const canonical = canonicalChannelName(input.name);
-  if (canonical.length > 0) {
-    return Effect.succeed(canonical);
+  if (canonical.length === 0) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        `Channel name '${input.name}' is only sigils and whitespace and has no canonical form.`,
+      ),
+    );
   }
-  return Effect.fail(
-    invariantError(
-      input.command.type,
-      `Channel name '${input.name}' is only sigils and whitespace and has no canonical form.`,
-    ),
-  );
+  if (FORBIDDEN_IN_CANONICAL.test(canonical)) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        `Channel name contains ${describeForbidden(canonical)}, which cannot appear in a stored name.`,
+      ),
+    );
+  }
+  return Effect.succeed(canonical);
 }
 
 /**
@@ -273,12 +305,17 @@ export function requireChannel(input: {
 }
 
 /**
- * A post needs a live channel. Archived channels stay READABLE and stop being
- * postable.
+ * An archived channel is READABLE and otherwise inert.
  *
- * Archiving is how a channel is retired, and a retired channel that still
- * accepts posts wakes its members from something nobody is watching. Reading
- * stays open because the history is the point of keeping the channel at all.
+ * Archiving is how a channel is retired. A retired channel that still accepts
+ * posts wakes its members from something nobody is watching, and one whose
+ * roster still moves lets a member be added to a channel nobody can post to, or
+ * removed from one nobody is reading. Reading stays open because the history is
+ * the point of keeping the channel at all.
+ *
+ * A RENAME is deliberately still allowed and is not a gap: channels have no
+ * delete, so renaming an archived channel is the only way to free a name its
+ * UNIQUE index still holds. See `requireChannelNameAvailable`.
  */
 export function requireChannelNotArchived(input: {
   readonly command: OrchestrationCommand;
@@ -290,7 +327,30 @@ export function requireChannelNotArchived(input: {
   return Effect.fail(
     invariantError(
       input.command.type,
-      `Channel '${input.channel.id}' is archived and cannot accept new posts.`,
+      `Channel '${input.channel.id}' is archived and cannot handle command '${input.command.type}'.`,
+    ),
+  );
+}
+
+/**
+ * Unarchiving needs an archived channel, so an already-live channel is refused.
+ *
+ * The mirror of `requireChannelNotArchived` on `channel.archive`: archiving an
+ * already-archived channel used to re-stamp `archivedAt`, so an idempotent-
+ * looking retry destroyed the answer to "when was this retired". Refusing both
+ * no-ops keeps that timestamp meaning one thing.
+ */
+export function requireChannelArchived(input: {
+  readonly command: OrchestrationCommand;
+  readonly channel: OrchestrationChannel;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  if (input.channel.archivedAt !== null) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `Channel '${input.channel.id}' is not archived and cannot handle command '${input.command.type}'.`,
     ),
   );
 }
@@ -328,6 +388,14 @@ export function requireCanonicalChannelHandle(input: {
       invariantError(
         input.command.type,
         `Handle '${input.handle}' is only sigils and whitespace and has no canonical form.`,
+      ),
+    );
+  }
+  if (FORBIDDEN_IN_CANONICAL.test(canonical)) {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        `Handle contains ${describeForbidden(canonical)}, which cannot appear in a stored handle.`,
       ),
     );
   }

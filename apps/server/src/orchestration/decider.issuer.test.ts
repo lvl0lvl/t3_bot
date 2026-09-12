@@ -267,7 +267,7 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
-        expect(error.detail).toContain("is archived and cannot accept new posts");
+        expect(error.detail).toContain("is archived and cannot handle command");
       }
     }),
   );
@@ -310,6 +310,162 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       });
       const events = Array.isArray(decided) ? decided : [decided];
       expect(events[0]?.type).toBe("channel.unarchived");
+    }),
+  );
+
+  it.effect("refuses a handle carrying an invisible character", () =>
+    Effect.gen(function* () {
+      // "Non-empty after trim" admitted these: String.trim removes no control or
+      // format character, so a handle of one zero-width space was storable, and
+      // an invisible-prefixed "boss1" rendered exactly like the real member.
+      const invisible: ReadonlyArray<readonly [label: string, handle: string]> = [
+        ["U+200B alone", "\u200B"],
+        ["trailing U+200B", "boss1\u200B"],
+        ["leading U+200B", "\u200Bboss1"],
+        ["trailing NUL", "boss1\u0000"],
+      ];
+      for (const [label, handle] of invisible) {
+        const error = yield* decideOrchestrationCommand({
+          command: {
+            type: "channel.member.add",
+            commandId: CommandId.make("cmd-add-invisible"),
+            channelId: CHANNEL,
+            member: { handle, memberKind: "thread", memberId: "thread-x" },
+          } as never,
+          readModel: readModel(),
+          issuer: HUMAN,
+        }).pipe(Effect.flip);
+        expect(error._tag, label).toBe("OrchestrationCommandInvariantError");
+        if (error._tag === "OrchestrationCommandInvariantError") {
+          expect(error.detail, label).toMatch(/no canonical form|cannot appear in a stored handle/);
+        }
+      }
+    }),
+  );
+
+  it.effect("refuses a channel name carrying an escape sequence", () =>
+    Effect.gen(function* () {
+      // A stored name is echoed to agent and CLI output, so a name carrying a
+      // screen-clear sequence is a terminal write rather than a label.
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-ansi"),
+          channelId: ChannelId.make("channel-ansi"),
+          name: "#\u001B[2J\u001B[1;1Hseniors",
+          members: [{ handle: BOSS1, memberKind: "thread", memberId: "thread-boss1" }],
+          createdAt: NOW,
+        } as never,
+        readModel: readModel(),
+        issuer: HUMAN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("cannot appear in a stored name");
+        // Names the code point so an operator can act on it.
+        expect(error.detail).toContain("U+001B");
+      }
+    }),
+  );
+
+  it.effect("keeps one member's mentions to one entry however they are spelled", () =>
+    Effect.gen(function* () {
+      // Folding made distinct spellings one handle, so three spellings of one
+      // member resolved to three identical persisted mentions — the same member
+      // woken three times for one post. Before folding, two of the three did
+      // not resolve at all and the post was refused.
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          ...(channelProbe("channel.post.create") as Record<string, unknown>),
+          mentions: ["@Boss1", "boss1", "@@BOSS1"],
+        } as never,
+        readModel: readModel(),
+        issuer: MEMBER_THREAD,
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events[0]?.type).toBe("channel.post-created");
+      if (events[0]?.type === "channel.post-created") {
+        expect(events[0].payload.mentions).toEqual([BOSS1]);
+      }
+    }),
+  );
+
+  it.effect("does not move an archived channel's roster", () =>
+    Effect.gen(function* () {
+      // Adding a member to a channel nobody can post to, or removing one from a
+      // channel nobody is reading, are changes with no observable effect.
+      const base = readModel();
+      const archived = {
+        ...base,
+        channels: base.channels.map((channel) => ({ ...channel, archivedAt: NOW })),
+      };
+      for (const type of ["channel.member.add", "channel.member.remove"]) {
+        const error = yield* decideOrchestrationCommand({
+          command: channelProbe(type) as never,
+          readModel: archived,
+          issuer: HUMAN,
+        }).pipe(Effect.flip);
+        expect(error._tag, type).toBe("OrchestrationCommandInvariantError");
+        if (error._tag === "OrchestrationCommandInvariantError") {
+          expect(error.detail, type).toContain("is archived and cannot handle command");
+        }
+      }
+    }),
+  );
+
+  it.effect("refuses to re-archive, so the retirement timestamp survives", () =>
+    Effect.gen(function* () {
+      // Re-archiving overwrote archivedAt, so an idempotent-looking retry
+      // destroyed the answer to "when was this retired".
+      const base = readModel();
+      const archived = {
+        ...base,
+        channels: base.channels.map((channel) => ({ ...channel, archivedAt: NOW })),
+      };
+      const error = yield* decideOrchestrationCommand({
+        command: channelProbe("channel.archive") as never,
+        readModel: archived,
+        issuer: HUMAN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is archived and cannot handle command");
+      }
+    }),
+  );
+
+  it.effect("refuses to unarchive a channel that is not archived", () =>
+    Effect.gen(function* () {
+      // The mirror. Without it an unarchive of a live channel emitted a no-op
+      // event that a projector had to absorb.
+      const error = yield* decideOrchestrationCommand({
+        command: channelProbe("channel.unarchive") as never,
+        readModel: readModel(),
+        issuer: HUMAN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is not archived");
+      }
+    }),
+  );
+
+  it.effect("still renames an archived channel, which is how its name is freed", () =>
+    Effect.gen(function* () {
+      // Deliberately NOT blocked: channels have no delete, so a rename is the
+      // only way to free a name an archived channel's UNIQUE index still holds.
+      const base = readModel();
+      const archived = {
+        ...base,
+        channels: base.channels.map((channel) => ({ ...channel, archivedAt: NOW })),
+      };
+      const decided = yield* decideOrchestrationCommand({
+        command: channelProbe("channel.meta.update") as never,
+        readModel: archived,
+        issuer: HUMAN,
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events[0]?.type).toBe("channel.meta-updated");
     }),
   );
 });
