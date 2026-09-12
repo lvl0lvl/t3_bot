@@ -48,15 +48,16 @@ const NOW = "2026-01-01T00:00:00.000Z";
  *
  * `command satisfies never` in that function proves every command has SOME
  * branch, and for most commands the compiler already blocks the wrong one: a
- * payload carrying only a `threadId` does not type-check in the project group,
- * which rejects 35 of the 40 commands outright.
+ * payload carrying only one id does not type-check in the other group, which
+ * settles 37 of the 39 declared commands — 34 thread-only and 3 project-only.
  *
- * The hazard is the commands carrying BOTH ids, because those type-check in
- * either group. Today that is exactly two — `thread.create` and
- * `thread.pull-request.sync` — and moving either into the project group
- * compiles clean and leaves the engine suite green. This table covers them, and
- * keeps that set honest as payloads gain ids: a command that grows a second id
- * silently joins the hazardous set without any other signal.
+ * The hazard is the two carrying BOTH ids, `thread.create` and
+ * `thread.pull-request.sync`, because those type-check in either group. Moving
+ * either compiles clean, and moving `thread.pull-request.sync` was measured to
+ * leave the pre-existing orchestration suite green at 41 files / 539 tests.
+ * This table covers them, and keeps that set honest as payloads gain ids: a
+ * command that grows a second id silently joins the hazardous set without any
+ * other signal.
  */
 const EXPECTED_AGGREGATE: Readonly<Record<string, OrchestrationAggregateKind>> = {
   "project.create": "project",
@@ -119,6 +120,11 @@ type CommandGroup = {
  * The command types the contract declares, read from the schema rather than
  * hand-listed: a command added to the union must be routed deliberately or the
  * table test below fails naming it. A hand-written list would rot silently.
+ *
+ * Deduplicated on purpose. The union has 41 members for 39 types, because
+ * `thread.pull-request.sync` and `thread.pull-request-link.sync` are each
+ * declared twice; counting members instead of types is how a count in a comment
+ * drifts from the thing it claims to describe.
  */
 const declaredCommandTypes = (): ReadonlyArray<string> => {
   const groups: ReadonlyArray<CommandGroup> = OrchestrationCommand.members;
@@ -136,6 +142,12 @@ const declaredCommandTypes = (): ReadonlyArray<string> => {
  * ones the compiler cannot already keep out of the wrong branch. Derived from
  * the contract rather than listed, so a command that grows a second id joins
  * the hazard set automatically instead of silently escaping it.
+ *
+ * This scopes ROUTER misplacement only. The agreement test also catches a
+ * decider stamping the wrong aggregate, and that hazard is wider — a decider
+ * literal is a string, so any command can carry the wrong one, single-id or
+ * not. An empty uncovered set is not coverage against that; closing it means
+ * driving the commands whose bare probe the decider refuses (t3_bot-aig).
  */
 const dualIdCommandTypes = (): ReadonlyArray<string> => {
   const groups: ReadonlyArray<CommandGroup> = OrchestrationCommand.members;
