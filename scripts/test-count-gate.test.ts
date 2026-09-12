@@ -10,6 +10,7 @@ import {
   isRegression,
   listWorkspaces,
   selectsWorkspace,
+  splitScope,
   toSuite,
   type RunnerReport,
   type Suite,
@@ -86,21 +87,32 @@ describe("workspace enumeration", () => {
     }
   });
 
-  it("splits the scope into measured and skipped, and the two do not overlap", () => {
+  it("puts a workspace with no `test` script on the SKIPPED side, by name", () => {
     // A WORKSPACE WITH NO `test` SCRIPT IS SCOPE THE GATE DOES NOT COVER, so it
-    // is named in the output rather than dropped silently. Asserted as a
-    // property rather than by naming today's package, so adding a test script
-    // to one does not red this.
+    // is named in the output rather than dropped silently.
+    //
+    // THE FIXTURE HAS ONE, which is the entire point. The first version of this
+    // test asked the real repo whether the split was "consistent" — and
+    // `measured: everything, skipped: []` is perfectly consistent, so a mutant
+    // that reported every skipped workspace as measured survived it. The input
+    // that separates the two implementations is a workspace with no test
+    // script, and a test that will not name one has to bring one.
+    const scope = splitScope([
+      workspace("t3", "apps/server", "vp test run"),
+      workspace("@t3tools/marketing", "apps/marketing"),
+      workspace("@t3tools/web", "apps/web", "vp test run --project unit"),
+    ]);
+    expect(scope.measured).toEqual(["t3", "@t3tools/web"]);
+    expect(scope.skipped).toEqual(["@t3tools/marketing"]);
+  });
+
+  it("describes the real repo's scope as a split of its real workspaces", () => {
+    // The wiring, once: `describeScope` really does run the enumeration through
+    // the split rather than computing something of its own.
     const scope = describeScope(REPO);
-    expect(scope.measured.length).toBeGreaterThan(0);
-    for (const name of scope.skipped) expect(scope.measured).not.toContain(name);
     const listed = listWorkspaces(REPO);
     expect(scope.measured.length + scope.skipped.length).toBe(listed.length);
-    // Every skipped name really does lack a test script — the split is not a
-    // coin toss that happens to partition.
-    for (const name of scope.skipped) {
-      expect(listed.find((entry) => entry.name === name)?.testScript).toBeUndefined();
-    }
+    expect(scope.measured).toContain("@t3tools/scripts");
   });
 
   it("selects a workspace by package name, by directory, or by nothing at all", () => {
