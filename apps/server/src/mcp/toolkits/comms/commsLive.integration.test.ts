@@ -803,7 +803,32 @@ describe("the comms toolkit on the live gateway", () => {
           .readPosts({ channelId: CHANNEL_ID, limit: 10, cursor: legacy, direction: "forward" })
           .pipe(Effect.flip);
         expect(refused._tag).toBe("ChannelCursorUnusable");
-        expect(refused).toMatchObject({ cursor: legacy, channelId: CHANNEL_ID });
+        expect(refused).toMatchObject({
+          cursor: legacy,
+          channelId: CHANNEL_ID,
+          reason: "malformed",
+        });
+
+        // AND THROUGH THE DOOR AN AGENT ACTUALLY USES, which is the half that
+        // was wrong. `CURSOR_PATTERN` matched the encoder exactly, so this value
+        // — one this server issued before the direction segment existed, and the
+        // likeliest wrong cursor there is — never reached the gateway at all:
+        // the tool schema turned it into an `AiError` quoting the regex, outside
+        // the `CommsToolError` union this tool declares and with no recovery in
+        // it. Measured, not assumed (`t3_bot-2oh`).
+        const toolRefusal = yield* call(
+          "comms_read_channel",
+          { channel: "seniors", cursor: legacy },
+          BOSS3,
+        ).pipe(Effect.flip);
+        expect((toolRefusal as { _tag: string })._tag).toBe("CommsCursorUnusableError");
+        const legacyMessage = (toolRefusal as { message: string }).message;
+        // THE RECOVERY IS THE PRODUCT. A schema refusal is still a refusal, so a
+        // test reading only "it failed" cannot tell the two doors apart — which
+        // is how the regex dump survived. This reads what the agent can act on.
+        expect(legacyMessage).toContain("without a cursor");
+        expect(legacyMessage).toContain("Nothing was lost.");
+        expect(legacyMessage).not.toContain("RegExp");
 
         // And the same tree still pages with a cursor of the new shape, so this
         // is about the missing segment rather than about refusing everything.

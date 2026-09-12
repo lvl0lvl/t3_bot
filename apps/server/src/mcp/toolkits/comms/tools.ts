@@ -261,10 +261,26 @@ export type ChannelPost = typeof ChannelPost.Type;
  * going backward, so the same number means opposite things and the read has to
  * be told which it was handed.
  *
- * A CURSOR ISSUED BEFORE THIS FIELD has two segments and no longer matches, so
- * the tool refuses it at the schema rather than the gateway. That is the right
- * door: the agent is told its cursor is not a cursor and re-reads from the
- * start, which is what it would have to do anyway.
+ * THE DIRECTION SEGMENT IS OPTIONAL HERE AND REQUIRED IN THE DECODER, which
+ * looks like the two-spellings mistake and is the opposite of it: the decoder
+ * decides what is HONOURED and this decides which door a refusal comes out of.
+ * A cursor issued before `t3_bot-2oh` has two segments, and matching the encoder
+ * exactly meant the schema refused it — measured through the live toolkit:
+ *
+ *   AiError: Toolkit.comms_read_channel.handle: Invalid parameters for tool
+ *   'comms_read_channel': Expected a string matching the RegExp
+ *   ^[A-Za-z0-9_-]{1,64}:(?:forward|backward):[0-9]{1,15}$ at ["cursor"]
+ *
+ * A regex where the recovery should be, outside the `CommsToolError` union this
+ * tool declares, and with nothing saying the posts are still there. Admitted
+ * here, the same value reaches `decodeChannelCursor`, is refused as "malformed",
+ * and the agent is told to re-read without a cursor and that nothing was lost.
+ *
+ * It is NOT a compatibility shim that keeps working: the sequence is never
+ * honoured, in either spelling. It is a window in which the most likely wrong
+ * value — one this server issued last week and an agent is still carrying — gets
+ * the answer written for wrong cursors instead of the one written for malformed
+ * tool arguments.
  */
 /**
  * EXPORTED FOR THE TESTS, which asserted a hand-copied duplicate of this regex
@@ -272,7 +288,7 @@ export type ChannelPost = typeof ChannelPost.Type;
  * it used to be. A test that pins "the shape the tool accepts" has to read the
  * shape the tool accepts.
  */
-export const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:(?:forward|backward):[0-9]{1,15}$/;
+export const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:(?:(?:forward|backward):)?[0-9]{1,15}$/;
 
 export const ReadChannelResult = Schema.Struct({
   channel: Schema.String,
@@ -364,6 +380,11 @@ const ReadChannelTool = Tool.make("comms_read_channel", {
       // wire shape of "you are caught up" - while "  ", "-1" and "1.5" rewind
       // to the oldest page. A post id is the likely wrong value, since posts
       // and cursors are both bare strings in the result.
+      //
+      // A TWO-SEGMENT CURSOR GETS THROUGH ON PURPOSE, and is then refused by the
+      // gateway rather than by this check. `CURSOR_PATTERN` has the measurement:
+      // the schema's refusal is a regex dump outside the tool's declared error
+      // union, and the gateway's is a sentence with a recovery in it.
       Schema.String.check(Schema.isPattern(CURSOR_PATTERN)).annotate({
         description:
           "nextCursor from a previous read OF THIS CHANNEL, to get the posts after that page. Omit for the oldest posts. Pass it back exactly as given; a cursor from another channel, or from a read in the other direction, is refused rather than answered.",

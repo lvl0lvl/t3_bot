@@ -1187,3 +1187,80 @@ describe("comms toolkit helpers", () => {
     expect(resolveMentions(["@", "  ", "boss1"], MEMBERS)).toEqual({ handles: ["boss1"] });
   });
 });
+
+/**
+ * The pattern, read directly, because every other assertion on it is indirect.
+ *
+ * Everything `CURSOR_PATTERN` refuses is refused AGAIN by `decodeChannelCursor`,
+ * so replacing the whole check with `/^[\s\S]*$/` leaves every cursor test in
+ * this repository green: the tool still fails, one door further down. The guard
+ * is not about whether a bad cursor is caught, it is about WHICH error the agent
+ * is handed, and only reading the pattern itself can measure that.
+ */
+describe("CURSOR_PATTERN", () => {
+  it("admits what the encoder writes, in both directions", () => {
+    expect(CURSOR_PATTERN.test("channel-seniors:forward:12")).toBe(true);
+    expect(CURSOR_PATTERN.test("channel-seniors:backward:12")).toBe(true);
+    // Zero is a sequence; a bound of one digit is still a bound.
+    expect(CURSOR_PATTERN.test("c:forward:0")).toBe(true);
+  });
+
+  it("admits a cursor issued before the direction existed", () => {
+    // ON PURPOSE, and refused by the gateway rather than here (`t3_bot-2oh`).
+    // Matching the encoder exactly meant the schema turned a cursor this server
+    // itself issued into an `AiError` quoting this regex, outside the tool's
+    // declared error union and with no recovery in it. Admitted, the same value
+    // reaches the decoder and comes back as "read again without a cursor,
+    // nothing was lost". The sequence is never honoured either way.
+    expect(CURSOR_PATTERN.test("channel-seniors:12")).toBe(true);
+  });
+
+  it("refuses the direction word it was not given", () => {
+    // The alternation is a CLOSED set of two words. `[a-z]+` in its place reads
+    // identically on every fixture the encoder produces and admits
+    // "channel:sideways:1", which the decoder then refuses as a direction
+    // mismatch - the right refusal at the wrong door, and the tell is gone.
+    expect(CURSOR_PATTERN.test("channel-seniors:sideways:12")).toBe(false);
+    expect(CURSOR_PATTERN.test("channel-seniors:Forward:12")).toBe(false);
+    expect(CURSOR_PATTERN.test("channel-seniors:forwards:12")).toBe(false);
+  });
+
+  it("refuses a sequence that cannot survive the round trip", () => {
+    // Fifteen digits is the widest bound that cannot overflow:
+    // `Number.MAX_SAFE_INTEGER` has sixteen, and an unbounded `[0-9]+` admitted
+    // "9007199254740993" - numeric, past every other check, and a sequence the
+    // caller can never be given back.
+    expect(CURSOR_PATTERN.test(`channel-seniors:forward:${"9".repeat(15)}`)).toBe(true);
+    expect(CURSOR_PATTERN.test(`channel-seniors:forward:${"9".repeat(16)}`)).toBe(false);
+  });
+
+  it("refuses a channel half that would break the decoder's split", () => {
+    // The split assumes no ":" inside a channel id, which is what
+    // `OPAQUE_ID_PATTERN` guarantees and what this half re-spells so the
+    // assumption is checkable here. Sixty-five characters is one past that
+    // brand's own bound.
+    expect(CURSOR_PATTERN.test("has spaces:forward:1")).toBe(false);
+    expect(CURSOR_PATTERN.test("a:b:forward:1")).toBe(false);
+    expect(CURSOR_PATTERN.test(`${"a".repeat(65)}:forward:1`)).toBe(false);
+    expect(CURSOR_PATTERN.test(":forward:1")).toBe(false);
+  });
+
+  it("refuses the shapes an agent is most likely to send instead", () => {
+    // A post id and a bare sequence, which are the two wrong values the result
+    // shape makes easy: posts and cursors are both plain strings in it. The
+    // trailing newline is here because `$` in JavaScript is NOT Python's: it
+    // does not match before a final newline unless `m` is set, so a cursor
+    // copied with a line break is refused rather than quietly honoured.
+    for (const notACursor of [
+      "post-2",
+      "3",
+      "seniors:",
+      "",
+      "  ",
+      "channel:forward:",
+      "channel-a:forward:1\n",
+    ]) {
+      expect(CURSOR_PATTERN.test(notACursor)).toBe(false);
+    }
+  });
+});
