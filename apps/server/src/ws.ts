@@ -508,13 +508,20 @@ const makeWsRpcLayer = (
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const projectionChannels = yield* ProjectionChannelRepository;
       /**
-       * Who this connection is, as ONE value used on both sides.
+       * Who this connection READS as: the member the channel shell stream is
+       * filtered by.
        *
-       * It is the issuer stamped on every command this connection dispatches AND
-       * the member the channel shell stream is filtered by. Two values would be
-       * two ways to be wrong in opposite directions: an operator who can post to
-       * a channel they cannot see, or who can see one they cannot post to. Both
-       * read as "the app is broken" and neither points at the cause.
+       * ONE OF TWO VALUES, not one used on both sides. An earlier version of this
+       * paragraph said it was also "the issuer stamped on every command this
+       * connection dispatches", and argued that two values would be two ways to
+       * be wrong in opposite directions — an operator who can post to a channel
+       * they cannot see, or see one they cannot post to. That sentence outlived
+       * the code: the write identity is `connectionIssuer` below, because the two
+       * are not the same SET and a plain object satisfying both structurally is
+       * what hid the distinction.
+       *
+       * What keeps them from drifting is that both constructors derive from
+       * `HUMAN_OPERATOR_MEMBER_ID` and neither can be built from a request.
        *
        * DERIVED, NEVER READ FROM A REQUEST. There is nothing to read — no
        * account system, one operator — and when there is, it comes from the
@@ -555,11 +562,12 @@ const makeWsRpcLayer = (
        * engine already ignores the field for every command that has no issuer
        * invariant.
        *
-       * The value is `connectionMember`, the same one the channel shell stream
-       * filters by, so the identity that may WRITE and the identity that may
-       * READ cannot drift apart. The seeder writes that same constant into the
-       * channels' membership, so `requireChannelAuthorIsMember` is deciding
-       * against a member that exists.
+       * The OTHER door — `POST /api/orchestration/dispatch` — stamps the same
+       * identity from the same constructor. It used to stamp nothing, and fail
+       * closed on every channel write, because this union is the payload of both
+       * and only one of them was taught to stamp. The seeder writes that same id
+       * into the channels' membership, so `requireChannelAuthorIsMember` is
+       * deciding against a member that exists.
        */
       const dispatchFromClient: OrchestrationEngine.OrchestrationEngineShape["dispatch"] = (
         command,

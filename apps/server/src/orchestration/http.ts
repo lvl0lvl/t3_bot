@@ -2,6 +2,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
+  operatorCommandIssuer,
   refFromOperatorSession,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -104,14 +105,20 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           const normalizedCommand = yield* normalizeDispatchCommand(args.payload).pipe(
             Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")),
           );
-          return yield* orchestrationEngine.dispatch(normalizedCommand).pipe(
-            Effect.tapError(() =>
-              cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
-            ),
-            Effect.catch((cause) =>
-              failEnvironmentInternal("orchestration_dispatch_failed", cause),
-            ),
-          );
+          // THE SECOND DOOR INTO THE SAME UNION, and it used to pass no issuer.
+          // `ClientOrchestrationCommand` is this route's payload and the
+          // WebSocket RPC's, so widening it widened both; stamping only the
+          // socket left every channel command here failing closed as a 500.
+          return yield* orchestrationEngine
+            .dispatch(normalizedCommand, { issuer: operatorCommandIssuer() })
+            .pipe(
+              Effect.tapError(() =>
+                cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
+              ),
+              Effect.catch((cause) =>
+                failEnvironmentInternal("orchestration_dispatch_failed", cause),
+              ),
+            );
         }),
       );
   }),

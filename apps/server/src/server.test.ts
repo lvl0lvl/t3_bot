@@ -2187,6 +2187,66 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("issues an HTTP-dispatched command as the human operator too", () =>
+    Effect.gen(function* () {
+      // THE SECOND DOOR. `ClientOrchestrationCommand` is the payload of the
+      // WebSocket RPC *and* of POST /api/orchestration/dispatch, so widening
+      // that union widened both — and the change that taught the socket to
+      // stamp an issuer left this route passing none. `requireCommandIssuer`
+      // failed closed, so every channel command here became an HTTP 500 rather
+      // than an unauthorized post.
+      //
+      // The WebSocket tests cannot see this: they drive the other entry point.
+      // Three review lanes found it independently, each by executing the POST,
+      // and none of the suite's existing tests could have.
+      const issuers: Array<unknown> = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (_command, options) =>
+              Effect.sync(() => {
+                issuers.push(options?.issuer);
+                return { sequence: 1 };
+              }),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "channel.post.create",
+          commandId: "cmd-http-post",
+          channelId: "channel-project",
+          postId: "post-http-1",
+          body: "posted over http",
+          mentions: ["boss1"],
+          parentPostId: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      });
+
+      assert.equal(response.status, 200);
+      // SPELLED OUT, not compared against the value the route spends. Asserting
+      // against the constant itself moves both sides of the comparison together,
+      // so it can only catch a MISSING issuer and never a wrong one: mutating
+      // `memberKind` at the source left this test green while reddening the two
+      // websocket tests below, which spell the literal. Measured, by triage.
+      //
+      // Reference identity does not fix it either — `assert.strictEqual(issuers[0],
+      // ...)` is still a comparison against the mutated value, and triage ran
+      // that too and watched the mutant live.
+      assert.deepStrictEqual(issuers, [
+        { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("compresses large JSON responses through the composed routes", () =>
     Effect.gen(function* () {
       const descriptor = {
