@@ -4,6 +4,12 @@
  * Owns persistence operations for projection cursor state used to resume
  * incremental event projection.
  *
+ * Reactors that must not miss events keep their cursor here too, under a
+ * `reactor:` prefix. The rows are the same thing — a named position in the
+ * event log — and keeping them together means a pruning floor derived from
+ * `minLastAppliedSequence` covers both: an event a reactor has not consumed is
+ * exactly one that must not be pruned.
+ *
  * @module ProjectionStateRepository
  */
 import { IsoDateTime, NonNegativeInt } from "@t3tools/contracts";
