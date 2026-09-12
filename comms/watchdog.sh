@@ -14,7 +14,8 @@ last_post_epoch() { f=$(ls -t "$BOARD" | /usr/bin/grep -- "-$1-" | head -1); [ -
 last_push_epoch() { git -C "$REPO" for-each-ref --sort=-committerdate --format='%(committerdate:unix)' "refs/remotes/origin/$1/*" 2>/dev/null | head -1; }
 # If bd itself fails, treat the track as claimed: an instrument that reports nothing is not reporting "no work".
 has_claim() { out=$(cd "$REPO" && bd list -n 0 --status=in_progress --assignee="$1" 2>&1) || return 0; printf '%s' "$out" | /usr/bin/grep -qE '^[◐○] '; }
-declare -A woke; last_beat=$(now); last_tick=$(now); last_fetch=0
+# macOS ships bash 3.2: no associative arrays. Per-track state via indirect names (woke_boss1 ...).
+last_beat=$(now); last_tick=$(now); last_fetch=0
 while true; do
   t=$(now)
   if [ $((t - last_tick)) -gt 180 ]; then echo "WATCHDOG RESUMED after $(( (t - last_tick) / 60 ))m gap (system sleep?) — rechecking now"; fi
@@ -27,8 +28,9 @@ while true; do
     report="$report $tr=${m}m"
     if [ "$m" -ge "$STALE_MIN" ] && has_claim "$tr"; then
       action=1
-      if [ $((t - ${woke[$tr]:-0})) -ge $((REWAKE_MIN * 60)) ]; then
-        woke[$tr]=$t
+      wv="woke_$tr"; last_woke=${!wv:-0}
+      if [ $((t - last_woke)) -ge $((REWAKE_MIN * 60)) ]; then
+        printf -v "$wv" '%s' "$t"
         f=$(bash "$ROOT/comms/post.sh" pm "$tr" ASSIGN "watchdog-wake-$(date +%H%M)" "WATCHDOG: $tr silent ${m}m with claimed work · REPORT now" <<MSG
 Automatic wake from the PM watchdog. No board post and no push from $tr in ${m} minutes while you hold an in-progress bead.
 Post a REPORT now: bd id · state · what changed · what you need. If you are mid-build, push what you have and say so in one line.
