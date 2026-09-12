@@ -13,6 +13,8 @@ import {
   ChannelMemberHandle,
   ChannelPostId,
   CommandId,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -25,11 +27,13 @@ import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import { describe, expect, it } from "vite-plus/test";
 
 import { makeSqlitePersistenceLive } from "../../persistence/Layers/Sqlite.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
+import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import {
   ProjectionStateRepository,
   type ProjectionStateRepositoryShape,
@@ -77,6 +81,17 @@ const WOKEN = ThreadId.make("thread-woken");
 const BYSTANDER = ThreadId.make("thread-bystander");
 const CHANNEL_ID = ChannelId.make("channel-seniors");
 const MENTION = ChannelMemberHandle.make("woken");
+
+/**
+ * The woken thread's modes, chosen because they are NOT the defaults.
+ *
+ * The reactor reads a thread's modes and passes them to the turn it starts. A
+ * fixture on the default modes cannot tell that from a reactor that passes
+ * nothing: both produce a turn on the defaults. These two are what make the
+ * assertion mean anything, and a tripwire below fails if anyone resets them.
+ */
+const WOKEN_RUNTIME_MODE = "approval-required" as const;
+const WOKEN_INTERACTION_MODE = "plan" as const;
 const NOW = "2026-01-01T00:00:00.000Z";
 
 /**
@@ -173,12 +188,14 @@ const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
   const reactor = await runtime.runPromise(Effect.service(MentionWakeReactor));
   const cursors = await runtime.runPromise(Effect.service(ProjectionStateRepository));
   const threads = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
+  const events = await runtime.runPromise(Effect.service(OrchestrationEventStore));
   const scope = await runtime.runPromise(Scope.make());
   return {
     engine,
     reactor,
     cursors,
     threads,
+    events,
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     startReactor: () =>
       runtime.runPromise(Scope.provide(reactor.start(), scope) as Effect.Effect<void>),
@@ -222,8 +239,8 @@ const seedChannel = async (system: System) => {
       threadId: WOKEN,
       title: "Woken",
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
+      runtimeMode: WOKEN_RUNTIME_MODE,
+      interactionMode: WOKEN_INTERACTION_MODE,
       branch: null,
       worktreePath: null,
       createdAt: NOW,
@@ -276,7 +293,11 @@ const seedChannel = async (system: System) => {
 
 const post = async (
   system: System,
-  input: { readonly id: string; readonly mentions: ReadonlyArray<ChannelMemberHandle> },
+  input: {
+    readonly id: string;
+    readonly mentions: ReadonlyArray<ChannelMemberHandle>;
+    readonly parentPostId?: ChannelPostId;
+  },
 ) =>
   system.run(
     system.engine.dispatch(
@@ -287,7 +308,7 @@ const post = async (
         postId: ChannelPostId.make(input.id),
         body: "have a look at this",
         mentions: input.mentions,
-        parentPostId: null,
+        parentPostId: input.parentPostId ?? null,
         createdAt: NOW,
       },
       { issuer: WALT },
@@ -848,6 +869,149 @@ describe("MentionWakeReactor", () => {
       // receipt check absorbs it, which is what makes the hold affordable.
       expect(messages.filter((text) => text.includes("post post-works"))).toHaveLength(1);
       expect(await wakeMessages(system, BYSTANDER)).toHaveLength(0);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("starts the woken turn in the thread's own modes, not the defaults", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await post(system, { id: "post-modes", mentions: [MENTION] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      const requested = await system.run(
+        system.events.readFromSequence(0, Number.MAX_SAFE_INTEGER).pipe(
+          Stream.filter((event) => event.type === "thread.turn-start-requested"),
+          Stream.runCollect,
+          Effect.orDie,
+        ),
+      );
+      expect(requested).toHaveLength(1);
+      const started = requested[0];
+      if (started?.type !== "thread.turn-start-requested") {
+        throw new Error("no turn was requested");
+      }
+
+      // The tripwire, before the assertion it protects. These modes are the
+      // whole experiment: on the defaults, "the turn runs in the thread's
+      // modes" and "the turn runs on the defaults" are the same turn, and this
+      // test would be green against anything at all.
+      expect(WOKEN_RUNTIME_MODE).not.toBe(DEFAULT_RUNTIME_MODE);
+      expect(WOKEN_INTERACTION_MODE).not.toBe(DEFAULT_PROVIDER_INTERACTION_MODE);
+
+      // A channel mention must not be a way to raise a thread's runtime mode:
+      // an operator who set a thread to approval-required did not consent to a
+      // colleague's post running it with full access.
+      //
+      // WHERE THE GUARANTEE LIVES, because this test cannot tell you and the
+      // reactor's own code reads as if it were the answer: the decider ignores
+      // the modes on `thread.turn.start` and takes the thread's own. Mutating
+      // the reactor to pass the defaults leaves this green. It is pinned here
+      // anyway because this is the path where it would matter - a later change
+      // that made the command authoritative would turn every channel mention
+      // into a mode escalation, and this is the file that would say so.
+      expect(started.payload.threadId).toBe(WOKEN);
+      expect(started.payload.runtimeMode).toBe(WOKEN_RUNTIME_MODE);
+      expect(started.payload.interactionMode).toBe(WOKEN_INTERACTION_MODE);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("tells the woken agent where the post came from and how to answer it", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await post(system, { id: "post-parent", mentions: [] });
+      await post(system, {
+        id: "post-reply",
+        mentions: [MENTION],
+        parentPostId: ChannelPostId.make("post-parent"),
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      const [message] = await wakeMessages(system);
+      const lines = (message ?? "").split("\n");
+
+      // The first line is machine-parseable on purpose: a client renders a
+      // channel card from it and correlates by postId. Asserted whole rather
+      // than by substring, because the separators and the order ARE the format
+      // and a substring check passes for a line that has lost both.
+      expect(lines[0]).toBe(
+        "[comms] #seniors · @walt mentioned you · post post-reply · in reply to post-parent",
+      );
+
+      // The thread is being asked to answer in the CHANNEL. Without the call to
+      // action naming the channel and the post, the woken agent's only obvious
+      // move is to answer in its own thread, where nobody who asked is looking.
+      expect(lines.at(-1)).toBe(
+        'comms_reply(channel: "seniors", parentPostId: "post-reply", body: ...) — or comms_post. Do not answer here.',
+      );
+
+      // The trust statement is BEFORE the body, and names the author. A frame
+      // that only closes can be superseded by anything shaped like a newer
+      // frame; a frame that opens is what the fenced region is defined against.
+      const begin = lines.findIndex((line) => line.startsWith("---- begin post "));
+      const statement = lines.findIndex((line) =>
+        line.includes("untrusted channel content written by @walt"),
+      );
+      expect(statement).toBeGreaterThanOrEqual(0);
+      expect(begin).toBeGreaterThan(statement);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("keeps waking for posts that land after it has caught up", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      // Caught up first, so the post below is one the reactor has to be TOLD
+      // about rather than one it finds by reading.
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      await post(system, { id: "post-live", mentions: [MENTION] });
+
+      // BOUNDED, and the bound is not how this test passes - it is how it
+      // FAILS. Drop the live subscription from the stream and drainThrough
+      // never returns: the post is durable, nothing hands it to the worker,
+      // and the fence never reaches it. Three tests in this file catch that,
+      // every one of them as a thirty-second timeout that names nothing. This
+      // one says which property died.
+      //
+      // It does NOT isolate the subscription, and the difference matters:
+      // readFromSequence pages until a query comes back EMPTY, so a post made
+      // between the last non-empty page and that final query is delivered by
+      // the backlog read instead. Draining first makes that window small and
+      // does not close it. Verified: with the subscription removed this test
+      // passed on the race while three others hung.
+      const drained = await system.run(
+        system.engine.latestSequence.pipe(
+          Effect.flatMap(system.reactor.drainThrough),
+          Effect.timeoutOption("10 seconds"),
+        ),
+      );
+      expect(
+        Option.isSome(drained),
+        "the reactor stopped handling posts after it caught up: nothing delivered this one",
+      ).toBe(true);
+      expect(await wakeMessages(system)).toHaveLength(1);
     } finally {
       await system.dispose();
       await removeDirectory(directory);

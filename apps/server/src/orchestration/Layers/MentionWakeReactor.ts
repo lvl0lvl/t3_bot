@@ -134,11 +134,21 @@ const make = Effect.gen(function* () {
       return;
     }
     for (const threadId of threadIds) {
-      // The woken turn runs in the thread's OWN modes, read now rather than
-      // defaulted. A channel mention must not be a way to raise a thread's
-      // runtime mode: an operator who set a thread to approval-required did not
-      // consent to a colleague's post running it with full access. Defaulting
-      // would do exactly that, silently, from outside the thread.
+      // Two reasons, and only one of them is the modes.
+      //
+      // EXISTENCE: a member can name a thread that no longer exists, because
+      // membership is a channel's record of who belongs and not a foreign key.
+      // Skipping it here rather than letting the dispatch fail is what keeps
+      // one dead member from holding the cursor against every later post.
+      //
+      // MODES: `thread.turn.start` requires runtimeMode and interactionMode and
+      // the decider reads NEITHER - it takes both from the thread it is
+      // starting (decider.ts, case "thread.turn.start"). So these are inert
+      // today, and they are the thread's own rather than the defaults for the
+      // day they stop being: a channel mention must never be a way to raise a
+      // thread's runtime mode, and defaulting would do exactly that, silently,
+      // from outside the thread. Verified rather than assumed - passing the
+      // defaults here changes nothing observable.
       const thread = yield* threads.getById({ threadId });
       if (Option.isNone(thread)) {
         continue;
