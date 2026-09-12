@@ -57,7 +57,8 @@ interface GatewayFailures {
     | ChannelGateway.ChannelStoreUnavailable
     | ChannelGateway.ChannelWriteConflict
     | ChannelGateway.ChannelMembershipRevoked
-    | ChannelGateway.ChannelMentionUnresolvable;
+    | ChannelGateway.ChannelMentionUnresolvable
+    | ChannelGateway.ChannelArchived;
   /** Raised as a DEFECT rather than a typed failure. */
   readonly dieOn?: "getChannel" | "createPost" | "readPosts" | "getPost";
 }
@@ -65,6 +66,7 @@ interface GatewayFailures {
 interface HarnessOptions {
   readonly channels?: ReadonlyArray<{
     readonly name: string;
+    readonly archivedAt?: string;
     readonly memberThreadIds: ReadonlyArray<string>;
   }>;
   readonly posts?: ReadonlyArray<ChannelGateway.ChannelPostRecord>;
@@ -106,6 +108,7 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
               Option.map((channel): ChannelGateway.Channel => ({
                 channelId: CHANNEL_ID,
                 name: channel.name,
+                archivedAt: channel.archivedAt ?? null,
                 members,
               })),
             ),
@@ -248,6 +251,37 @@ describe("comms toolkit handlers", () => {
         THREAD_ID,
         OTHER_THREAD_ID,
       ]);
+    }),
+  );
+
+  it.effect("says a channel is ARCHIVED rather than missing, to a member who can see it", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        channels: [
+          { name: "seniors", archivedAt: "2026-09-11T00:00:00.000Z", memberThreadIds: [THREAD_ID] },
+        ],
+        failures: { createPost: new ChannelGateway.ChannelArchived() },
+      });
+      const error = yield* harness
+        .call("comms_post", { channel: "seniors", body: "anyone still here" })
+        .pipe(Effect.flip);
+
+      // READABLE, NOT POSTABLE. The caller resolved this channel to get here,
+      // so it can see the channel exists; "no such channel" would be false to
+      // the one reader able to check, and would send it to comms_read_channel,
+      // which would show the channel and no reason for the refusal. That is the
+      // loop this area has already shipped once.
+      expect(error).toMatchObject({ _tag: "CommsChannelArchivedError", channel: "seniors" });
+      expect((error as { message: string }).message).toContain("archived");
+      expect((error as { message: string }).message).toContain("Nothing was posted");
+      // And it names WHICH channel: an agent is in several, and a refusal that
+      // does not say which one it may no longer post to is not actionable.
+      expect((error as { message: string }).message).toContain("seniors");
+
+      // Reading it still works. That is the half that makes the distinction
+      // worth having rather than a nicer word for the same refusal.
+      const read = yield* harness.call("comms_read_channel", { channel: "seniors" });
+      expect(read.channel).toBe("seniors");
     }),
   );
 

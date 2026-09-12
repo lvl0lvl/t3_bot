@@ -48,6 +48,16 @@ export class ChannelMembershipRevoked extends Schema.TaggedError<ChannelMembersh
   {},
 ) {}
 
+/**
+ * The channel is archived: readable, not postable.
+ *
+ * Distinct from "not found" on purpose. The caller is a member — they resolved
+ * the channel to get here — so the conflation that hides a channel's existence
+ * from outsiders has nothing to protect, and an error that said "no such
+ * channel" would be false to the one reader who can already see it.
+ */
+export class ChannelArchived extends Schema.TaggedError<ChannelArchived>()("ChannelArchived", {}) {}
+
 /** A mention did not resolve to a current member; the post is rejected whole. */
 export class ChannelMentionUnresolvable extends Schema.TaggedError<ChannelMentionUnresolvable>()(
   "ChannelMentionUnresolvable",
@@ -105,6 +115,18 @@ export interface Channel {
    */
   readonly name: string;
   readonly members: ReadonlyArray<ChannelMember>;
+  /**
+   * When the channel was retired, or `null`.
+   *
+   * ARCHIVED CHANNELS RESOLVE. A member can still read one; nobody can post to
+   * one. The decider orders `requireChannelNotArchived` AFTER the membership
+   * check so a NON-member cannot learn the channel exists — and a member
+   * already knows it does, so telling them it is archived reveals nothing that
+   * ordering protects. Telling them "no such channel" instead would hand an
+   * agent that read it five minutes ago an answer identical to never having
+   * been in it, and point it at a tool that would say nothing either.
+   */
+  readonly archivedAt: string | null;
 }
 
 export interface ChannelPostRecord {
@@ -216,6 +238,7 @@ export interface ChannelGatewayShape {
     | ChannelWriteConflict
     | ChannelMembershipRevoked
     | ChannelMentionUnresolvable
+    | ChannelArchived
   >;
 }
 

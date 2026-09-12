@@ -87,6 +87,23 @@ export class CommsMembershipLostError extends Schema.TaggedError<CommsMembership
   }
 }
 
+/**
+ * The channel is archived. Says so, rather than "not found".
+ *
+ * The agent can read this channel — it just resolved it — so an error claiming
+ * it does not exist would be false to the one reader who can see otherwise, and
+ * would send it to `comms_read_channel`, which would show the channel and no
+ * reason for the refusal. It names the state and the one action that changes it.
+ */
+export class CommsChannelArchivedError extends Schema.TaggedError<CommsChannelArchivedError>()(
+  "CommsChannelArchivedError",
+  { channel: Schema.String },
+) {
+  override get message(): string {
+    return `Channel '${this.channel}' is archived: you can read it, but nothing can be posted to it. Nothing was posted. Ask a human to unarchive it if this still needs saying.`;
+  }
+}
+
 export class CommsPostFailedError extends Schema.TaggedError<CommsPostFailedError>()(
   "CommsPostFailedError",
   { detail: Schema.String, retryable: Schema.Boolean },
@@ -110,6 +127,7 @@ export class CommsReadFailedError extends Schema.TaggedError<CommsReadFailedErro
 export const CommsToolError = Schema.Union([
   McpCapabilityUnavailableError,
   CommsChannelNotFoundError,
+  CommsChannelArchivedError,
   CommsMemberNotFoundError,
   CommsPostNotFoundError,
   CommsEmptyBodyError,

@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ChannelGateway from "./channelGateway.ts";
 import {
+  CommsChannelArchivedError,
   CommsChannelNotFoundError,
   CommsEmptyBodyError,
   CommsMemberNotFoundError,
@@ -151,15 +152,24 @@ const make = Effect.gen(function* () {
       Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: false })),
   } as const;
 
-  const onCreateFailure = {
-    ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
-      Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: false })),
-    ChannelWriteConflict: (error: ChannelGateway.ChannelWriteConflict) =>
-      Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: true })),
-    ChannelMembershipRevoked: () => Effect.fail(new CommsMembershipLostError()),
-    ChannelMentionUnresolvable: (error: ChannelGateway.ChannelMentionUnresolvable) =>
-      Effect.fail(new CommsMemberNotFoundError({ handles: error.handles })),
-  } as const;
+  // A FUNCTION of the channel, because one of these refusals has to name it.
+  // An archived error carrying no channel is the shape an agent cannot act on:
+  // it is in several, and the message would not say which one it may no longer
+  // post to.
+  const onCreateFailure = (channelName: string) =>
+    ({
+      ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
+        Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: false })),
+      ChannelWriteConflict: (error: ChannelGateway.ChannelWriteConflict) =>
+        Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: true })),
+      ChannelMembershipRevoked: () => Effect.fail(new CommsMembershipLostError()),
+      ChannelMentionUnresolvable: (error: ChannelGateway.ChannelMentionUnresolvable) =>
+        Effect.fail(new CommsMemberNotFoundError({ handles: error.handles })),
+      // Named, never folded into "not found". The caller resolved this channel to
+      // get here, so it can see the channel exists; an error saying otherwise
+      // would be false to the one reader who can check.
+      ChannelArchived: () => Effect.fail(new CommsChannelArchivedError({ channel: channelName })),
+    }) as const;
 
   /**
    * A defect from the gateway is a bug in this server, not something the agent
@@ -234,7 +244,7 @@ const make = Effect.gen(function* () {
         mentions: resolved.handles,
         parentPostId: input.parentPostId,
       })
-      .pipe(Effect.catchTags(onCreateFailure), Effect.catchCause(writeDefect));
+      .pipe(Effect.catchTags(onCreateFailure(input.channel.name)), Effect.catchCause(writeDefect));
     return {
       postId: created.postId,
       channel: input.channel.name,
