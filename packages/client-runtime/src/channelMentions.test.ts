@@ -65,6 +65,31 @@ describe("mentionedHandles", () => {
     expect(mentionedHandles("@walt/@boss3 either of you")).toEqual(["walt", "boss3"]);
   });
 
+  it("ends a handle at NON-ASCII punctuation too", () => {
+    // EACH OF THESE OVER-COLLECTED while the boundary was an ASCII range list,
+    // and each is reachable by typing rather than by trying: macOS substitutes
+    // an em-dash for `--` as you type, and this repo's own copy uses curly
+    // quotes and ellipses.
+    //
+    // The failure mode is the loud one rather than the silent one — an
+    // unresolvable handle makes the decider refuse the WHOLE post — but it is
+    // the same loss of the operator's message.
+    expect(mentionedHandles("over to @boss1\u2014he has context")).toEqual(["boss1"]);
+    expect(mentionedHandles("ping @boss1\u2026 later")).toEqual(["boss1"]);
+    expect(mentionedHandles("@boss1\u2013b next")).toEqual(["boss1"]);
+    expect(mentionedHandles("she said \u201c@boss1\u201d earlier")).toEqual(["boss1"]);
+    expect(mentionedHandles("\u300c@boss1\u300d in japanese brackets")).toEqual(["boss1"]);
+  });
+
+  it("reads a handle written in a non-latin script", () => {
+    // The boundary must not be wider than the roster it parses against. Letters
+    // are letters in every script, and a class that excluded "anything not
+    // ASCII" would drop this silently — the same failure as the emphasis case,
+    // in new clothes.
+    expect(mentionedHandles("\u30dc\u30b91 is on it")).toEqual([]);
+    expect(mentionedHandles("@\u30dc\u30b91 is on it")).toEqual(["\u30dc\u30b91"]);
+  });
+
   it("keeps a hyphen inside a handle, and so cannot open a mention after one", () => {
     // The one trade the single set forces, stated as a test rather than left to
     // be discovered. `-` is a handle character on BOTH sides: `@boss-1` is one

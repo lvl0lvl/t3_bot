@@ -55,9 +55,15 @@ export function applyShellStreamEvent(
       // ABSENT AND EMPTY ARE DIFFERENT, and a removal must not convert one into
       // the other. `undefined` means "this server never told us about channels";
       // `[]` means "you are in none". Writing `[]` here on a snapshot that has
-      // no field would claim the second on the strength of the first, and the
-      // sidebar renders those two states differently — "no channels yet" versus
-      // nothing at all.
+      // no field would claim the second on the strength of the first.
+      //
+      // THE CONSUMER IS THE CHANNEL ROUTE, not the sidebar. An earlier version
+      // of this comment argued the branch from a sidebar that renders the two
+      // states differently — it does not, it renders nothing for both, because
+      // `channelsAtom` flattens them. `environmentChannelSupportAtom` is what
+      // reads the difference, and `ChannelView` turns it into "this server has
+      // no channels" versus a loading state. Collapsing it here would put that
+      // sentence on screen for a server that simply has not answered yet.
       return snapshot.channels === undefined
         ? { ...snapshot, snapshotSequence: event.sequence }
         : {

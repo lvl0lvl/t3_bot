@@ -978,9 +978,17 @@ const buildAppUnderTest = (options?: {
            * shell snapshot path found no `listChannelsForMember` — which the
            * suite reported as a parse error on a duplicate import, hiding it.
            *
-           * The reads the registered comms toolkit performs answer empty; the
-           * WRITES still die, because a router test that reaches one has moved
-           * off its subject.
+           * READS ANSWER EMPTY, WRITES STILL DIE, because a router test that
+           * reaches a write has moved off its subject.
+           *
+           * Two of those reads are NOT the toolkit's, and the distinction cost
+           * something: `getChannelWithActivityById` and `listChannelsForMember`
+           * are the SHELL path's, and answering them empty by default is the
+           * mechanism by which the membership filter was unpinnable from this
+           * file at all — every channel test here stubs them, so no test in this
+           * file can see the query that decides what a client is sent. The
+           * real-database tests in `persistence/Layers/ProjectionChannels.test.ts`
+           * are where that guard is held.
            */
           Layer.mock(ProjectionChannelRepository)({
             upsertChannel: () => Effect.die("unused"),
@@ -8678,8 +8686,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // THE FIXTURE COMES FROM THE PROPERTY, not from a plausible-looking row.
       // The two tests above differ in BOTH fields — human/human-walt against
       // thread/thread-pm — so a membership test that compared memberId alone and
-      // ignored memberKind passed both. Measured: dropping the kind comparison
-      // left all 185 green. The input that separates them is a member whose id
+      // ignored memberKind passed both. Named rather than counted: mutating
+      // `rowHasMember` to compare `memberId` alone reds THIS test and only this
+      // one. An absolute pass count decays as the file grows — the earlier
+      // version of this comment said "all 185 green" and the count has moved
+      // twice since, so a reader re-running it could not tell a grown
+      // population from a surviving mutant — which is exactly why no number
+      // appears here now. The input that separates them is a member whose id
       // MATCHES and whose kind does not.
       //
       // It is the same impersonation route `requireChannelMemberShape` refuses
