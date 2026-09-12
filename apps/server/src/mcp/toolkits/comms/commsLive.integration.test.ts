@@ -371,6 +371,35 @@ describe("the comms toolkit on the live gateway", () => {
           afterSequence: undefined,
         });
         expect(after).toHaveLength(2);
+
+        // AN ID THE BRAND REFUSES MUST FAIL THE SAME WAY AN ABSENT ONE DOES.
+        // `t3_bot-2d2` made `ChannelPostId` refuse anything outside its
+        // charset, and `.make` THROWS on refusal - so calling it in an argument
+        // list threw while `channels.getPost(...)` was being called, before the
+        // `Effect.catchCause` guard on that very line had been attached. The
+        // agent got a defect carrying a schema stack trace instead of "no such
+        // post". `parentPostId` is agent-supplied and the tool schema checks
+        // only that it is non-empty, so every one of these is reachable from a
+        // real call.
+        for (const malformed of ["a:b", "has space", "   ", "post-\u{1F525}", "x".repeat(65)]) {
+          const refused = yield* call(
+            "comms_reply",
+            { channel: "seniors", parentPostId: malformed, body: "into the void" },
+            BOSS3,
+          ).pipe(Effect.flip);
+          // The TAG, not just "it failed": a defect surfaces through the
+          // toolkit as a failed tool call too, so asserting failure alone
+          // cannot tell a typed refusal from a crash that was caught.
+          expect(refused).toMatchObject({ _tag: "CommsPostNotFoundError" });
+        }
+
+        // And nothing was written by any of them.
+        const untouched = yield* channels.listPosts({
+          channelId: CHANNEL_ID,
+          limit: 10,
+          afterSequence: undefined,
+        });
+        expect(untouched).toHaveLength(2);
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );

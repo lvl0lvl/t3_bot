@@ -17,6 +17,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { isOrchestrationCommandRejection } from "../../../orchestration/Errors.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
@@ -117,13 +118,35 @@ const make = Effect.gen(function* () {
       return isMember ? Option.some(toChannel(row.value)) : Option.none<Channel>();
     });
 
+  /**
+   * An id the BRAND refuses is an id that is not found.
+   *
+   * `ChannelPostId` rejects anything outside its charset (`t3_bot-2d2`), and
+   * `.make` throws on rejection. Calling it in an argument list threw while
+   * `channels.getPost(...)` was being CALLED — before
+   * `.pipe(Effect.catchCause(writeDefect))` in `handlers.ts` had been attached
+   * to anything — so the guard written for exactly this never ran, and a
+   * `comms_reply` carrying "a:b" or "has space" died instead of failing typed.
+   * `parentPostId` is agent-supplied and the tool schema checks only that it is
+   * non-empty, so every one of those is reachable.
+   *
+   * Decoded through the brand rather than re-spelling its charset here: the
+   * rule lives in `packages/contracts` and a second copy of it is the defect
+   * that broke handle matching four times in one evening. Absence is the honest
+   * answer — no post can carry an id the type cannot hold — and the caller's
+   * existing not-found branch already says so to the agent.
+   */
+  const decodePostId = Schema.decodeUnknownOption(ChannelPostId);
+
   const getPost = (channelId: string, postId: string) =>
-    channels
-      .getPost({ channelId: ChannelId.make(channelId), postId: ChannelPostId.make(postId) })
-      .pipe(
-        Effect.map(Option.map(toPost)),
-        Effect.mapError(() => storeUnavailable("getPost")),
-      );
+    Option.match(decodePostId(postId), {
+      onNone: () => Effect.succeedNone,
+      onSome: (id) =>
+        channels.getPost({ channelId: ChannelId.make(channelId), postId: id }).pipe(
+          Effect.map(Option.map(toPost)),
+          Effect.mapError(() => storeUnavailable("getPost")),
+        ),
+    });
 
   /**
    * A cursor this layer did not issue is a DEFECT, not an empty page.
