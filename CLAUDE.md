@@ -75,6 +75,9 @@ message types: `comms/README.md` there.
 - Comments state the input that would break the code, not the reason it is safe.
 - Before pushing, write the adversarial question you would give a reviewer — "what legitimate input
   does this now reject that worked before?" — and answer it yourself. Writing the prompt is the review.
+  Name your riskiest claim to the reviewer in that prompt ("I assert the finalizers run before
+  `process.exit` — verify it"): saying it to someone else is what makes you run it, and it caught a
+  worktree leak on #17 that a green gate and a pushed comment had already blessed.
 
 ## Merge gate
 
