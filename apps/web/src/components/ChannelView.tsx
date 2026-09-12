@@ -127,7 +127,13 @@ function PostsUnavailable() {
           the app keeps or raises the primitive's size.
         */}
         <EmptyTitle className="text-foreground">Posts aren’t readable yet</EmptyTitle>
-        <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
+        {/*
+          No opacity modifier: `/78` measured 3.11:1 in light and 3.51:1 in
+          dark, and `EmptyDescription`'s own `text-muted-foreground` measures
+          4.71:1 and 5.08:1 on the same ground. Every AA failure in this
+          component was an opacity modifier I added to an already-muted token.
+        */}
+        <EmptyDescription className="mt-2 text-sm">
           This server sends the channels you are in, but not yet their posts. You can post here and
           the channel’s last-post time will update; reading the history needs a newer server.
         </EmptyDescription>
@@ -148,7 +154,7 @@ function ChannelUnavailable({ state }: { readonly state: ChannelViewState }) {
           <EmptyTitle className="text-foreground">
             {unsupported ? "This server has no channels" : "This channel isn’t available"}
           </EmptyTitle>
-          <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
+          <EmptyDescription className="mt-2 text-sm">
             {unsupported
               ? "Channels come from the server. Update the server on that machine to use them."
               : "It may have been removed, or you may not be a member. The server only sends the channels you belong to."}
@@ -230,12 +236,18 @@ function ChannelComposer({ channel }: { readonly channel: EnvironmentChannelShel
       <div className="flex items-end gap-2">
         <Textarea
           size="sm"
-          // CAPPED, like the thread composer's editor. The primitive is
-          // `field-sizing-content` with no max-height, and it is a flex sibling
-          // of the `flex-1` message region — so at 390px a long draft grew the
-          // control to 89% of the pane, squeezed the region to 39px, and pushed
-          // the explanation's title outside the viewport entirely. This is the
-          // only composer in the app that lacked the cap.
+          // CAPPED AT 200px. The primitive is `field-sizing-content` with no
+          // max-height and it is a flex sibling of the `flex-1` message region,
+          // so at 390px a thirty-line draft grew the control to 89% of the pane,
+          // squeezed the region to 39px, and pushed the explanation's title
+          // outside the viewport. Measured after: region 567px, control 198px,
+          // scrolling internally.
+          //
+          // THE CAP LANDS ON THE WRAPPER, not the control. `Textarea` forwards
+          // `className` to its outer span, so the `<textarea>`'s own computed
+          // max-height stays `none` and it is the wrapper that bounds it. That
+          // differs from `ComposerPromptEditor`, which caps the scrolling
+          // element itself — the outcome matches, the mechanism does not.
           className="max-h-50"
           value={body}
           placeholder={`Message #${channel.name}`}

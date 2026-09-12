@@ -65,11 +65,17 @@ function SidebarChannelRow({ channel }: { readonly channel: EnvironmentChannelSh
       >
         {archived ? <ArchiveIcon aria-hidden /> : <HashIcon aria-hidden />}
         {/*
-          NOT DIMMED. Carrying "archived" as reduced opacity measured 2.27:1 in
-          light and 3.44:1 in dark against a 4.5:1 requirement — so the one
-          visual signal a sighted user had was the part that failed AA. The row
-          keeps the button's own colour and says the word instead, which is what
-          the channel header already does.
+          TRUNCATES WITHOUT A TOOLTIP AT NARROW WIDTHS, and that is inherited
+          rather than introduced here. `SidebarMenuButton` gates its tooltip on
+          `state !== "collapsed"` (`ui/sidebar.tsx:875`), so every truncating row
+          in this sidebar shares it — at the 208px floor an archived row leaves
+          about twelve characters, and two channels with a long common prefix are
+          indistinguishable.
+
+          A native `title` is NOT the way out: `t3code/no-native-title-tooltip`
+          is an error in `vite.config.ts`. Fixing it properly means widening the
+          primitive's tooltip condition, which changes every row in the app and
+          is not this channel list's call to make.
         */}
         <span className="truncate">{channel.name}</span>
         {archived ? (
