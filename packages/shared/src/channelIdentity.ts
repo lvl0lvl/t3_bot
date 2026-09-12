@@ -28,9 +28,10 @@
  * write, not a label.
  *
  * `\p{C}` covers control, format, surrogate, private-use and unassigned, and
- * `Default_Ignorable_Code_Point` covers the invisibles outside it — variation
- * selectors U+FE00-FE0F and U+E0100-E01EF, the Hangul and halfwidth fillers, the
- * Khmer inherent vowels. U+034F is listed separately (a combining mark) and so is
+ * `Default_Ignorable_Code_Point` covers the invisibles outside it — the Hangul
+ * and halfwidth fillers, the Khmer inherent vowels. Variation selectors are also
+ * in that property but never reach here: canonicalise strips them first, because
+ * refusing them broke emoji handles. U+034F is listed separately (a combining mark) and so is
  * U+2800, BRAILLE PATTERN BLANK, an ordinary symbol that renders as nothing.
  *
  * `\p{C}` alone was not enough: a handle of "boss1" plus one variation selector
@@ -59,17 +60,37 @@ export const FORBIDDEN_IN_CANONICAL_IDENTITY =
  * makes this function idempotent, which is what "canonical" has to mean — a
  * stored value must canonicalise to itself.
  *
- * Whitespace is COLLAPSED rather than refused, so a no-break space and a plain
- * space are one identity instead of two that render alike, and "my  channel"
- * reaches "my channel". Refusing exotic spaces would have rejected legitimate
- * names to fix a spoofing problem that normalising solves outright.
+ * Whitespace is COLLAPSED and variation selectors are STRIPPED, rather than
+ * either being refused: a no-break space and a plain space are one identity
+ * instead of two that render alike, "my  channel" reaches "my channel", and
+ * "boss1" + U+FE0F reaches "boss1" so it collides with the real member instead
+ * of storing beside it. Refusing them rejected legitimate input — emoji handles
+ * — to fix a spoofing problem that normalising solves outright.
  *
  * It does NOT fold compatibility characters or confusables — NFKC would rewrite
  * them wholesale — so two identities can still render alike. That is bounded
  * elsewhere, by membership changes requiring a human or system issuer.
  */
+/**
+ * Variation selectors, which are STRIPPED rather than refused.
+ *
+ * Refusing them was a regression I introduced: U+FE0F is how emoji presentation
+ * is requested, so "❤️" (U+2764 U+FE0F) and "1️⃣" stopped being storable handles
+ * while plain "🔥" still was. Stripping keeps them working — "❤️" stores as
+ * U+2764 in text presentation — and still closes the spoof they were refused
+ * for, by a better route: "boss1" + U+FE0F now canonicalises to "boss1" and
+ * COLLIDES with the real member, so the uniqueness check refuses it instead of
+ * two identical-looking members both storing.
+ *
+ * The same move as collapsing whitespace: normalise the difference away rather
+ * than reject the input that contains it. Zero-width JOINER is NOT here — it
+ * changes which grapheme is produced, so stripping it would rewrite the name;
+ * it stays refused, as it was before any of this.
+ */
+const VARIATION_SELECTORS = /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu;
+
 function canonicalise(value: string, sigil: RegExp): string {
-  let current = value.replace(/\s+/gu, " ").trim();
+  let current = value.replace(VARIATION_SELECTORS, "").replace(/\s+/gu, " ").trim();
   for (;;) {
     const next = current.replace(sigil, "").trim();
     if (next === current) {

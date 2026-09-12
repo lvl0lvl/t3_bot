@@ -335,10 +335,10 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
         ["trailing U+200B", "boss1\u200B", "U+200B"],
         ["leading U+200B", "\u200Bboss1", "U+200B"],
         ["trailing NUL", "boss1\u0000", "U+0000"],
-        // \p{C} alone missed these: a variation selector is invisible and made a
-        // second member render identically to the first.
-        ["trailing variation selector", "boss1\uFE0F", "U+FE0F"],
+        // \p{C} alone missed the Hangul filler: invisible, and it made a second
+        // member render identically to the first.
         ["hangul filler", "boss1\u3164", "U+3164"],
+        ["zero width joiner", "boss1\u200D", "U+200D"],
       ];
       for (const [label, handle, expectedCodePoint] of invisible) {
         const error = yield* decideOrchestrationCommand({
@@ -361,6 +361,55 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
           expect(error.detail, label).toContain("cannot appear in a stored handle");
           expect(error.detail, label).toContain(expectedCodePoint);
         }
+      }
+    }),
+  );
+
+  it.effect("closes the variation-selector spoof by collision, not by refusal", () =>
+    Effect.gen(function* () {
+      // Refusing variation selectors was a regression I introduced: U+FE0F is how
+      // emoji presentation is requested, so "❤️" stopped being a storable handle
+      // while "🔥" still was. Stripping them keeps emoji handles working AND
+      // closes the spoof better — "boss1" + U+FE0F canonicalises to "boss1" and
+      // collides with the real member, so uniqueness refuses it rather than two
+      // identical-looking members both storing.
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add-vs"),
+          channelId: CHANNEL,
+          member: { handle: "boss1\uFE0F", memberKind: "thread", memberId: "thread-impostor" },
+        } as never,
+        readModel: readModel(),
+        issuer: HUMAN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        // The COLLISION message, not the invisible-character one. If this ever
+        // says "cannot appear in a stored handle" again, emoji handles are broken.
+        expect(error.detail).toContain("is used twice");
+      }
+    }),
+  );
+
+  it.effect("keeps an emoji handle storable", () =>
+    Effect.gen(function* () {
+      // The regression this is here to stop coming back. U+2764 U+FE0F must
+      // store, as U+2764.
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add-emoji"),
+          channelId: CHANNEL,
+          member: { handle: "\u2764\uFE0F", memberKind: "thread", memberId: "thread-emoji" },
+        } as never,
+        readModel: readModel(),
+        issuer: HUMAN,
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events[0]?.type).toBe("channel.member-added");
+      if (events[0]?.type === "channel.member-added") {
+        expect(events[0].payload.member.handle).toBe("\u2764");
       }
     }),
   );
