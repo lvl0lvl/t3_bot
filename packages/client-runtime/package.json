@@ -27,6 +27,10 @@
       "types": "./src/environment/index.ts",
       "default": "./src/environment/index.ts"
     },
+    "./channel-mentions": {
+      "types": "./src/channelMentions.ts",
+      "default": "./src/channelMentions.ts"
+    },
     "./markdown-images": {
       "types": "./src/markdownImages.ts",
       "default": "./src/markdownImages.ts"

@@ -1,4 +1,5 @@
 import {
+  ChannelPostId,
   CommandId,
   ORCHESTRATION_WS_METHODS,
   type ClientOrchestrationCommand,
@@ -55,6 +56,21 @@ export type RespondToThreadUserInputInput = CommandInput<"thread.user-input.resp
 export type DismissThreadUserInputInput = CommandInput<"thread.user-input.dismiss">;
 export type RevertThreadCheckpointInput = CommandInput<"thread.checkpoint.revert">;
 export type StopThreadSessionInput = CommandInput<"thread.session.stop">;
+/**
+ * `postId` is optional here and minted per call when absent.
+ *
+ * Not merely a convenience: the aggregate does not refuse a post id it has
+ * already seen, so two commands carrying one post id both commit and the
+ * projection keeps the first. A caller that held a post id across two sends
+ * would silently lose the second message, which is why the id is generated
+ * beside the command id rather than passed in from a component's state.
+ *
+ * Re-sending ONE command is a different thing and is safe: receipt idempotence
+ * is keyed on the command id, so a retry of the same command is a no-op.
+ */
+export type CreateChannelPostInput = Omit<CommandInput<"channel.post.create">, "postId"> & {
+  readonly postId?: ChannelPostId;
+};
 
 type DispatchTag = typeof ORCHESTRATION_WS_METHODS.dispatchCommand;
 type CommandEffect = Effect.Effect<
@@ -370,6 +386,22 @@ export const stopThreadSession: (input: StopThreadSessionInput) => CommandEffect
   return yield* dispatch({
     ...input,
     type: "thread.session.stop",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+export const createChannelPost: (input: CreateChannelPostInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.createChannelPost",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  const crypto = yield* Crypto.Crypto;
+  return yield* dispatch({
+    ...input,
+    type: "channel.post.create",
+    postId:
+      input.postId ??
+      (yield* crypto.randomUUIDv4.pipe(Effect.orDie, Effect.map(ChannelPostId.make))),
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });
