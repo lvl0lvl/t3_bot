@@ -319,6 +319,11 @@ describe("comms toolkit handlers", () => {
       ["##", ""],
       ["#   ", ""],
       // A sigil that is not leading is part of the name, not decoration.
+      // Composed and decomposed spellings of one name are one channel. The
+      // decider normalizes to NFC on the way in, so a lookup that does not
+      // is a lookup that misses a channel that exists.
+      ["Caf\u00E9", "caf\u00E9"],
+      ["Cafe\u0301", "caf\u00E9"],
       ["#-#", "-#"],
       ["a#b", "a#b"],
     ];
@@ -720,6 +725,19 @@ describe("comms toolkit helpers", () => {
   it("reports unknown handles once each, in the order they appeared", () => {
     expect(resolveMentions(["@ghost", "boss1", "ghost", "@other"], MEMBERS)).toEqual({
       unknown: ["ghost", "other"],
+    });
+  });
+
+  it("reaches a member across Unicode composition, and emits what is stored", () => {
+    // The decider normalizes to NFC, so a member is stored composed. An agent
+    // typing the decomposed spelling - what a macOS paste produces - must
+    // still reach them. Matching normalizes; the emitted handle does not, so
+    // what goes out is the composed bytes the aggregate will match against.
+    const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
+      { handle: "caf\u00E9", memberKind: "human", memberId: "human-cafe" },
+    ];
+    expect(resolveMentions(["@cafe\u0301"], members)).toEqual({
+      handles: ["caf\u00E9"],
     });
   });
 

@@ -30,7 +30,13 @@ import {
  * stays at each caller where a reader can see it.
  */
 const stripLeadingSigils = (value: string, sigil: RegExp): string => {
-  let current = value.trim();
+  // NFC first, because the decider canonicalizes to it and matching downstream
+  // is byte-exact. Without it a composed and a decomposed spelling of the same
+  // text are two different keys: an agent that types "café" decomposed misses a
+  // channel stored composed, and is told no such channel exists. This is what
+  // makes the result a canonical FORM rather than a tidied string — not a guard
+  // against bad input.
+  let current = value.normalize("NFC").trim();
   for (;;) {
     const next = current.replace(sigil, "").trim();
     if (next === current) return current;
