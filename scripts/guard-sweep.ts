@@ -24,11 +24,18 @@
  *    mutant that killed nothing is indistinguishable from one that killed
  *    something. A test that was already failing cannot be evidence.
  *
- * 3. It never runs in a dirty tree. Mutations are applied to files and undone
- *    from git, so uncommitted work is what gets undone. That has happened, and
- *    it silently reverted two correctness fixes.
+ * 3. It never mutates a tree it did not create. By default it adds its own git
+ *    worktree at the repository's HEAD, runs the setup command there, sweeps,
+ *    and removes it. A tool that merely ASKS to be pointed at a scratch tree
+ *    repeats the accident as a documentation problem: the rule exists because a
+ *    review lane restored a live worktree to what it had READ rather than to
+ *    what the author had since written, and two correctness fixes vanished.
+ *    `--in-place` is the deliberate opt-out, and it still refuses a dirty tree.
  *
- * 4. It asks for the AXIS of every mutation and says so in the report. Making a
+ * 4. It never runs in a dirty tree. Mutations are applied to files and undone
+ *    from git, so uncommitted work is what gets undone. That has happened.
+ *
+ * 5. It asks for the AXIS of every mutation and says so in the report. Making a
  *    guard inert asks what it excludes; a guard that already excludes too much
  *    survives that untouched, and only a wider mutation finds it. A sweep with
  *    no `wider` rows has measured one half of the question.
@@ -89,6 +96,16 @@ export const SweepConfig = Schema.Struct({
    */
   testCommand: Schema.Array(Schema.String).pipe(Schema.check(Schema.isMinLength(1))),
   mutations: Schema.Array(Mutation).pipe(Schema.check(Schema.isMinLength(1))),
+  /**
+   * Run once in a freshly created worktree before the baseline, as argv.
+   *
+   * A new worktree has no `node_modules`, and a sweep MUTATES source, so it
+   * cannot borrow another tree's — repointing a link inside a shared
+   * `node_modules` is the exact write that left 653 tests green over 12,246
+   * type errors. Omit it only with `--in-place`, where the tree is already
+   * installed.
+   */
+  setupCommand: Schema.optional(Schema.Array(Schema.String)),
 });
 export type SweepConfig = typeof SweepConfig.Type;
 
@@ -398,26 +415,70 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (config: SweepConfi
   return formatReport(baseline, swept);
 });
 
+/**
+ * A worktree of `repo` at its current HEAD, removed when the scope closes.
+ *
+ * `--detach` so the sweep never occupies a branch the author might want to check
+ * out, and `--force` on removal because a sweep that failed mid-mutation leaves
+ * a modified file — the tree is disposable and refusing to remove it would
+ * leave litter that looks like work in progress.
+ */
+const scratchWorktree = (repo: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const parent = yield* fs.makeTempDirectoryScoped({ prefix: "guard-sweep-" });
+    const tree = path.join(parent, "tree");
+    yield* capture(["git", "worktree", "add", "--detach", tree, "HEAD"], repo);
+    yield* Effect.addFinalizer(() =>
+      capture(["git", "worktree", "remove", "--force", tree], repo).pipe(Effect.ignore),
+    );
+    return tree;
+  });
+
 const configFlag = Flag.file("config").pipe(
-  Flag.withDescription("Sweep configuration: the test command and the mutations to apply."),
+  Flag.withDescription("Sweep configuration: the test command, the mutations, and the setup."),
 );
 
-const rootFlag = Flag.directory("root").pipe(
-  Flag.withDescription(
-    "Tree to mutate. Use a scratch worktree whenever anyone else is reading yours.",
-  ),
+const repoFlag = Flag.directory("repo").pipe(
+  Flag.withDescription("Repository to sweep. Its HEAD is what gets mutated, in a copy."),
   Flag.withDefault(process.cwd()),
+);
+
+const inPlaceFlag = Flag.boolean("in-place").pipe(
+  Flag.withDescription(
+    "Mutate --repo directly instead of a scratch worktree. Only when the tree is yours, committed, and nobody else is reading it.",
+  ),
+  Flag.withDefault(false),
 );
 
 export const guardSweepCommand = Command.make(
   "guard-sweep",
-  { config: configFlag, root: rootFlag },
-  ({ config, root }) =>
+  { config: configFlag, repo: repoFlag, inPlace: inPlaceFlag },
+  ({ config, repo, inPlace }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const raw = yield* fs.readFileString(config);
       const parsed = yield* decodeSweepConfig(JSON.parse(raw));
-      yield* Console.log(yield* sweep(parsed, root));
+
+      if (inPlace) {
+        yield* Console.log(`sweeping ${repo} IN PLACE — no copy was made`);
+        yield* Console.log(yield* sweep(parsed, repo));
+        return;
+      }
+
+      const tree = yield* scratchWorktree(repo);
+      yield* Console.log(`sweeping a worktree of ${repo} at ${tree}`);
+      if (parsed.setupCommand !== undefined) {
+        yield* Console.log(`setup: ${parsed.setupCommand.join(" ")}`);
+        yield* capture(parsed.setupCommand, tree);
+      } else {
+        // Said rather than discovered from a wall of module-resolution errors.
+        yield* Console.log(
+          "no setupCommand: a fresh worktree has no node_modules, so the suite will probably fail to load",
+        );
+      }
+      yield* Console.log(yield* sweep(parsed, tree));
     }),
 ).pipe(Command.withDescription("Break one guard at a time and report which ones nothing notices."));
 
