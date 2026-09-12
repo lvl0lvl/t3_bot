@@ -18,5 +18,8 @@ f="comms/board/$(date +%Y-%m-%d-%H%M%S)-$FROM-$seq-$SLUG.md"
 { printf 'FROM: %s\nTO: %s\nTYPE: %s\nRE: %s\nAT: %s\n\n' "$FROM" "$TO" "$TYPE" "$RE" "$(date '+%Y-%m-%d %H:%M %Z')"; cat; } > "$f"
 git add -- "$f"
 git commit -q -m "board: $FROM $seq $TYPE $SLUG" -- "$f"
-git push -q origin comms 2>/dev/null || { git pull -q --rebase origin comms && git push -q origin comms; } || true
 echo "$f"
+# Local delivery is the commit (every watcher reads this worktree). The push is the off-machine copy and must
+# never block or fail a post: a report that hangs on the network is a report nobody receives.
+( git push -q origin comms 2>/dev/null || { git pull -q --rebase origin comms 2>/dev/null && git push -q origin comms 2>/dev/null; } ) >/dev/null 2>&1 </dev/null &
+disown 2>/dev/null || true
