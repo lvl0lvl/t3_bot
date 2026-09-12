@@ -251,8 +251,9 @@ const make = Effect.gen(function* () {
           .pipe(Effect.catchTags(storeUnavailableAsRead), Effect.catchCause(readDefect));
         return {
           channel: channel.name,
-          // The canonical form, matching what a mention resolves against; the
-          // seam documents handles as sigil-free but does not yet enforce it.
+          // Sigil-free, case intact — the exact bytes a mention must carry,
+          // because the aggregate matches handles byte-for-byte. Folding here
+          // silently breaks every mention the agent writes back (t3_bot-iin).
           members: channel.members.map((member) => normalizeHandle(member.handle)),
           posts: page.posts.map((post) => ({
             postId: post.postId,

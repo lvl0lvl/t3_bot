@@ -277,12 +277,14 @@ describe("comms toolkit handlers", () => {
   );
 
   /**
-   * THE SHARED CANONICAL TABLE. The decider asserts this same list against its
-   * own `canonicalChannelName`, because the two sides implement one rule and
-   * have already disagreed about it: the toolkit stripped every leading sigil
-   * and the decider stripped one, so `##seniors` reached two different channels
-   * depending on which you asked. Both tables must stay identical — a change
-   * made on one side breaks a NAMED row on the other rather than passing.
+   * THE SHARED CANONICAL TABLE. One rule, two implementations: this one and
+   * the decider's `canonicalChannelName`. They have already disagreed — the
+   * toolkit stripped every leading sigil and the decider stripped one, so
+   * `##seniors` reached two different channels depending on which you asked.
+   *
+   * The decider is meant to assert this same list; until it does, this table
+   * pins one side of a rule that spans two, and agreement is still checked by
+   * hand. Do not read a green here as the two sides agreeing.
    *
    * Rule (pm, 2026-09-11): trim, strip all leading sigils, trim, lowercase.
    */
@@ -388,12 +390,22 @@ describe("comms toolkit handlers", () => {
 
   it.effect("reports member handles in the same form a mention resolves against", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness();
+      // Deliberately NOT the default fixture. Those handles are already the
+      // answer, so the assertion passed whether the read path normalized them,
+      // folded them, or did nothing at all — a guard with no sensitivity to the
+      // thing it guards. These two differ from their normalized form on both
+      // axes the read path touches.
+      const harness = yield* makeHarness({
+        members: [
+          { handle: "@@PM", memberKind: "thread", memberId: "thread-pm" },
+          { handle: "Boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
+        ],
+      });
       const result = yield* harness.call("comms_read_channel", { channel: "seniors" });
-      // The exact list, not a property of it: "no leading @" also passes for a
-      // handle mangled some other way, and these strings are what the agent
-      // must send back verbatim as a mention.
-      expect(result.members).toEqual(["pm", "boss1", "boss3", "walt"]);
+      // Every sigil stripped, case untouched: exactly what a mention must be
+      // written as. Folding these to "pm"/"boss1" is the regression this echo
+      // is the last place to reintroduce, since nothing downstream reads it.
+      expect(result.members).toEqual(["PM", "Boss1"]);
     }),
   );
 
