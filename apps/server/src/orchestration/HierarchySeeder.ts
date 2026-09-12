@@ -9,18 +9,22 @@
  * refused them all. Going through the engine means the seeded hierarchy is
  * subject to the same rules as anything a user creates.
  *
- * IDEMPOTENCE IS BY RECEIPT. Every command below carries a DETERMINISTIC
- * commandId, so the engine's command-receipt idempotency short-circuits the
- * second boot before the decider ever sees it. That is why there is no error
- * handling around "already exists" anywhere here: on boot 2 nothing reaches the
- * decider at all.
+ * IDEMPOTENCE IS BY RECEIPT, which is why the creates need no error handling
+ * around "already exists": every command carries a DETERMINISTIC commandId, so
+ * the engine's receipt short-circuit stops a re-decide before the decider sees
+ * it. That receipt compares the commandId and the aggregate ref and NEVER the
+ * payload — which is also why correcting a shipped command's payload is silently
+ * skipped wherever it has already run. The instance repair in `seedHierarchy` is
+ * one command that DOES reach the decider on boot 2, and it gets there by
+ * carrying an id of its own rather than by editing one.
  *
- * There is exactly ONE read, and it is not there for idempotence — the receipt
- * already covers that. It is there because a DIFFERENT writer owns the same
- * subject: `autoBootstrapProjectFromCwd` also creates a project for the server's
- * cwd, and two projects for one workspace root is what
- * `requireActiveProjectWorkspaceRootAbsent` refuses. See `seedHierarchy` for why
- * that read is safe to separate from its write.
+ * There are TWO reads, and neither is there for idempotence — the receipts cover
+ * that. The first exists because a DIFFERENT writer owns the same subject:
+ * `autoBootstrapProjectFromCwd` also creates a project for the server's cwd, and
+ * two projects for one workspace root is what
+ * `requireActiveProjectWorkspaceRootAbsent` refuses. The second exists because
+ * the repair has to know what a thread's selection is now. `seedHierarchy` says
+ * what each costs and what makes each safe, and the two arguments are different.
  *
  * CHANNELS COME LAST, and whether that is convention or enforcement depends on
  * one thing: whether `requireChannelMemberShape` is present. It refuses a
@@ -125,13 +129,15 @@ const SEEDED_THREADS = [
  * and the bootstrap then resolves the project this seeded rather than creating
  * a second one.
  *
- * The read costs this one step its pure idempotence-by-receipt, and it is worth
- * being exact about what does and does not make that safe. It is NOT "the
+ * The project read costs THAT step its pure idempotence-by-receipt, and it is
+ * worth being exact about what does and does not make it safe. It is NOT "the
  * command worker serialises it": the read is a projection query and does not run
  * on that worker at all. It is safe because the only other writer of a project
  * for this root runs strictly after this phase returns, and because the create
  * still carries a deterministic id — so even a lost race degrades to a refused
- * duplicate rather than a second hierarchy.
+ * duplicate rather than a second hierarchy. The second read, below the creates,
+ * is safe for a different reason and says so there: this argument does not carry
+ * over to it.
  */
 export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
   readonly workspaceRoot: string;
@@ -185,32 +191,53 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
     });
   }
 
-  // THE CREATES ABOVE DO NOTHING ON AN ENVIRONMENT THAT HAS ALREADY BOOTED, and that is
-  // not a defect in them — it is the receipt short-circuit doing its job. It compares the
-  // commandId and the aggregate ref and never the payload, so #16's correction to
-  // `instanceId` lands on a fresh database and is skipped on every environment that booted
-  // before it. Those threads keep `instanceId: 'claude'`, every mention-wake fails at the
-  // provider boundary, and `seedHierarchy` returns success. Observed on a scratch home that
-  // had booted once (`t3_bot-p4u`).
+  // THE CREATES ABOVE DO NOTHING ON AN ENVIRONMENT THAT HAS ALREADY BOOTED — the receipt
+  // short-circuit stated below `channel.member.add`, doing its job. The consequence is what
+  // this command exists for: #16's correction to `instanceId` lands on a fresh database and is
+  // skipped everywhere that booted before it, so those threads keep `instanceId: 'claude'`,
+  // every mention-wake fails at the provider boundary, and `seedHierarchy` returns success.
+  // Observed on a scratch home that had booted once (`t3_bot-p4u`). A NEW id is the whole fix.
   //
-  // The file's own rule, two commands below: never change the payload of a deterministic
-  // command that has shipped. A NEW id is the whole fix, and the new command's own receipt is
-  // what makes this idempotent from the third boot onward.
+  // WHAT MAKES THIS READ SAFE IS NOT THE DETERMINISTIC ID. That id stops the repair from
+  // running twice; it does nothing about the repair overwriting a concurrent writer's value
+  // from a stale read, which is last-writer-wins data loss — the outcome the old-value guard
+  // below exists to prevent. It is safe because no other writer of `thread.modelSelection` can
+  // run in this window: every client command is behind `commandGate.enqueueCommand`, whose gate
+  // is signalled long after this phase (`serverRuntimeStartup.ts`), and no reactor writes
+  // `modelSelection` at all. A writer that is not behind that gate makes this read need
+  // re-arguing rather than re-reading.
   //
-  // ONE READ, and it is the second in this function. The header is careful about what the
-  // first one costs; this one costs the same and for the same reason it is safe: the repair
-  // still carries a deterministic id, so a lost race degrades to a refused duplicate rather
-  // than a second write.
+  // The read is the whole command read model for three `instanceId` values, accepted rather
+  // than overlooked: two earlier startup phases already load it
+  // (`markRunningProviderSessionsForContinuation`, `reconcileProviderSessions`), so this is a
+  // third load on a path already paying two. `getThreadShellById` is the narrower read when
+  // that stops being true — `t3_bot-ofl`.
+  //
+  // THE ALTERNATIVE WAS A MIGRATION, and `persistence/Migrations/046_RepairAutomaticSettlementTimestamps.ts`
+  // is the precedent: same discipline, identifying rows by the signature of the bad write. A
+  // command wins here for the reason the header gives — it goes through the engine and is subject
+  // to the invariants — but a migration retires itself by number and this loop does not. It runs on
+  // every boot of every environment forever, and `t3_bot-0fx` carries the condition for deleting
+  // it: no database predating #16 can still be booted.
   const readModel = yield* projections.getCommandReadModel();
   for (const thread of SEEDED_THREADS) {
     const existing = readModel.threads.find((row) => row.id === thread.id);
-    // Absent means the create above just made it, with the right instance already.
+    // ABSENT IS NOT THE FRESH-BOOT CASE. Measured: the create above is visible to this read
+    // with no drain in between, so on a first boot `existing` is defined, carries the right
+    // instance, and the guard below is what skips it. Absent means the row is not readable yet
+    // — a projector cursor behind the event log — and then dispatching nothing is right: no
+    // receipt is written, so the next boot repairs it.
     if (existing === undefined) {
       continue;
     }
     // THE OLD VALUE, NOT "ANYTHING UNRESOLVABLE". An operator who has re-pointed a thread
     // owns that choice even if this build cannot resolve it either — a seeder that overwrote
     // it would be worse than the bug. So this fires only on the exact id that shipped.
+    //
+    // A DELETED OR ARCHIVED THREAD IS STILL REPAIRED: the read is unfiltered and this asks only
+    // about the instance, so an undelete or unarchive lands on a repaired row rather than on the
+    // bug, and nothing wakes a deleted thread in the meantime. Whether a delete should count as
+    // stronger ownership than a re-point is `t3_bot-40z`, and it is not settled here.
     if (existing.modelSelection.instanceId !== SHIPPED_BAD_INSTANCE_ID) {
       continue;
     }
@@ -298,8 +325,4 @@ export const __testing = {
   // So a test can replay the OLD seed under the ids the old seeder used, rather than
   // approximating it — the whole point is that those receipts already exist.
   SEED_PROJECT_ID,
-  // So a test can replay the OLD seed without spelling the typo itself — a test that wrote
-  // "claude" would keep passing if this constant were changed, and it is the constant the
-  // repair turns on.
-  SHIPPED_BAD_INSTANCE_ID,
 };

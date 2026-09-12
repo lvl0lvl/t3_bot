@@ -2227,8 +2227,11 @@ describe("OrchestrationEngine", () => {
           const out: Record<string, string> = {};
           for (const id of seedCommandIds) {
             const receipt = yield* receipts.getByCommandId({ commandId: CommandId.make(id) });
+            // With `resultSequence`, for the reason the repair test's reader gives: without it the
+            // comparison cannot distinguish a short-circuit from a re-decide that wrote the same
+            // answer, which is exactly what this test says it proves.
             out[id] = Option.isSome(receipt)
-              ? `${receipt.value.status}@${receipt.value.acceptedAt}`
+              ? `${receipt.value.status}@${receipt.value.acceptedAt}#${receipt.value.resultSequence}`
               : "MISSING";
           }
           return out;
@@ -2322,7 +2325,13 @@ describe("OrchestrationEngine", () => {
     const databasePath = NodePath.join(directory, "state.sqlite");
     const workspaceRoot = NodePath.join(directory, "repo");
     const seeded = HierarchySeeder.__testing.SEEDED_THREADS;
-    const shippedBad = HierarchySeeder.__testing.SHIPPED_BAD_INSTANCE_ID;
+    // THE LITERAL, not the seeder's constant. Importing it made both sides of the guard's
+    // comparison move together: changing `SHIPPED_BAD_INSTANCE_ID` to a value no database ever
+    // held left this file and serverRuntimeStartup.test.ts green — 53 passed — with the repair
+    // firing on nothing, every mention-wake still failing at the provider boundary, and
+    // `seedHierarchy` still returning success. "claude" is a fact about rows on operators' disks,
+    // and a fixture is where a historical fact belongs.
+    const shippedBad = "claude";
 
     const repairCommandIds = seeded.map((thread) => `seed-thread-${thread.handle}-instance-repair`);
     const readRepairReceipts = (system: Awaited<ReturnType<typeof createOrchestrationSystem>>) =>
@@ -2332,8 +2341,11 @@ describe("OrchestrationEngine", () => {
           const out: Record<string, string> = {};
           for (const id of repairCommandIds) {
             const receipt = yield* receipts.getByCommandId({ commandId: CommandId.make(id) });
+            // `resultSequence` is what a re-decide moves. `status` and `acceptedAt` can both be
+            // rewritten to the same values, so comparing only those across a boot cannot tell a
+            // short-circuit from a command decided again — which is the whole claim here.
             out[id] = Option.isSome(receipt)
-              ? `${receipt.value.status}@${receipt.value.acceptedAt}`
+              ? `${receipt.value.status}@${receipt.value.acceptedAt}#${receipt.value.resultSequence}`
               : "MISSING";
           }
           return out;
@@ -2344,8 +2356,11 @@ describe("OrchestrationEngine", () => {
     try {
       // BOOT ONE, ON THE OLD SEEDER. The same command ids it used, and the instance id it
       // shipped — so the receipts the new seeder's creates will short-circuit on are the real
-      // ones. Seeding normally and then corrupting the selection would reach the same rows by
-      // a route that does not exist, and would still pass if the short-circuit were removed.
+      // ones. What this buys over seeding normally and then corrupting the selection is that
+      // boot 2 below is the FIRST time the new code touches this database: the channels do not
+      // exist yet either, so the whole upgrade path runs rather than just the repair. It is not
+      // that the corrupt-rows route survives a missing short-circuit — measured, both fixtures
+      // go red on `Thread 'thread-pm' already exists and cannot be created twice`.
       await system.run(
         Effect.gen(function* () {
           const engine = yield* OrchestrationEngineService;
@@ -2426,6 +2441,10 @@ describe("OrchestrationEngine", () => {
               modelSelection: {
                 instanceId: ProviderInstanceId.make(shippedBad),
                 model: "a-model-they-picked-but-same-instance",
+                // AND `options`, because `model` alone cannot see the likelier mistake:
+                // rewriting the spread as `{ instanceId, model: existing.modelSelection.model }`
+                // keeps every other assertion green and drops this.
+                options: [{ id: "reasoningEffort", value: "high" }],
               },
             } as never,
             { issuer: HierarchySeeder.__testing.SEED_ISSUER },
@@ -2444,11 +2463,17 @@ describe("OrchestrationEngine", () => {
       // (1) EVERY SEEDED THREAD RESOLVES, except the one the operator owns. Against the record
       // the product keys by, not a list written here: a list written here would agree with the
       // seeder rather than with the build, which is how this defect shipped the first time.
+      // `PROVIDER_DISPLAY_NAMES` is a PROXY for the thing that resolves an instance, which is
+      // `providerService.getInstanceInfo` in `ProviderCommandReactor` — so this says "a built-in
+      // driver kind", not "configured in this build", and an id that is the former and not the
+      // latter would pass here and still fail every wake.
       const builtInInstanceIds = new Set(
         Object.keys(PROVIDER_DISPLAY_NAMES).map((kind) =>
           defaultInstanceIdForDriver(ProviderDriverKind.make(kind)),
         ),
       );
+      // Counted, so the loop below cannot pass by iterating nothing.
+      expect(repaired.threads).toHaveLength(seeded.length);
       for (const thread of repaired.threads) {
         if (thread.id === rePointed.id) {
           continue;
@@ -2474,12 +2499,18 @@ describe("OrchestrationEngine", () => {
       // re-seeding it.
       const kept = repaired.threads.find((thread) => thread.id === modelChanged.id);
       expect(kept?.modelSelection.model).toBe("a-model-they-picked-but-same-instance");
+      // `options` is an optional key on ModelSelection, so a half-spread that carries `model`
+      // and forgets it typechecks and reads as equivalent.
+      expect(kept?.modelSelection.options).toEqual([{ id: "reasoningEffort", value: "high" }]);
       expect(builtInInstanceIds.has(kept!.modelSelection.instanceId)).toBe(true);
 
-      // (2) IDEMPOTENT ON THE THIRD BOOT, which is a statement about receipts rather than
-      // about rows: the repair has its own deterministic id, so its own receipt short-circuits
-      // it exactly as the create's does. Comparing the rows would pass against a repair that
-      // re-decided the same command every boot and wrote the same answer.
+      // (2) THE THIRD BOOT CHANGES NO RECEIPT, and the reason is the GUARD rather than the
+      // receipt: by boot 3 the instance is already correct, so the repair is not dispatched again
+      // and there is nothing for its receipt to short-circuit. Measured in this PR's review —
+      // bypassing the engine's receipt short-circuit for these command ids leaves this test green.
+      // So the third boot is a statement that a repaired environment stops churning, and what pins
+      // the DETERMINISTIC ID is the two assertions below, which spell it: give the repair a
+      // per-boot id and `seed-thread-<handle>-instance-repair` is MISSING, which reds them.
       const receiptsAfterSecond = await readRepairReceipts(system);
       await system.dispose();
       system = await createOrchestrationSystem(databasePath);

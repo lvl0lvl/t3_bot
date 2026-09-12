@@ -911,6 +911,15 @@ export const make = (options?: StartupOptions) =>
       // be refused by `requireActiveProjectWorkspaceRootAbsent`. Seeding to
       // completion first makes the bootstrap resolve what this created, and
       // costs the startup path one serialised phase.
+      // AND AFTER `reactors.start`, which this phase does not choose and which is now
+      // load-bearing: the instance repair inside the seed fixes a row a draining
+      // MentionWakeReactor can read first. An un-consumed post mentioning a seeded thread wakes
+      // it against the unrepaired selection, the turn fails at the provider boundary, and the
+      // wake cursor has already advanced — so that one post is consumed unanswered on the boot
+      // that was going to make answering possible. Later posts are fine. Moving this phase
+      // above `reactors.start` is the fix and `t3_bot-gn4` holds it: a boot-ordering change
+      // nothing in the suite can demonstrate, which is a different piece of work from the
+      // repair itself.
       yield* Effect.logDebug("startup phase: seeding the agent hierarchy");
       yield* runStartupPhase(
         "hierarchy.seed",
