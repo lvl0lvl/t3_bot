@@ -31,10 +31,17 @@ import { WorkspacePageHeader } from "./WorkspacePageHeader";
 /**
  * One channel: its header, its posts, and the composer.
  *
- * THREE STATES FOR THE POST REGION, and they are three different facts: posts
- * this server cannot be asked for, a channel that genuinely has none, and a
- * list. An empty list looks exactly like the first two, so a reader who cannot
- * tell them apart concludes a channel is quiet when it is unreadable.
+ * FOUR STATES FOR THE POST REGION, and they are four different facts: posts this
+ * server cannot be asked for, a channel that genuinely has none, a list, and — the
+ * one a reader meets first on every open — a read that has not answered yet. An
+ * empty list looks exactly like the first two, so a reader who cannot tell them
+ * apart concludes a channel is quiet when it is unreadable.
+ *
+ * The fourth renders an empty pane and says nothing, which is deliberate and is the
+ * same choice `state === "loading"` makes below: nothing here is slow, the answer
+ * simply has not arrived, and both a spinner and the pager's own "Loading earlier
+ * posts…" would be claims about it. That label in particular was the defect — it
+ * rendered over an empty pane, where nothing is earlier than anything.
  *
  * `PostsUnavailable` therefore stays rather than being deleted. A server that
  * predates `orchestration.readChannelPosts` still sends the channel shell, so
@@ -136,26 +143,6 @@ function ChannelHeader({ channel }: { readonly channel: EnvironmentChannelShell 
 }
 
 /**
- * A channel's posts: the newest page on open, older pages upward on request.
- *
- * ANCHORED AT THE BOTTOM by `mt-auto` on the inner wrapper for a short list, and
- * by the effect below once the list is taller than the pane. It used to say
- * `justify-end` did the first half, and that was the p0: `justify-end` also made
- * the overflow unscrollable, so the second half never got a chance to run. A channel opens at its newest post because that is where a
- * reader wants to be, and it is the one scroll position that does not need
- * restoring.
- *
- * PAGING IS A CONTROL, NOT A SCROLL HANDLER, for now. A scroll-triggered fetch
- * fires repeatedly while the momentum of one flick carries the container past
- * the threshold, and guarding that needs the request to be in flight before the
- * next event arrives — which the atom family does not expose. A button asks once
- * and says what it is doing. `t3_bot-ajw` carries the scroll refinement.
- *
- * THE CURSOR IS OPAQUE HERE TOO. This component holds whatever `nextCursor` the
- * server last gave it and hands it back verbatim; it never builds one, which is
- * the property `decodeChannelCursor` refuses to let a caller break.
- */
-/**
  * How many posts a page asks for.
  *
  * WELL UNDER `CHANNEL_POST_PAGE_LIMIT_MAX`, which is the server's ceiling and
@@ -170,6 +157,29 @@ function ChannelHeader({ channel }: { readonly channel: EnvironmentChannelShell 
  */
 const CHANNEL_POST_PAGE_SIZE = 50;
 
+/**
+ * A channel's posts: the newest page on open, older pages upward on request.
+ *
+ * ANCHORED AT THE BOTTOM by `mt-auto` on the inner wrapper for a short list, and
+ * by the effect below once the list is taller than the pane. It used to say
+ * `justify-end` did the first half, and that was the p0: `justify-end` also made
+ * the overflow unscrollable, so the second half never got a chance to run. A
+ * channel opens at its newest post because that is where a reader wants to be,
+ * and it is the one scroll position that does not need restoring.
+ *
+ * PAGING IS A CONTROL, NOT A SCROLL HANDLER, for now. A scroll-triggered fetch
+ * fires repeatedly while the momentum of one flick carries the container past
+ * the threshold, and the guard cannot be `page.waiting`: it is state, so it changes on
+ * re-render, and every scroll event inside one frame reads the value from before the
+ * dispatch. A ref that flips synchronously where the fetch is dispatched is what
+ * that needs — three lines, and none of them are missing from the atom family, which
+ * does report in-flight reads and is what disables this button. A button asks once
+ * and says what it is doing. `t3_bot-ajw` carries the scroll refinement.
+ *
+ * THE CURSOR IS OPAQUE HERE TOO. This component holds whatever `nextCursor` the
+ * server last gave it and hands it back verbatim; it never builds one, which is
+ * the property `decodeChannelCursor` refuses to let a caller break.
+ */
 function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelShell }) {
   const { environmentId, id: channelId } = channel;
   // The cursor this region is currently asking with. `undefined` is the newest

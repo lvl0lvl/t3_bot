@@ -124,9 +124,8 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
             // instead of a silent 500.
             Effect.catchTags({
               ChannelPostsUnreadable: () => failEnvironmentNotFound("channel_not_found"),
-              // A FOREIGN CURSOR IS A BAD REQUEST, not an empty page. The empty
-              // page is byte for byte "you are caught up", which is what
-              // `t3_bot-e60` was filed for.
+              // A FOREIGN CURSOR IS A BAD REQUEST, not an empty page — which is
+              // the answer for "you are caught up" (`decodeChannelCursor`).
               ChannelCursorRejected: () => failEnvironmentInvalidRequest("invalid_cursor"),
               PersistenceDecodeError: (cause) =>
                 failEnvironmentInternal("orchestration_snapshot_failed", cause),

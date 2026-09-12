@@ -71,9 +71,8 @@ export const EnvironmentRequestInvalidReason = Schema.Literals([
   "invalid_scope",
   "scope_not_granted",
   "invalid_command",
-  // A cursor this channel did not issue. A BAD REQUEST rather than an empty
-  // page, because an empty page is byte for byte what "you are caught up" looks
-  // like — the defect `t3_bot-e60` was filed for.
+  // A cursor this channel did not issue. A BAD REQUEST rather than an empty page,
+  // which is the answer for "you are caught up" (`t3_bot-e60`).
   "invalid_cursor",
 ]);
 export type EnvironmentRequestInvalidReason = typeof EnvironmentRequestInvalidReason.Type;

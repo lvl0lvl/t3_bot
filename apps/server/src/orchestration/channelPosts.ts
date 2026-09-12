@@ -54,10 +54,8 @@ export class ChannelPostsUnreadable extends Schema.TaggedError<ChannelPostsUnrea
 /**
  * The cursor was not issued by this channel.
  *
- * A REFUSAL, NEVER AN EMPTY PAGE. The empty page is byte for byte what "you are
- * caught up" looks like, so answering with one is the defect `t3_bot-e60` was
- * filed for — a cursor earned in one channel reported a second channel with three
- * unread posts as caught up, and nothing in the reply said otherwise.
+ * A REFUSAL, NEVER AN EMPTY PAGE, and every door has to keep it one: an empty page
+ * is the answer for "you are caught up". `decodeChannelCursor` has the account.
  */
 export class ChannelCursorRejected extends Schema.TaggedError<ChannelCursorRejected>()(
   "ChannelCursorRejected",

@@ -4,9 +4,8 @@
  * Lifted out of `channelGatewayLive.ts` unchanged when the browser gained a
  * paged read, because two doors decoding the same format is two chances to
  * disagree about it — and this format's failure mode is a lie rather than an
- * error: a cursor the reader does not accept, answered with an empty page, is
- * byte for byte what "you are caught up" looks like. The comments below are the
- * reasons the toolkit's version holds, kept with the code they explain.
+ * error. `decodeChannelCursor` below carries the account of that, with the
+ * measurement; every other mention of it in the tree is a clause pointing here.
  *
  * `channelId` is a `string` here rather than `ChannelId` because the comms
  * gateway's seam stages its ids as strings; the client door brands them and
