@@ -118,6 +118,8 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
+import { ChannelPostWakeRepository } from "./persistence/Services/ChannelPostWakes.ts";
+import { ProjectionTurnRepository } from "./persistence/Services/ProjectionTurns.ts";
 import {
   OrchestrationListenerCallbackError,
   OrchestrationThreadSettleBlockedError,
@@ -1001,6 +1003,19 @@ const buildAppUnderTest = (options?: {
             listChannelsForMember: () => Effect.succeed([]),
             listPosts: () => Effect.succeed([]),
             ...options?.layers?.projectionChannels,
+          }),
+          // THE WAKE JOIN, ANSWERED EMPTY. `readChannelPostPage` attaches `wakes`
+          // to every page (`t3_bot-j6o`) and needs these two to do it; no post
+          // in this file wakes a thread, so "no links, no turns" is the truth
+          // here rather than a stub that hides something. The real join is
+          // pinned in `channelPosts.test.ts` and `MentionWakeReactor.test.ts`
+          // over a real database.
+          Layer.mock(ChannelPostWakeRepository)({
+            link: () => Effect.die("unused"),
+            listByPostIds: () => Effect.succeed([]),
+          }),
+          Layer.mock(ProjectionTurnRepository)({
+            listStatesByTurnIds: () => Effect.succeed([]),
           }),
           Layer.mock(ThreadDeletionReactor)({
             start: () => Effect.void,

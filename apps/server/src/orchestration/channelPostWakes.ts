@@ -1,0 +1,115 @@
+/**
+ * A page of posts, each with the threads it woke and how those wakes ended.
+ *
+ * ONE FUNCTION FOR BOTH DOORS. The comms gateway and the browser's paged read
+ * both attach `wakes` to a page, and `outcome` is a MAPPING from the turn row's
+ * vocabulary to the wire's — `error` becomes `failed`, `interrupted` becomes
+ * `cancelled`, a missing row becomes `unknown`. Two copies of that mapping is
+ * two chances for the doors to disagree about what an agent and a browser are
+ * told happened to the same post, which is the drift `channelCursor.ts` exists
+ * to end for the cursor.
+ *
+ * TWO QUERIES PER PAGE, not two per post: the link rows for every post on the
+ * page, then the turn states for every link. A page in which nothing woke
+ * anybody issues neither.
+ *
+ * @module channelPostWakes
+ */
+import type {
+  OrchestrationChannelPostWake,
+  OrchestrationChannelPostWakeOutcome,
+  ThreadId,
+  TurnId,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+
+import type { ProjectionRepositoryError } from "../persistence/Errors.ts";
+import { ChannelPostWakeRepository } from "../persistence/Services/ChannelPostWakes.ts";
+import {
+  ProjectionTurnRepository,
+  type ProjectionTurnState,
+} from "../persistence/Services/ProjectionTurns.ts";
+
+/**
+ * The turn row's word for a lifecycle, said in the wire's word for an outcome.
+ *
+ * `pending` IS UNREACHABLE and is mapped anyway, to `running`, rather than
+ * thrown on: a link is written by the session-set that makes a turn running, so
+ * a linked turn has never been pending since — but a `switch` with a hole is a
+ * compile error the day the vocabulary grows, and that is the point of an
+ * exhaustive one.
+ */
+const outcomeOf = (state: ProjectionTurnState): OrchestrationChannelPostWakeOutcome => {
+  switch (state) {
+    case "running":
+    case "pending":
+      return "running";
+    case "completed":
+      return "completed";
+    case "error":
+      return "failed";
+    case "interrupted":
+      return "cancelled";
+  }
+};
+
+/**
+ * `wakes` for each post id on a page, keyed by post id.
+ *
+ * A post that woke nobody is ABSENT from the map — not present with an empty
+ * array — so a caller spreading `wakes` onto a post gets the contract's
+ * optional-and-never-empty shape for free, and the two spellings of "woke
+ * nobody" cannot both exist.
+ *
+ * `unknown` is the outcome for a link whose turn row is gone. That is rare and
+ * means the thread was reverted past the turn or recreated; the contract
+ * docstring carries the enumeration of the two deletes that can do it.
+ */
+export const wakesForPosts = (input: {
+  readonly channelId: string;
+  readonly postIds: ReadonlyArray<string>;
+}): Effect.Effect<
+  ReadonlyMap<string, ReadonlyArray<OrchestrationChannelPostWake>>,
+  ProjectionRepositoryError,
+  ChannelPostWakeRepository | ProjectionTurnRepository
+> =>
+  Effect.gen(function* () {
+    const links = yield* ChannelPostWakeRepository;
+    const turns = yield* ProjectionTurnRepository;
+
+    const linkRows = yield* links.listByPostIds(input);
+    if (linkRows.length === 0) {
+      return new Map();
+    }
+
+    const states = yield* turns.listStatesByTurnIds(
+      linkRows.map((row) => ({ threadId: row.threadId, turnId: row.turnId })),
+    );
+    // KEYED ON THE PAIR WITH ":" BETWEEN, which is safe because a `ThreadId` is
+    // branded through `makeOpaqueEntityId` and that brand refuses ":" — the same
+    // guarantee `decodeChannelCursor` leans on for its split. The first version
+    // used a NUL byte here, which is unambiguous and also turns the file into
+    // "binary" for every diff tool, so the one file holding the join logic had
+    // no reviewable diff.
+    const stateOf = new Map<string, ProjectionTurnState>();
+    for (const row of states) {
+      stateOf.set(`${row.threadId}:${row.turnId}`, row.state);
+    }
+
+    const byPost = new Map<string, Array<OrchestrationChannelPostWake>>();
+    for (const row of linkRows) {
+      const state = stateOf.get(`${row.threadId}:${row.turnId}`);
+      const wake: OrchestrationChannelPostWake = {
+        threadId: row.threadId as ThreadId,
+        turnId: row.turnId as TurnId,
+        outcome: state === undefined ? "unknown" : outcomeOf(state),
+      };
+      const existing = byPost.get(row.postId);
+      if (existing === undefined) {
+        byPost.set(row.postId, [wake]);
+      } else {
+        existing.push(wake);
+      }
+    }
+    return byPost;
+  });

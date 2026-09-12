@@ -17,8 +17,10 @@ import {
   DEFAULT_RUNTIME_MODE,
   type OrchestrationCommand,
   ProjectId,
+  MessageId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
@@ -63,6 +65,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { MentionWakeBudgetRepositoryLive } from "../../persistence/Layers/MentionWakeBudget.ts";
 import { MentionWakeBudgetRepository } from "../../persistence/Services/MentionWakeBudget.ts";
+import { ChannelPostWakeRepository } from "../../persistence/Services/ChannelPostWakes.ts";
+import { wakesForPosts } from "../channelPostWakes.ts";
 import { MentionWakeReactor, MENTION_WAKE_CURSOR } from "../Services/MentionWakeReactor.ts";
 import {
   HELD_BACKLOG_LIMIT,
@@ -70,6 +74,7 @@ import {
   WAKE_BUDGET_PER_CHANNEL,
   WAKE_BUDGET_WINDOW_MINUTES,
   wakeKey,
+  parseWakeKey,
   wakeMessageText,
 } from "./MentionWakeReactor.ts";
 
@@ -308,6 +313,7 @@ const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
   const turns = await runtime.runPromise(Effect.service(ProjectionTurnRepository));
   const sql = await runtime.runPromise(Effect.service(SqlClient.SqlClient));
   const budget = await runtime.runPromise(Effect.service(MentionWakeBudgetRepository));
+  const wakes = await runtime.runPromise(Effect.service(ChannelPostWakeRepository));
   const scope = await runtime.runPromise(Scope.make());
   return {
     engine,
@@ -318,6 +324,7 @@ const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
     turns,
     sql,
     budget,
+    wakes,
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     startReactor: () =>
       runtime.runPromise(Scope.provide(reactor.start(), scope) as Effect.Effect<void>),
@@ -469,6 +476,42 @@ const post = async (
  * coincide - but a NEGATIVE assertion through this helper is only as strong as
  * the fixture's thread being visible.
  */
+/**
+ * Set the woken thread's provider session, which is how a turn STARTS here.
+ *
+ * The session agrees with the thread `seedChannel` created rather than inventing
+ * a provider it was never made with: a fixture whose session names a different
+ * runtime mode than its thread is testing a state the app cannot reach.
+ */
+const setSession = async (
+  system: System,
+  input: {
+    readonly label: string;
+    readonly activeTurnId: TurnId | null;
+    readonly updatedAt: string;
+    readonly threadId?: ThreadId;
+    readonly status?: "running" | "interrupted";
+  },
+) =>
+  system.run(
+    system.engine.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make(`cmd-session-${input.label}`),
+      threadId: input.threadId ?? WOKEN,
+      session: {
+        threadId: input.threadId ?? WOKEN,
+        status: input.status ?? "running",
+        providerName: "codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeMode: WOKEN_RUNTIME_MODE,
+        activeTurnId: input.activeTurnId,
+        lastError: null,
+        updatedAt: input.updatedAt,
+      },
+      createdAt: input.updatedAt,
+    }),
+  );
+
 const wakeMessages = async (system: System, threadId: ThreadId = WOKEN) => {
   const detail = await system.run(system.threads.getThreadDetailById(threadId));
   return Option.isNone(detail)
@@ -1425,6 +1468,47 @@ describe("MentionWakeReactor", () => {
     );
   });
 
+  it("parses back exactly what wakeKey produced, and refuses what it did not", () => {
+    // THE INVERSE, TESTED AS ONE, because `parseWakeKey` is how the projector
+    // decides which pending-turn rows are wakes at all (`t3_bot-j6o`). Every
+    // ordinary user turn stages a row under a plain message id; a parser that
+    // admitted one would link a human's turn to a post that never existed.
+    for (const [channelId, postId] of [
+      [CHANNEL_ID, "post-1"],
+      // The pair `wakeKey`'s escaping exists for, round-tripped rather than
+      // only proven distinct: the parser has to undo the escaping, not just
+      // split on the separator.
+      [CHANNEL_ID, "x:post-1"],
+      [`${CHANNEL_ID}:x`, "post-1"],
+    ] as const) {
+      const parsed = parseWakeKey(wakeKey(channelId, postId, WOKEN));
+      expect(Option.isSome(parsed) ? parsed.value : null).toEqual({
+        channelId,
+        postId,
+        threadId: WOKEN,
+      });
+    }
+
+    // THE INPUT THAT SEPARATES THE IMPLEMENTATIONS. A parser with no prefix
+    // check refuses a plain message id anyway — no colons, so it fails at the
+    // second boundary — and a sweep measured exactly that: removing the check
+    // left every test green. What the check refuses is a NON-wake id that has
+    // the colons, which nothing here had ever handed it. Two of these are ids
+    // the entity brand would accept today; the third is `wakeKey`'s own shape
+    // under a different prefix, which is the one a wrong prefix check admits.
+    for (const notAWake of [
+      "message-1",
+      "msg:with:colons",
+      `not-a-wake:${encodeURIComponent(CHANNEL_ID)}:post-1:${WOKEN}`,
+      "",
+      "comms-wake:",
+      "comms-wake:only-one-part",
+      `comms-wake:${encodeURIComponent(CHANNEL_ID)}:post-1:`,
+    ]) {
+      expect(Option.isNone(parseWakeKey(notAWake))).toBe(true);
+    }
+  });
+
   it("dispatches the DERIVED key and the ASSEMBLED text, not its own", async () => {
     // THE GAP THE TWO TESTS ABOVE OPEN, which boss3 named on the board: a unit
     // test on a pure function cannot tell "the reactor derives and escapes
@@ -1838,6 +1922,337 @@ describe("MentionWakeReactor", () => {
         system.turns.getPendingTurnStartByThreadId({ threadId: BYSTANDER }),
       );
       expect(Option.isNone(bystander)).toBe(true);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("keeps the second post's link once a turn is RUNNING, where the projection drops it", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      const RUNNING_TURN = TurnId.make("turn-running");
+      const firstKey = wakeKey(CHANNEL_ID, "post-first", WOKEN);
+      const secondKey = wakeKey(CHANNEL_ID, "post-second", WOKEN);
+
+      // DISTINCT TIMESTAMPS THROUGHOUT, for the reason the test below paid for:
+      // two posts on one timestamp tie on `requested_at`, and an assertion over
+      // a tie reads SQLite's rowid rather than the behaviour it names.
+      await post(system, {
+        id: "post-first",
+        mentions: [MENTION],
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // THE TURN STARTS, which is the step this file has never had — and the
+      // reason the test below cannot show what it describes: with no turn row
+      // there is no second place for a key to be, so "the key is nowhere" has
+      // nowhere to be measured.
+      await setSession(system, {
+        label: "start",
+        activeTurnId: RUNNING_TURN,
+        updatedAt: "2026-01-01T00:00:30.000Z",
+      });
+
+      // AND A POST ARRIVES WHILE IT RUNS. This is the steer `t3_bot-j6o` is
+      // about: the provider folds it into the live turn and emits no
+      // `turn.started`, so it never gets a turn of its own.
+      await post(system, {
+        id: "post-second",
+        mentions: [MENTION],
+        createdAt: "2026-01-01T00:01:00.000Z",
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // THE SECOND POST DID STAGE A ROW, measured BEFORE the next session-set
+      // rather than inferred after it. Without this the test cannot tell "the
+      // link was erased" from "a link was never made", and those call for
+      // opposite fixes: the first is a delete that outruns a reader, the second
+      // would mean the wake never reached the projection at all.
+      const staged = await system.run(
+        system.turns.getPendingTurnStartByThreadId({ threadId: WOKEN }),
+      );
+      expect(Option.isSome(staged) ? String(staged.value.messageId) : null).toBe(secondKey);
+
+      // AN ORDINARY SECOND SESSION-SET, NOT A CANCELLATION, and that is the
+      // point: the bead frames this hole around a wake whose turn was
+      // cancelled, and it opens on the path every turn takes.
+      await setSession(system, {
+        label: "again",
+        activeTurnId: RUNNING_TURN,
+        updatedAt: "2026-01-01T00:01:30.000Z",
+      });
+
+      const rows = await system.run(system.turns.listByThreadId({ threadId: WOKEN }));
+
+      // THE TURN ROW HOLDS THE FIRST POST, BY NAME. "It holds a key" passes with
+      // the defect present — the turn does have a `pendingMessageId`; it is the
+      // other post's.
+      const turnRow = rows.find((row) => row.turnId === RUNNING_TURN);
+      expect(turnRow?.pendingMessageId).toBe(firstKey);
+
+      // AND THE SECOND POST'S KEY IS ON NEITHER PROJECTION ROW. This was the
+      // whole defect, and it is still true — the projection is unchanged, and
+      // it should be: the turn row's `??` is upstream's rule and the staging
+      // row is a staging row. What changed is that the key was CAPTURED on its
+      // way out.
+      expect(rows.some((row) => row.pendingMessageId === secondKey)).toBe(false);
+      const pending = await system.run(
+        system.turns.getPendingTurnStartByThreadId({ threadId: WOKEN }),
+      );
+      expect(Option.isNone(pending)).toBe(true);
+
+      // THE LINK TABLE HOLDS BOTH POSTS, EACH POINTING AT THE TURN THAT FOLDED
+      // IT. Keyed by the post, which is criterion 2: the two share a turn id by
+      // construction, so the turn id could never have told them apart, and the
+      // post id is the only key under which "this post went unanswered" can be
+      // said about one of them and not the other.
+      //
+      // BOTH, not just the second. The first post's key survives on the turn
+      // row, so a reader COULD find it there — but a reader that has to consult
+      // two places depending on which post it holds is the two-spellings defect
+      // moved into the read path. One table answers for every wake.
+      const links = await system.run(
+        system.wakes.listByPostIds({
+          channelId: CHANNEL_ID,
+          postIds: ["post-first", "post-second"],
+        }),
+      );
+      expect(links.map((link) => [link.postId, link.threadId, link.turnId]).sort()).toEqual([
+        ["post-first", WOKEN, RUNNING_TURN],
+        ["post-second", WOKEN, RUNNING_TURN],
+      ]);
+
+      // BOTH POSTS DID WAKE THE THREAD, so what is missing is a link the
+      // projection dropped rather than a wake that never happened.
+      const woken = await wakeMessages(system, WOKEN);
+      expect(woken.filter((text) => text.includes('post "post-first"'))).toHaveLength(1);
+      expect(woken.filter((text) => text.includes('post "post-second"'))).toHaveLength(1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("links nothing for an ordinary user turn, which stages a row like a wake does", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+
+      // THE MOST ORDINARY THING IN THE PRODUCT, and no test here had one: a
+      // human starts a turn. It stages a pending row under a plain message id
+      // exactly as a wake does, and the next session-set consumes it exactly
+      // as it consumes a wake's. A capture that fired for every pending row
+      // would link this turn to a post that does not exist — and a sweep found
+      // that doing so red nothing, because every staged row in this file was
+      // a wake's.
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-human-turn"),
+          threadId: WOKEN,
+          message: {
+            messageId: MessageId.make("message-from-a-human"),
+            role: "user",
+            text: "a question typed by hand",
+            attachments: [],
+          },
+          runtimeMode: WOKEN_RUNTIME_MODE,
+          interactionMode: WOKEN_INTERACTION_MODE,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      await setSession(system, {
+        label: "human-start",
+        activeTurnId: TurnId.make("turn-human"),
+        updatedAt: "2026-01-01T00:00:30.000Z",
+      });
+
+      // NO LINK, under any post id — including the message id, which a parser
+      // that did not check the prefix might have split into channel-and-post
+      // halves of nothing.
+      const links = await system.run(
+        system.wakes.listByPostIds({
+          channelId: CHANNEL_ID,
+          postIds: ["message-from-a-human", "a-human", ""],
+        }),
+      );
+      expect(links).toEqual([]);
+      // And the turn itself is unremarkable: it holds its own message id, as
+      // every human turn does.
+      const rows = await system.run(system.turns.listByThreadId({ threadId: WOKEN }));
+      expect(rows.map((row) => row.pendingMessageId)).toEqual(["message-from-a-human"]);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("reports one post's wake of TWO threads as two wakes, each with its own outcome", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+
+      // THE FIXTURE THE ARRAY WAS ARGUED FOR AND NEVER GIVEN. `wakes` is an
+      // array because one post can wake two threads whose turns end
+      // differently; a sweep found that dropping every wake after the first
+      // red nothing, because no test had a second one to drop.
+      await post(system, {
+        id: "post-both",
+        mentions: [MENTION, BYSTANDER_MENTION],
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      const WOKEN_TURN = TurnId.make("turn-woken");
+      const BYSTANDER_TURN = TurnId.make("turn-bystander");
+      await setSession(system, {
+        label: "woken-start",
+        activeTurnId: WOKEN_TURN,
+        updatedAt: "2026-01-01T00:00:30.000Z",
+      });
+      await setSession(system, {
+        label: "bystander-start",
+        threadId: BYSTANDER,
+        activeTurnId: BYSTANDER_TURN,
+        updatedAt: "2026-01-01T00:00:31.000Z",
+      });
+      // ONE ENDS BADLY AND ONE DOES NOT, so a single outcome over both threads
+      // would have to invent a precedence — and the assertion below can tell
+      // "two wakes" from "one wake, twice".
+      await setSession(system, {
+        label: "bystander-interrupted",
+        threadId: BYSTANDER,
+        activeTurnId: null,
+        status: "interrupted",
+        updatedAt: "2026-01-01T00:01:00.000Z",
+      });
+
+      const wakes = await system.run(
+        wakesForPosts({ channelId: CHANNEL_ID, postIds: ["post-both"] }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.succeed(ChannelPostWakeRepository, system.wakes),
+              Layer.succeed(ProjectionTurnRepository, system.turns),
+            ),
+          ),
+        ),
+      );
+      expect(
+        [...(wakes.get("post-both") ?? [])].sort((a, b) => a.threadId.localeCompare(b.threadId)),
+      ).toEqual([
+        { threadId: BYSTANDER, turnId: BYSTANDER_TURN, outcome: "cancelled" },
+        { threadId: WOKEN, turnId: WOKEN_TURN, outcome: "running" },
+      ]);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("says `unknown` for a wake whose turn row is gone, and only for that", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await post(system, {
+        id: "post-reverted",
+        mentions: [MENTION],
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      const TURN = TurnId.make("turn-to-lose");
+      await setSession(system, {
+        label: "start",
+        activeTurnId: TURN,
+        updatedAt: "2026-01-01T00:00:30.000Z",
+      });
+
+      // THE ONE WAY A TURN ROW GOES AWAY THAT A TEST CAN DRIVE. `unknown` was
+      // argued rare because `projection_turns` has two DELETEs — the pending
+      // placeholder's, and a whole-thread delete from `thread.created` and
+      // `thread.reverted` — and then never produced: a sweep found that
+      // mapping a missing row to "completed" red nothing. This deletes the
+      // rows the way `thread.created` does, through the repository, which is
+      // the same statement the projector runs.
+      await system.run(system.turns.deleteByThreadId({ threadId: WOKEN }));
+
+      const wakes = await system.run(
+        wakesForPosts({ channelId: CHANNEL_ID, postIds: ["post-reverted"] }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.succeed(ChannelPostWakeRepository, system.wakes),
+              Layer.succeed(ProjectionTurnRepository, system.turns),
+            ),
+          ),
+        ),
+      );
+      // THE LINK SURVIVES THE TURN ROW — that is the point of a separate table —
+      // and says so, rather than reporting the post as answered.
+      expect(wakes.get("post-reverted")).toEqual([
+        { threadId: WOKEN, turnId: TURN, outcome: "unknown" },
+      ]);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("reads a turn's state by thread AND turn, not by turn id alone", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      // THE SAME TURN ID ON TWO THREADS. Turn ids are UUIDs in practice and
+      // this cannot happen in practice — which is exactly why the batch read's
+      // `WHERE turn_id IN (...)` over-fetches by turn id alone and filters the
+      // thread half on the way out, and why nothing tested the filter: no
+      // fixture had a collision to filter. The repository's key is the pair,
+      // so the pair is constructible here even though the runtime never makes
+      // one.
+      const SHARED = TurnId.make("turn-shared");
+      await setSession(system, {
+        label: "woken",
+        activeTurnId: SHARED,
+        updatedAt: "2026-01-01T00:00:30.000Z",
+      });
+      await setSession(system, {
+        label: "bystander",
+        threadId: BYSTANDER,
+        activeTurnId: SHARED,
+        updatedAt: "2026-01-01T00:00:31.000Z",
+      });
+      await setSession(system, {
+        label: "bystander-done",
+        threadId: BYSTANDER,
+        activeTurnId: null,
+        status: "interrupted",
+        updatedAt: "2026-01-01T00:01:00.000Z",
+      });
+
+      // Asked about WOKEN's turn only; BYSTANDER's row shares the turn id and
+      // must not come back — it is in the other state, so a filter that ignored
+      // the thread half would answer "interrupted" for a turn that is running.
+      const states = await system.run(
+        system.turns.listStatesByTurnIds([{ threadId: WOKEN, turnId: SHARED }]),
+      );
+      expect(states).toEqual([{ threadId: WOKEN, turnId: SHARED, state: "running" }]);
     } finally {
       await system.dispose();
       await removeDirectory(directory);

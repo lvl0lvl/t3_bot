@@ -69,6 +69,21 @@ export const ProjectionTurnById = Schema.Struct({
 });
 export type ProjectionTurnById = typeof ProjectionTurnById.Type;
 
+/**
+ * A turn's identity and its state, and nothing else.
+ *
+ * FOR THE WAKE JOIN, which asks one question of many turns at once: a page of
+ * channel posts resolves each wake's outcome from its turn row, and the full row
+ * carries checkpoint JSON and thirteen other columns the question does not use.
+ * Narrow on purpose; a caller that wants the rest has `getByTurnId`.
+ */
+export const ProjectionTurnStateRow = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  state: ProjectionTurnState,
+});
+export type ProjectionTurnStateRow = typeof ProjectionTurnStateRow.Type;
+
 export const ProjectionPendingTurnStart = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
@@ -148,6 +163,20 @@ export interface ProjectionTurnRepositoryShape {
   readonly getByTurnId: (
     input: GetProjectionTurnByTurnIdInput,
   ) => Effect.Effect<Option.Option<ProjectionTurnById>, ProjectionRepositoryError>;
+
+  /**
+   * The state of each of these turns, in one query.
+   *
+   * A turn that has no row is simply absent from the result — that absence IS an
+   * answer (the thread was reverted past it, or recreated), and the caller maps
+   * it to its own word for "gone" rather than this layer inventing one.
+   *
+   * Takes `(threadId, turnId)` pairs because the primary key is the pair; a bare
+   * turn id is unique in practice and not by constraint.
+   */
+  readonly listStatesByTurnIds: (
+    input: ReadonlyArray<{ readonly threadId: ThreadId; readonly turnId: TurnId }>,
+  ) => Effect.Effect<ReadonlyArray<ProjectionTurnStateRow>, ProjectionRepositoryError>;
 
   /**
    * Clears checkpoint fields on conflicting rows that reuse the same checkpoint turn count in a thread, excluding the provided turn.

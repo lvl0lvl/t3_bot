@@ -1,4 +1,8 @@
-import { CHANNEL_POST_PAGE_LIMIT_MAX, McpCapabilityUnavailableError } from "@t3tools/contracts";
+import {
+  CHANNEL_POST_PAGE_LIMIT_MAX,
+  McpCapabilityUnavailableError,
+  OrchestrationChannelPostWakeOutcome,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
@@ -217,6 +221,28 @@ export const PostResult = Schema.Struct({
 });
 export type PostResult = typeof PostResult.Type;
 
+/**
+ * One thread a post woke, and how that wake's turn ended — for the AGENT.
+ *
+ * The recovery is in the descriptions because an agent acts on prose, and the
+ * shape of the wrong action is known: an agent whose post was cancelled and who
+ * is told nothing re-posts the same mention, wakes the same thread, and spends
+ * the channel's wake budget on a loop nobody asked for.
+ */
+export const ChannelPostWake = Schema.Struct({
+  threadId: Schema.String.annotate({
+    description: "The thread this post woke.",
+  }),
+  turnId: Schema.String.annotate({
+    description:
+      "The turn that handled the wake. A FACT, NOT A HANDLE: if the thread was already mid-turn, your post was folded into that turn and shares this id with every other post folded into it. Do not use it to identify your post; use postId.",
+  }),
+  outcome: OrchestrationChannelPostWakeOutcome.annotate({
+    description:
+      "running: the thread is still working on it. completed: it finished; look for a reply. failed / cancelled: the turn ended without finishing — the thread did NOT see your post through, and posting the same mention again will wake it again. unknown: the record of that turn is gone (the thread was reverted or recreated); treat as unanswered.",
+  }),
+});
+
 export const ChannelPost = Schema.Struct({
   postId: Schema.String,
   author: Schema.String.annotate({ description: "Handle of the member who wrote this post." }),
@@ -224,6 +250,12 @@ export const ChannelPost = Schema.Struct({
   mentions: Schema.Array(Schema.String),
   parentPostId: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
+  wakes: Schema.optional(
+    Schema.Array(ChannelPostWake).check(Schema.isMinLength(1)).annotate({
+      description:
+        "Present only when this post @-mentioned a member and woke their thread; one entry per thread woken. Absent means the post woke nobody. Check your OWN posts here: a wake whose outcome is failed or cancelled was not handled.",
+    }),
+  ),
 });
 export type ChannelPost = typeof ChannelPost.Type;
 

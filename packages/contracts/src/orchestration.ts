@@ -1036,6 +1036,64 @@ export type ChannelPostReadDirection = typeof ChannelPostReadDirection.Type;
  * `authorHandle` rather than a member ref: a reader renders a handle, and who the
  * author IS belongs to the write path.
  */
+/**
+ * What became of the turn a post's wake produced, resolved at read time.
+ *
+ * FIVE WORDS, MAPPED FROM THE TURN ROW'S FIVE, and the mapping is here so the
+ * wire never leaks the projection's vocabulary: `error` is `failed` and
+ * `interrupted` is `cancelled`, because those are the words a reader of a channel
+ * uses, and the projection's are the words a turn lifecycle uses. `pending`
+ * cannot reach here — a link is written by the session-set that makes a turn
+ * running, so a linked turn has never been pending since.
+ *
+ * `unknown` IS RARE AND MEANS SOMETHING. It is not "this post is old". Turn rows
+ * PERSIST: `projection_turns` has exactly two DELETEs in the repository, one that
+ * matches only the pending placeholder (`turn_id IS NULL`) and one whole-thread
+ * delete with two callers, `thread.created` and `thread.reverted`. There is no
+ * age sweep. So a turn row is gone only when the thread was reverted past it or
+ * the thread id was recreated — both events a reader would want to know about.
+ * A client that renders `unknown` as a warning is not crying wolf; a client that
+ * renders it as "old" is wrong. Re-check the two greps before trusting this
+ * paragraph; it was nearly written the other way round.
+ */
+export const OrchestrationChannelPostWakeOutcome = Schema.Literals([
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+  "unknown",
+]);
+export type OrchestrationChannelPostWakeOutcome = typeof OrchestrationChannelPostWakeOutcome.Type;
+
+/**
+ * One thread a post woke, and how that wake's turn ended.
+ *
+ * WHICH TURN ID THIS CARRIES DIFFERS BY PROVIDER, and a client that does not know
+ * that will render a live-looking handle that cancellation ignores (criterion 4
+ * of `t3_bot-j6o`, both sites read first-hand):
+ *
+ *   Claude — a post arriving while a turn runs is STEERED: `ClaudeAdapter`
+ *     reuses the live turn's id and emits no turn boundary of its own. The post
+ *     has no turn. `turnId` here is the turn it was folded into, and `outcome`
+ *     is that turn's, shared with every other post folded into it.
+ *   Codex — `turn/start` hands back a QUEUED turn id and `CodexSessionRuntime`
+ *     returns it, while `activeTurnId` stays pinned to the running turn because
+ *     `turn/interrupt` accepts only the active one. So the id a Codex wake gets
+ *     is real, is the post's own, and is NEITHER the active turn NOR the one a
+ *     cancel would act on.
+ *
+ * So on both providers: `turnId` is a fact about the past, never a handle. A
+ * client must not wire it to an interrupt, and must not use it to tell posts
+ * apart — on Claude several posts share one, by construction. THE POST ID IS THE
+ * KEY, which is why this rides on the post rather than being looked up by turn.
+ */
+export const OrchestrationChannelPostWake = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  outcome: OrchestrationChannelPostWakeOutcome,
+});
+export type OrchestrationChannelPostWake = typeof OrchestrationChannelPostWake.Type;
+
 export const OrchestrationChannelPost = Schema.Struct({
   id: ChannelPostId,
   channelId: ChannelId,
@@ -1051,6 +1109,28 @@ export const OrchestrationChannelPost = Schema.Struct({
   mentions: Schema.Array(ChannelMemberHandle),
   parentPostId: Schema.NullOr(ChannelPostId),
   createdAt: IsoDateTime,
+  /**
+   * The threads this post woke, and how each wake's turn ended. ABSENT when it
+   * woke nobody — which is most posts.
+   *
+   * AN ARRAY, NOT ONE OBJECT, because the relation is one-to-many: a post
+   * mentioning two handles wakes two threads (`MentionWakeReactor.wake` resolves
+   * `threadIds`, plural, and starts a turn per thread), and the two turns can
+   * end differently. A single object would hold one of them, chosen by an
+   * ordering nobody specified — a per-post fact answering for a thread the
+   * reader did not ask about, which is `t3_bot-j6o`'s own defect moved into the
+   * contract. Optional-object to array is also a breaking change for every
+   * client that destructured it, so the shape has to be right the first time.
+   *
+   * NEVER EMPTY. Absent already means "woke nobody"; an empty array would be a
+   * second spelling of the same state, and the toolkit read would have to
+   * explain the difference to an agent. Refused at the schema.
+   *
+   * Resolved at READ time from a post-keyed link table and the turn row; nothing
+   * about a post is rewritten when its turn ends. Old rows and old clients are
+   * unaffected: the field is optional and they never see it.
+   */
+  wakes: Schema.optional(Schema.Array(OrchestrationChannelPostWake).check(Schema.isMinLength(1))),
 });
 export type OrchestrationChannelPost = typeof OrchestrationChannelPost.Type;
 

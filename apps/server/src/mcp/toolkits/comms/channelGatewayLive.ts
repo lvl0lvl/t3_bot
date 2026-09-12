@@ -27,6 +27,12 @@ import {
   resolveChannelPostPage,
   type ChannelCursorRefusal,
 } from "../../../orchestration/channelCursor.ts";
+import { wakesForPosts } from "../../../orchestration/channelPostWakes.ts";
+import { ChannelPostWakeRepositoryLive } from "../../../persistence/Layers/ChannelPostWakes.ts";
+import { ChannelPostWakeRepository } from "../../../persistence/Services/ChannelPostWakes.ts";
+import { ProjectionTurnRepositoryLive } from "../../../persistence/Layers/ProjectionTurns.ts";
+import { ProjectionTurnRepository } from "../../../persistence/Services/ProjectionTurns.ts";
+import * as Context from "effect/Context";
 import * as Result from "effect/Result";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -47,6 +53,7 @@ import {
   type ChannelMemberRef,
   type ChannelPage,
   type ChannelPostRecord,
+  type ChannelPostWakeRecord,
   type CreatePostInput,
   type ReadPostsInput,
 } from "./channelGateway.ts";
@@ -76,18 +83,31 @@ const toChannel = (row: ProjectionChannel): Channel => ({
   })),
 });
 
-const toPost = (row: ProjectionChannelPost): ChannelPostRecord => ({
+const toPost = (
+  row: ProjectionChannelPost,
+  wakes: ReadonlyArray<ChannelPostWakeRecord> | undefined,
+): ChannelPostRecord => ({
   postId: row.postId,
   authorHandle: row.authorHandle,
   body: row.body,
   mentions: [...row.mentions],
   parentPostId: row.parentPostId,
   createdAt: row.createdAt,
+  // Spread, not assigned: an explicit `wakes: undefined` is a present key, and
+  // the handler's `satisfies` and the tool's JSON would disagree about it.
+  ...(wakes === undefined ? {} : { wakes }),
 });
 
 const make = Effect.gen(function* () {
   const channels = yield* ProjectionChannelRepository;
   const engine = yield* OrchestrationEngineService;
+  // ACQUIRED ONCE AND CLOSED OVER, like `channels`: the seam's methods promise
+  // `never` in their context slot, so the join's two repositories cannot be
+  // left as a requirement on `readPosts` for a caller to supply per call.
+  const wakeContext = Context.make(
+    ChannelPostWakeRepository,
+    yield* ChannelPostWakeRepository,
+  ).pipe(Context.add(ProjectionTurnRepository, yield* ProjectionTurnRepository));
   const crypto = yield* Crypto.Crypto;
 
   const getChannelForMember = (name: string, member: ChannelMemberRef) =>
@@ -175,7 +195,11 @@ const make = Effect.gen(function* () {
         onNone: () => Effect.succeedNone,
         onSome: (id) =>
           channels.getPost({ channelId: ChannelId.make(channelId), postId: id }).pipe(
-            Effect.map(Option.map(toPost)),
+            // NO WAKES ON THIS PATH, and that is a decision rather than an
+            // omission: `getPost` exists so `reply` can check a parent exists,
+            // and the answer it needs is yes or no. Joining wakes here would
+            // cost two queries per reply to decorate a value nobody reads.
+            Effect.map(Option.map((row) => toPost(row, undefined))),
             Effect.mapError(() => storeUnavailable("getPost")),
           ),
       }),
@@ -225,11 +249,29 @@ const make = Effect.gen(function* () {
             limit: input.limit,
             rows: all,
           });
-          return {
-            posts: page.rows.map(toPost),
-            nextCursor: page.nextCursor,
-          } satisfies ChannelPage;
+          return page;
         }),
+        // THE WAKE JOIN, after the page is cut so the over-fetched row's wakes
+        // are never fetched. Same function as the client door, beside the
+        // codec, for the same reason the paging arithmetic is: the mapping from
+        // a turn's lifecycle to a wake's outcome is a decision, and this door
+        // and that one must not hold two copies of it.
+        Effect.flatMap((page) =>
+          wakesForPosts({
+            channelId: input.channelId,
+            postIds: page.rows.map((row) => row.postId),
+          }).pipe(
+            Effect.provide(wakeContext),
+            Effect.mapError(() => storeUnavailable("readPosts")),
+            Effect.map(
+              (wakes) =>
+                ({
+                  posts: page.rows.map((row) => toPost(row, wakes.get(row.postId))),
+                  nextCursor: page.nextCursor,
+                }) satisfies ChannelPage,
+            ),
+          ),
+        ),
       );
     });
 
@@ -329,4 +371,12 @@ const make = Effect.gen(function* () {
 });
 
 /** The live layer, and the only implementation the server builds. */
-export const ChannelGatewayLive = Layer.effect(ChannelGateway, make);
+// THE TWO REPOSITORIES THE WAKE JOIN READS, provided here rather than demanded
+// of every caller: the comms toolkit's callers wire `ChannelGatewayLive` as a
+// leaf, and a leaf that grows a requirement breaks each of them at the
+// composition site rather than at the change. The pipeline provides the same
+// two to the client door; this is the gateway's own copy of the same wiring.
+export const ChannelGatewayLive = Layer.effect(ChannelGateway, make).pipe(
+  Layer.provide(ChannelPostWakeRepositoryLive),
+  Layer.provide(ProjectionTurnRepositoryLive),
+);
