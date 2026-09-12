@@ -8681,6 +8681,173 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
+  /**
+   * A removal of SOMEONE ELSE, from a channel this connection is not in.
+   *
+   * THE FIXTURE IS A COLLIDING PAIR, and that is the whole of why it is written
+   * this way: the removed member is a THREAD whose memberId is the operator's
+   * own. It differs from the connection member in `memberKind` ALONE. Against a
+   * roster where the two differ in both fields — which is every other fixture in
+   * this repo — a comparison that ignored `memberKind` would pass, and
+   * `t3_bot-46h` is the bead that exists because that mutation has survived full
+   * suites four times.
+   */
+  const foreignRemovalEvent = {
+    sequence: 2,
+    eventId: EventId.make("event-channel-member-removed-foreign"),
+    aggregateKind: "channel",
+    aggregateId: ChannelId.make("channel-project"),
+    occurredAt: "2026-01-01T00:00:01.000Z",
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "channel.member-removed",
+    payload: {
+      channelId: ChannelId.make("channel-project"),
+      handle: ChannelMemberHandle.make("pm"),
+      memberKind: "thread",
+      memberId: HUMAN_OPERATOR_MEMBER_ID,
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    },
+  } as unknown as OrchestrationEvent;
+
+  it.effect("says nothing when someone else is removed from a channel it is not in", () =>
+    Effect.gen(function* () {
+      // THE DEFECT `t3_bot-7br` NAMES. Both removal branches used to emit a bare
+      // `channelId`, so every change to any channel on the server told every
+      // connected client that a channel with that id exists — while the snapshot
+      // door filters membership in SQL. Nothing is disclosed today, because
+      // there is one operator who owns the database; it becomes channel
+      // enumeration across accounts the day that constant is a real session.
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            // The row still exists and the connection is NOT in it — the
+            // "never in it" case, which must stay silent.
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [{ handle: "pm", memberKind: "thread", memberId: "thread-pm" }],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, foreignRemovalEvent);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      // The snapshot, then the completion marker, and NOTHING between them.
+      // Asserting the marker rather than a count is what makes this a real
+      // negative: the stream reached its end, so the absence is a decision the
+      // server made rather than an item that had not arrived yet.
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.deepEqual(items[1], { kind: "synchronized" });
+      assert.equal(items.filter((item) => item.kind === "channel-removed").length, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("still reports its OWN removal on a resume with no snapshot", () =>
+    Effect.gen(function* () {
+      // THE OTHER DIRECTION, and the one that killed the two fixes tried before
+      // this. A client reconnecting with `afterSequence` receives its missed
+      // events through the CATCH-UP REPLAY rather than through the live stream,
+      // and the channels it holds come from a snapshot it cached BEFORE the
+      // disconnect. So any per-connection set of "channels I have already told
+      // you about" is useless here — this connection is new, its set starts
+      // empty, and a removal for a channel the client really does hold would be
+      // suppressed by it. An operator removed while disconnected would never be
+      // told to drop that channel: the reverse state lost, which is a worse
+      // defect than the disclosure being fixed.
+      //
+      // The ref on the EVENT carries no such state. It is compared against the
+      // connection member at the moment of the decision, on a resumed
+      // connection exactly as on a fresh one — which is the property that makes
+      // this the fix and the other two not.
+      const ownRemoval = {
+        ...foreignRemovalEvent,
+        eventId: EventId.make("event-channel-member-removed-own"),
+        payload: {
+          ...(foreignRemovalEvent as unknown as { payload: Record<string, unknown> }).payload,
+          handle: ChannelMemberHandle.make("walt"),
+          // The connection member EXACTLY: human, and the operator's id. The
+          // foreign event above differs from this one in `memberKind` alone.
+          memberKind: "human",
+          memberId: HUMAN_OPERATOR_MEMBER_ID,
+        },
+      } as unknown as OrchestrationEvent;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            // The resume branch only replays when the gap is valid; otherwise it
+            // falls back to a snapshot and this test would pass for the wrong
+            // reason, or rather fail for one. Head 2 against `afterSequence: 1`
+            // is a one-event gap: the removal, and nothing else.
+            latestSequence: Effect.succeed(2),
+            readEvents: () => Stream.make(ownRemoval),
+          },
+          projectionChannels: {
+            // The channel still exists and the operator is no longer in its
+            // roster, which is what a real removal leaves behind.
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [{ handle: "pm", memberKind: "thread", memberId: "thread-pm" }],
+                }),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            afterSequence: 1,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      // BY PRESENCE, not by position. What this pins is that the removal
+      // REACHES a resumed connection; which item it arrives as is this
+      // harness's business, and asserting an index would make the test fail for
+      // a reason that is not the property.
+      const removals = items.filter((item) => item.kind === "channel-removed");
+      assert.equal(removals.length, 1);
+      assert.equal(
+        removals[0]?.kind === "channel-removed" ? removals[0].channelId : null,
+        "channel-project",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
   it.effect("a THREAD member carrying the operator's id is not the operator", () =>
     Effect.gen(function* () {
       // THE FIXTURE COMES FROM THE PROPERTY, not from a plausible-looking row.

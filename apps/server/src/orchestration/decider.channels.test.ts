@@ -264,6 +264,54 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
     }),
   );
 
+  it.effect("puts the removed member's ref on the event, with its KIND", () =>
+    Effect.gen(function* () {
+      // THE DECIDER IS THE ONLY PLACE THIS REF CAN COME FROM. Once
+      // `channel.member-removed` is applied the member is gone from the
+      // projection, so the websocket cannot look up who left — which is why it
+      // used to tell every connected client that a channel it cannot see exists
+      // (`t3_bot-7br`). The row is already in hand here; the event just has to
+      // carry it.
+      //
+      // WITHOUT THIS TEST THE DECIDER'S HALF IS UNPINNED, and it was: the
+      // socket-side tests build their own event fixtures with the ref written
+      // in by hand, so deleting these two payload fields left every one of them
+      // green. Measured, not assumed.
+      //
+      // A COLLIDING FIXTURE, because `memberId` alone cannot carry the answer:
+      // the thread member and the human member below share one id and differ
+      // only in kind, so an event that dropped `memberKind` would name a member
+      // the socket cannot tell from the operator. That is `t3_bot-46h`, and it
+      // is the same collision the mention-wake reactor keeps its own kind check
+      // for.
+      const event = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.remove",
+          commandId: CommandId.make("cmd-remove-ref"),
+          channelId: CHANNEL,
+          handle: ChannelMemberHandle.make("twin"),
+        },
+        readModel: makeReadModel([
+          { handle: "walt", memberKind: "human", memberId: "human-walt" },
+          { handle: "twin", memberKind: "thread", memberId: "thread-pm" },
+        ]),
+        issuer: ADMIN,
+      });
+
+      expect(event.type).toBe("channel.member-removed");
+      if (event.type === "channel.member-removed") {
+        // BOTH FIELDS. Asserting the id alone passes against an event that
+        // hardcodes the wrong kind, which is the whole distinction the socket
+        // gate turns on.
+        expect(event.payload.memberKind).toBe("thread");
+        expect(event.payload.memberId).toBe("thread-pm");
+        // And the handle stays: it is the projector's key, unique within a
+        // channel in a way `memberId` is not, and what the client renders.
+        expect(event.payload.handle).toBe("twin");
+      }
+    }),
+  );
+
   it.effect("rejects removing a handle that is not a member", () =>
     Effect.gen(function* () {
       const error = yield* decideOrchestrationCommand({
