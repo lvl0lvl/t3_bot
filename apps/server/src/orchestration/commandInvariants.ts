@@ -12,6 +12,12 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
+import {
+  canonicalChannelHandle,
+  canonicalChannelName,
+  describeForbiddenIdentityCharacter,
+  isStorableCanonicalIdentity,
+} from "@t3tools/shared/channelIdentity";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Effect from "effect/Effect";
 
@@ -122,97 +128,6 @@ export function requireIssuerCanAdminister(input: {
 }
 
 /**
- * The canonical form of a channel name: lowercase, no leading sigils, trimmed.
- *
- * Applied in the decider so the projection only ever holds canonical names and
- * a plain byte comparison is correct. The comms toolkit normalises too, for a
- * readable error, but this is the guarantee — an agent typing "#Seniors" and
- * one typing "seniors" must reach the same channel, and a failed name lookup
- * is deliberately indistinguishable from "you are not a member", so a case
- * mismatch would otherwise be unreportable.
- *
- * The operation: trim, strip every leading "#", trim, repeat until nothing
- * changes, then lowercase. Every sigil goes, not just one, because the sigil is
- * decoration and "##general" is a fat-finger that must resolve rather than
- * create a second channel; the repeat is what carries "# #seniors" past the
- * space to "seniors". The exact rule is pinned as a table in
- * `canonicalChannelName.test.ts`; the two normalisers have diverged once
- * already, over exactly this.
- */
-export function canonicalChannelName(name: string): string {
-  return canonicalise(name, /^#+/);
-}
-
-/**
- * The same rule for a member handle, with "@" as the sigil.
- *
- * Handles carry the name rule's failure one level down. The toolkit passes a
- * mention through byte-exact today and is to fold it later; folding THERE while
- * handles are stored as typed makes every capitalised mention unresolvable and
- * refuses the post whole, so the aggregate has to fold first. Folding here also
- * makes "Boss1" and "boss1" collide in the uniqueness check, which is the point
- * of that check: stored apart, they are one ambiguous mention key to every
- * reader.
- */
-export function canonicalChannelHandle(handle: string): string {
-  return canonicalise(handle, /^@+/);
-}
-
-/**
- * One rule, two sigils, so a name and a handle cannot drift apart.
- *
- * NFC first, then trim, strip leading sigils, trim again, repeat until nothing
- * changes, then lowercase.
- *
- * The repeat is what makes "# #seniors" reach "seniors": a single pass leaves
- * "#seniors", which then canonicalises to something else again, so a stored name
- * would not match itself. Each pass strictly shortens the string or ends the
- * loop, so it terminates.
- *
- * The NFC pass is not defensive, it is what makes this a canonical form at all:
- * composed "é" and decomposed "e" + U+0301 are the same text and must be the
- * same handle. Without it they are two members with one appearance, and a reader
- * of the member list cannot tell which one a mention reached. It does NOT fold
- * confusables — Cyrillic "о" stays distinct from Latin "o", verified — so two
- * members can still render alike; that is bounded by membership being
- * human-or-system only, and NFKC would fold too much to be safe here.
- */
-function canonicalise(value: string, sigil: RegExp): string {
-  let current = value.normalize("NFC").trim();
-  for (;;) {
-    const next = current.replace(sigil, "").trim();
-    if (next === current) {
-      return current.toLowerCase();
-    }
-    current = next;
-  }
-}
-
-/**
- * Characters that must never reach a stored name or handle.
- *
- * `String.trim()` removes 25 code points and no control or format character, so
- * "non-empty after trimming" admits a handle of one zero-width space, and an
- * invisible-prefixed "boss1" that renders exactly like the real one. It also
- * admits ANSI escapes, and both a name and a handle are echoed straight back to
- * agent and CLI output — a stored name carrying a screen-clear sequence is a
- * terminal write, not a label.
- *
- * `\p{C}` covers control, format, surrogate, private-use and unassigned. The
- * separators and U+034F are added because they are not in that category: U+034F
- * is a combining mark. Confusables are deliberately NOT here — Cyrillic "о" is a
- * real letter and rejecting it would refuse legitimate names; see canonicalise.
- */
-const FORBIDDEN_IN_CANONICAL = /[\p{C}\p{Zl}\p{Zp}\u034F]/u;
-
-function describeForbidden(value: string): string {
-  const found = [...value].find((character) => FORBIDDEN_IN_CANONICAL.test(character));
-  return found === undefined
-    ? "an invisible character"
-    : `U+${found.codePointAt(0)?.toString(16).toUpperCase().padStart(4, "0")}`;
-}
-
-/**
  * The canonical name to store, refusing one that canonicalises to empty.
  *
  * The command schema validates the RAW name, so a name of only sigils and
@@ -236,11 +151,11 @@ export function requireCanonicalChannelName(input: {
       ),
     );
   }
-  if (FORBIDDEN_IN_CANONICAL.test(canonical)) {
+  if (!isStorableCanonicalIdentity(canonical)) {
     return Effect.fail(
       invariantError(
         input.command.type,
-        `Channel name contains ${describeForbidden(canonical)}, which cannot appear in a stored name.`,
+        `Channel name contains ${describeForbiddenIdentityCharacter(canonical)}, which cannot appear in a stored name.`,
       ),
     );
   }
@@ -391,11 +306,11 @@ export function requireCanonicalChannelHandle(input: {
       ),
     );
   }
-  if (FORBIDDEN_IN_CANONICAL.test(canonical)) {
+  if (!isStorableCanonicalIdentity(canonical)) {
     return Effect.fail(
       invariantError(
         input.command.type,
-        `Handle contains ${describeForbidden(canonical)}, which cannot appear in a stored handle.`,
+        `Handle contains ${describeForbiddenIdentityCharacter(canonical)}, which cannot appear in a stored handle.`,
       ),
     );
   }
@@ -620,3 +535,9 @@ export function requireThreadAbsent(input: {
     ),
   );
 }
+
+/**
+ * Re-exported so the decider and its tests keep one import, while the rule
+ * itself lives in `@t3tools/shared/channelIdentity` for the toolkit to share.
+ */
+export { canonicalChannelHandle, canonicalChannelName };
