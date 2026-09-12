@@ -18,8 +18,9 @@ import {
  * a run of them), and the failure is silent: a lookup that misses reports the
  * same error a non-member gets, so an agent cannot tell a typo from exclusion.
  *
- * Both sides assert these same rows, so a future divergence breaks a named row
- * rather than surfacing as an unreachable channel. Keep the two copies
+ * These rows are the agreed rule. The toolkit's normaliser is MEANT to assert
+ * the same ones, and does not yet — until that lands, a green here proves this
+ * side follows the rule, not that the two sides agree. Keep the copies
  * identical; the last rows are the ones worth keeping if anyone trims it.
  */
 const TABLE: ReadonlyArray<readonly [input: string, canonical: string]> = [
@@ -92,9 +93,10 @@ const HANDLE_TABLE = TABLE.map(
 );
 
 it("applies the same rule to handles, with @ as the sigil", () => {
-  // The toolkit folds "@Boss1" to "boss1" to resolve a mention against stored
-  // membership. A handle stored as typed makes every capitalised mention
-  // unresolvable, and the post is refused whole rather than mis-delivered.
+  // The toolkit is to fold "@Boss1" to "boss1" when resolving a mention against
+  // stored membership. Folding there before handles are stored folded makes
+  // every capitalised mention unresolvable and refuses the post whole, so this
+  // side goes first.
   const actual = HANDLE_TABLE.map(([input]) => [input, canonicalChannelHandle(input)] as const);
   expect(render(actual)).toEqual(render(HANDLE_TABLE));
 });

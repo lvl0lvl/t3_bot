@@ -352,9 +352,9 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
     }),
   );
 
-  // The handle fold has to be on EVERY write path, not just create: the toolkit
-  // resolves a mention by folding "@Boss1" to "boss1" and matching it against
-  // stored membership, so one unfolded path stores a handle no mention reaches.
+  // The handle fold has to be on EVERY write path, not just create: a mention
+  // is matched against stored membership, so one unfolded path stores a handle
+  // that no mention written any other way can reach.
   it.effect("stores member handles canonically when a channel is created", () =>
     Effect.gen(function* () {
       const decided = yield* decideOrchestrationCommand({

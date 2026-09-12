@@ -56,8 +56,8 @@ export function listThreadsByProjectId(
  *
  * Every leading sigil goes, not just one: the sigil is decoration, so "##general"
  * is a fat-finger that must resolve rather than create a second channel. The
- * exact rule is pinned as a table in `canonicalChannelName.test.ts`, which the
- * toolkit's normaliser asserts against too — the two have diverged once already.
+ * exact rule is pinned as a table in `canonicalChannelName.test.ts`; the two
+ * normalisers have diverged once already, over exactly this.
  */
 export function canonicalChannelName(name: string): string {
   return canonicalise(name, /^#+/);
@@ -66,12 +66,13 @@ export function canonicalChannelName(name: string): string {
 /**
  * The same rule for a member handle, with "@" as the sigil.
  *
- * Handles carry the name rule's failure one level down: the toolkit resolves a
- * mention by folding "@Boss1" to "boss1" and matching it against the stored
- * membership, so a handle stored as typed makes every capitalised mention
- * unresolvable — and the post is refused whole. Folding here also makes "Boss1"
- * and "boss1" collide in the uniqueness check, which is the point of that check:
- * stored apart, they are one ambiguous mention key to every reader.
+ * Handles carry the name rule's failure one level down. The toolkit passes a
+ * mention through byte-exact today and is to fold it later; folding THERE while
+ * handles are stored as typed makes every capitalised mention unresolvable and
+ * refuses the post whole, so the aggregate has to fold first. Folding here also
+ * makes "Boss1" and "boss1" collide in the uniqueness check, which is the point
+ * of that check: stored apart, they are one ambiguous mention key to every
+ * reader.
  */
 export function canonicalChannelHandle(handle: string): string {
   return canonicalise(handle, /^@+/);
