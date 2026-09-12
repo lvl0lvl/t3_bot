@@ -263,7 +263,11 @@ describe("comms toolkit handlers", () => {
         const error = yield* harness.call("comms_post", { channel, body: "x" }).pipe(Effect.flip);
         expect(error).toMatchObject({ _tag: "CommsChannelNotFoundError", channel: "" });
       }
-      // An empty name must never reach the gateway as a lookup.
+      // The assertion the comment above always meant: no LOOKUP, not no write.
+      // `created` records posts; a gateway called with "" and answering None
+      // writes nothing either, so asserting on it passed whether the guard ran
+      // before the lookup or after it.
+      expect(yield* Ref.get(harness.channelLookups)).toEqual([]);
       expect(yield* Ref.get(harness.created)).toEqual([]);
     }),
   );
