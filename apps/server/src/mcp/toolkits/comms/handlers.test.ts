@@ -260,6 +260,23 @@ describe("comms toolkit handlers", () => {
     }),
   );
 
+  it.effect("names the canonical form it looked for, not what the agent typed", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const error = yield* harness
+        .call("comms_post", { channel: "# #Cafe\u0301  ", body: "x" })
+        .pipe(Effect.flip);
+      // The one diagnostic this error can carry. It is deliberately the same
+      // answer a non-member gets, so the agent cannot be told WHY it missed —
+      // but it can be told WHAT was looked up, and an agent that sees a
+      // canonical form it did not type learns the rule from the failure.
+      expect(error).toMatchObject({
+        _tag: "CommsChannelNotFoundError",
+        channel: "caf\u00E9",
+      });
+    }),
+  );
+
   it.effect("rejects a channel name that is only sigils and whitespace", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
