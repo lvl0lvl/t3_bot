@@ -44,6 +44,20 @@ export function listThreadsByProjectId(
   return readModel.threads.filter((thread) => thread.projectId === projectId);
 }
 
+/**
+ * The canonical form of a channel name: lowercase, no leading sigil, trimmed.
+ *
+ * Applied in the decider so the projection only ever holds canonical names and
+ * a plain byte comparison is correct. The comms toolkit normalises too, for a
+ * readable error, but this is the guarantee — an agent typing "#Seniors" and
+ * one typing "seniors" must reach the same channel, and a failed name lookup
+ * is deliberately indistinguishable from "you are not a member", so a case
+ * mismatch would otherwise be unreportable.
+ */
+export function canonicalChannelName(name: string): string {
+  return name.trim().replace(/^#/, "").trim().toLowerCase();
+}
+
 function findChannelById(
   readModel: OrchestrationReadModel,
   channelId: ChannelId,

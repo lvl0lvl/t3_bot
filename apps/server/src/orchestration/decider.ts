@@ -37,6 +37,7 @@ import {
 import {
   listThreadsByProjectId,
   requireActiveProjectWorkspaceRootAbsent,
+  canonicalChannelName,
   requireChannel,
   requireChannelAbsent,
   requireChannelAuthorIsMember,
@@ -2035,7 +2036,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "channel.created",
         payload: {
           channelId: command.channelId,
-          name: command.name,
+          name: canonicalChannelName(command.name),
           members: command.members,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
@@ -2056,7 +2057,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "channel.meta-updated",
         payload: {
           channelId: command.channelId,
-          ...(command.name !== undefined ? { name: command.name } : {}),
+          ...(command.name !== undefined ? { name: canonicalChannelName(command.name) } : {}),
           updatedAt: occurredAt,
         },
       };

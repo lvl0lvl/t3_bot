@@ -262,6 +262,32 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
     }),
   );
 
+  it.effect("stores a channel name canonically, whatever the caller typed", () =>
+    Effect.gen(function* () {
+      // An agent types "#Seniors"; another types "seniors". They must reach the
+      // same channel. A failed name lookup is deliberately indistinguishable
+      // from "you are not a member", so a case mismatch would otherwise be
+      // unreportable — the one place that conflation is unhelpful. The decider
+      // is the guarantee; the toolkit normalises only for a readable error.
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-case"),
+          channelId: ChannelId.make("channel-case"),
+          name: "  #Seniors  ",
+          members: [{ handle: PM, memberKind: "thread", memberId: "thread-pm" }],
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events[0]?.type).toBe("channel.created");
+      if (events[0]?.type === "channel.created") {
+        expect(events[0].payload.name).toBe("seniors");
+      }
+    }),
+  );
+
   it.effect("creates a channel and stamps createdAt and updatedAt together", () =>
     Effect.gen(function* () {
       const decided = yield* decideOrchestrationCommand({

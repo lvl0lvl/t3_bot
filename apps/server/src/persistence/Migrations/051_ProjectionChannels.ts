@@ -15,6 +15,9 @@ export default Effect.gen(function* () {
   yield* sql`
     CREATE TABLE IF NOT EXISTS projection_channels (
       channel_id TEXT PRIMARY KEY,
+      -- Always stored canonical: lowercase, no leading sigil, trimmed. The
+      -- decider normalises before this row is written, so byte comparison here
+      -- is correct and no collation is needed.
       name TEXT NOT NULL,
       archived_at TEXT,
       created_at TEXT NOT NULL,
