@@ -1764,7 +1764,7 @@ describe("MentionWakeReactor", () => {
     }
   }, 30_000);
 
-  it("stores the derived key where a reader of the channel can find the turn", async () => {
+  it("stores the wake's derived key on the thread's pending turn start", async () => {
     const { directory, databasePath } = await makeDatabasePath();
     const system = await makeSystem(databasePath);
     try {
@@ -1882,52 +1882,33 @@ describe("MentionWakeReactor", () => {
       // paragraph below. Two statements of opposite sign in one comment block
       // is worse than either alone.
       //
-      // WHOEVER BUILDS CRITERION 3 MUST NOT REACH FOR THIS ROW. Third version
-      // of this paragraph; the first pointed at it, the second gave the right
-      // answer for a wrong reason. What follows is only what is cited.
+      // FOR `t3_bot-j6o`, FOUR THINGS, AND THIS BLOCK DELIBERATELY SAYS NO MORE.
+      // Three versions of it were wrong in three different ways — pointing at
+      // the wrong row, then giving a right answer through a false cause, then
+      // asserting two things of opposite sign twenty lines apart. Each rewrite
+      // was longer than the last. What follows is only what a lane executed.
       //
-      // IT IS A STAGING ROW AND IT IS DELETED WHEN THE TURN STARTS, on the
-      // SUCCESS path — `ProjectionPipeline.ts:1633`, unconditional, immediately
-      // after the turn row is written. So it is empty for every RUNNING turn,
-      // not merely for a cancelled one. That is the mechanism; the earlier
-      // version named only the cancellation deletes (:1482 compaction, :1496
-      // turn-start failure, :1510 session status) and so reached a true
-      // conclusion through a false cause. Those three matter for a turn that
-      // never started; :1633 is what defines this row's lifetime. `:1438` and
-      // `:1803` take it too, via `deleteByThreadId`.
+      // 1. DO NOT READ THIS ROW FOR CORRELATION. It is a staging row.
+      // 2. IT IS EMPTIED WHEN A TURN STARTS — `deletePendingTurnStartByThreadId`
+      //    in `ProjectionPipeline.ts`'s `thread.session-set` case, on the
+      //    success path — and re-staged by any later post. So it answers for
+      //    whichever post most recently had no turn, which is not a correlation.
+      // 3. THE TURN ROW KEEPS THE POST THAT STARTED THE TURN, and that is
+      //    upstream's rule (the `??` in the same case, six months older than
+      //    this fork, read by the user-turn walk in `ProjectionSnapshotQuery`).
+      //    Do not "fix" it to last-wins; it decides turn attribution app-wide.
+      // 4. SO THE WAKE NEEDS ITS OWN POST-KEYED LINK. A post that arrives during
+      //    a running turn is staged, then erased by the next `session-set`, and
+      //    its key is then nowhere: not on the turn row, which holds the
+      //    starter, and not here. That is the hole criterion 3 has to fill, and
+      //    it is not only a cancellation path — an ordinary second `session-set`
+      //    loses it too.
       //
-      // NOT "criterion 3's cancellation list verbatim" either — `t3_bot-75k`
-      // criterion 3 names three things (compaction failure, interrupt, session
-      // stop) and `t3_bot-j6o` criterion 3 names none. Two of the five triggers
-      // above appear in neither bead.
-      //
-      // THE TURN ROW IS WHERE THE LINK LANDS, and it holds the post that
-      // STARTED the turn. `:1608` places it for a new turn; `:1580`'s
-      // `existingTurn.value.pendingMessageId ?? …` PRESERVES it for one already
-      // running, which is why a later post cannot displace it. Three other
-      // paths (:1682, :1719, :1777) create turn rows with `pendingMessageId:
-      // null`, and there the `??` falls through to whatever is staged.
-      //
-      // THAT `??` IS NOT A DEFECT AND MUST NOT BE "FIXED". It is upstream's
-      // "the message that started this turn" rule, read by the user-turn walk
-      // at `ProjectionSnapshotQuery.ts:1732-1738`. Changing it to last-wins
-      // would change turn attribution across the whole app.
-      //
-      // SO THE HONEST GAP, which is what criterion 3 has to solve rather than
-      // inherit: on the two-post sequence this test stages, the turn row links
-      // post A and this row links post B — and at cancellation this row is
-      // deleted, so POST B HAS NO LINK ANYWHERE. Reporting the cancellation
-      // against A and silently dropping B is the same class of defect
-      // `t3_bot-j6o` criterion 2 forbids. Neither row answers for B; something
-      // new has to.
-      //
-      // WHAT THIS FILE DOES NOT PIN, and it is buildable rather than out of
-      // reach: nothing here asserts `pending_message_id` on the TURN row.
-      // `thread.session.set` is a first-class command on the real engine
-      // (`decider.ts`), so a test can start and cancel a turn without a
-      // provider layer — an earlier version of this comment said the harness
-      // made that impossible, which was a false inference from "no provider
-      // layer". It is the test criterion 3 most needs and it is not written.
+      // NOTHING IN THIS FILE DEMONSTRATES ANY OF THAT, including the two-post
+      // test below: it starts no turn, so there is no turn row in it at all. A
+      // verifier had to write that fixture to see the behaviour. It is writable
+      // here — `thread.session.set` is a real command on the engine and needs no
+      // provider layer — and it is the test criterion 3 most needs.
       const pending = await system.run(
         system.turns.getPendingTurnStartByThreadId({ threadId: WOKEN }),
       );
