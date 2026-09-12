@@ -58,10 +58,15 @@ import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQu
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
+import * as Logger from "effect/Logger";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+
 import { MentionWakeReactor, MENTION_WAKE_CURSOR } from "../Services/MentionWakeReactor.ts";
 import {
   HELD_BACKLOG_LIMIT,
   MentionWakeReactorLive,
+  WAKE_BUDGET_PER_CHANNEL,
+  WAKE_BUDGET_WINDOW_MINUTES,
   wakeKey,
   wakeMessageText,
 } from "./MentionWakeReactor.ts";
@@ -171,6 +176,8 @@ interface Overrides {
   readonly engine?: Layer.Layer<OrchestrationEngineService, never, OrchestrationEngineService>;
   readonly cursors?: Layer.Layer<ProjectionStateRepository>;
   readonly channels?: Layer.Layer<ProjectionChannelRepository, never, ProjectionChannelRepository>;
+  /** Replaces the runtime's loggers, so a test can read what the reactor said. */
+  readonly logger?: Layer.Layer<never>;
 }
 
 /**
@@ -262,6 +269,7 @@ const recordDispatches = () => {
 
 const makeLayer = (databasePath: string, overrides: Overrides = {}) =>
   MentionWakeReactorLive.pipe(
+    overrides.logger === undefined ? (self) => self : Layer.provide(overrides.logger),
     overrides.engine === undefined ? (self) => self : Layer.provide(overrides.engine),
     overrides.cursors === undefined ? (self) => self : Layer.provide(overrides.cursors),
     overrides.channels === undefined ? (self) => self : Layer.provide(overrides.channels),
@@ -291,6 +299,7 @@ const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
   const threads = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
   const events = await runtime.runPromise(Effect.service(OrchestrationEventStore));
   const turns = await runtime.runPromise(Effect.service(ProjectionTurnRepository));
+  const sql = await runtime.runPromise(Effect.service(SqlClient.SqlClient));
   const scope = await runtime.runPromise(Scope.make());
   return {
     engine,
@@ -299,6 +308,7 @@ const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
     threads,
     events,
     turns,
+    sql,
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     startReactor: () =>
       runtime.runPromise(Scope.provide(reactor.start(), scope) as Effect.Effect<void>),
@@ -407,6 +417,14 @@ const post = async (
      * rather than the behaviour it names.
      */
     readonly createdAt?: string;
+    /**
+     * Who is posting. Defaults to the human, which is what every test written
+     * before the wake budget wanted — but the budget is only ever spent by
+     * AGENT posts, because a human post resets it, so those tests have to be
+     * able to say so.
+     */
+    readonly issuer?: { readonly memberKind: "thread" | "human"; readonly memberId: string };
+    readonly channelId?: ChannelId;
   },
 ) =>
   system.run(
@@ -414,14 +432,14 @@ const post = async (
       {
         type: "channel.post.create",
         commandId: CommandId.make(`cmd-post-${input.id}`),
-        channelId: CHANNEL_ID,
+        channelId: input.channelId ?? CHANNEL_ID,
         postId: ChannelPostId.make(input.id),
         body: "have a look at this",
         mentions: input.mentions,
         parentPostId: input.parentPostId ?? null,
         createdAt: input.createdAt ?? NOW,
       },
-      { issuer: WALT },
+      { issuer: input.issuer ?? WALT },
     ),
   );
 
@@ -1875,4 +1893,279 @@ describe("MentionWakeReactor", () => {
       await removeDirectory(directory);
     }
   }, 30_000);
+});
+
+/**
+ * The per-channel wake budget (`t3_bot-64d`).
+ *
+ * Two agents mentioning each other is the FEATURE, so every test here has to
+ * say which side of the line it is on. The refusal tests are the easy half; the
+ * one that matters is "a legitimate exchange still wakes", because a cap tested
+ * only by exhausting it proves the refusal and says nothing about the thing it
+ * is protecting.
+ */
+describe("MentionWakeReactor wake budget", () => {
+  /**
+   * The author of every post that spends budget.
+   *
+   * It has to be an AGENT. A human post resets the budget, so a suite that
+   * posted as the human — which is what every test above this one does — would
+   * clear the thing it was trying to exhaust and never reach the cap at all.
+   */
+  const AS_BYSTANDER = { memberKind: "thread", memberId: BYSTANDER } as const;
+
+  const OTHER_CHANNEL_ID = ChannelId.make("channel-juniors");
+
+  /** A second channel with the same roster, to prove the budget is per channel. */
+  const seedOtherChannel = async (system: System) => {
+    await system.run(
+      system.engine.dispatch(
+        {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-channel-juniors"),
+          channelId: OTHER_CHANNEL_ID,
+          name: "juniors",
+          members: [
+            { handle: ChannelMemberHandle.make("woken"), memberKind: "thread", memberId: WOKEN },
+            {
+              handle: ChannelMemberHandle.make("bystander"),
+              memberKind: "thread",
+              memberId: BYSTANDER,
+            },
+            {
+              handle: ChannelMemberHandle.make("walt"),
+              memberKind: "human",
+              memberId: "human-walt",
+            },
+          ],
+          createdAt: NOW,
+        },
+        { issuer: WALT },
+      ),
+    );
+  };
+
+  /**
+   * Which channel a wake came from, read out of the wake text itself.
+   *
+   * Counting the thread's messages is not enough once there are two channels:
+   * the woken thread is a member of both, and its message list is the union. A
+   * count alone is satisfied by the wakes of the OTHER channel, which is the
+   * exact confusion the per-channel criterion is about. The header renders the
+   * name through `framed`, so the quotes are part of the match and `#juniors`
+   * cannot be found inside some longer name.
+   */
+  const wakesFrom = async (system: System, channelName: string) =>
+    (await wakeMessages(system, WOKEN)).filter((text) => text.includes(`"#${channelName}"`));
+
+  /** `count` agent posts, each mentioning the woken thread, then drained. */
+  const agentPosts = async (
+    system: System,
+    prefix: string,
+    count: number,
+    options: { readonly channelId?: ChannelId; readonly mention?: ChannelMemberHandle } = {},
+  ) => {
+    for (let index = 0; index < count; index += 1) {
+      await post(system, {
+        id: `${prefix}-${index}`,
+        mentions: [options.mention ?? MENTION],
+        issuer: AS_BYSTANDER,
+        ...(options.channelId === undefined ? {} : { channelId: options.channelId }),
+      });
+    }
+    await system.run(
+      system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+    );
+  };
+
+  it("spends the budget per channel, so exhausting one leaves the other working", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await seedOtherChannel(system);
+      await system.startReactor();
+
+      // One more than the budget, so the last one is refused.
+      await agentPosts(system, "senior", WAKE_BUDGET_PER_CHANNEL + 1);
+      expect((await wakesFrom(system, "seniors")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+
+      // THE POINT OF THE TEST. A budget kept per thread, or per member, or one
+      // global counter, all pass the assertion above and fail this one: the
+      // second channel has spent nothing and must wake normally. A per-thread
+      // budget is the specific wrong answer worth naming, because it lets two
+      // agents alternate under it forever, which is the scenario the cap exists
+      // for.
+      await agentPosts(system, "junior", 1, { channelId: OTHER_CHANNEL_ID });
+      expect((await wakesFrom(system, "juniors")).length).toBe(1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("still wakes a legitimate exchange well inside the budget", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+
+      // THE ADMIT DIRECTION, and the criterion most likely to be skipped. The
+      // M1 walkthrough was three wakes in about sixty seconds; four is that
+      // exchange plus a follow-up, and it is entirely correct traffic. Set
+      // WAKE_BUDGET_PER_CHANNEL to 0 and this test must RED - without it the
+      // suite proves only that the cap refuses things, which a cap of zero also
+      // does.
+      await agentPosts(system, "exchange", 4);
+
+      expect((await wakesFrom(system, "seniors")).length).toBe(4);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("says at ERROR which channel stopped, against which budget and window", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    // Only the level and the message. The whole log entry carries the fiber and
+    // its services, which are cyclic and cannot be rendered - and rendering is
+    // how this test reads the line.
+    const logged: Array<{ readonly level: string; readonly message: unknown }> = [];
+    const system = await makeSystem(databasePath, {
+      logger: Logger.layer(
+        [
+          Logger.make<unknown, void>((entry: { logLevel: unknown; message: unknown }) =>
+            logged.push({ level: String(entry.logLevel), message: entry.message }),
+          ),
+        ],
+        { mergeWithExisting: false },
+      ),
+    });
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await agentPosts(system, "loud", WAKE_BUDGET_PER_CHANNEL + 2);
+
+      // A SILENT CAP IS WORSE THAN NONE: an agent that has stopped being woken
+      // and a channel that has gone quiet look identical to everyone, including
+      // the human who is the only way out. So the assertion is on the CONTENTS
+      // of the line, not on the fact that something was logged.
+      const errors = logged.filter((entry) => entry.level === "Error");
+      const rendered = JSON.stringify(errors);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(rendered).toContain(CHANNEL_ID);
+      expect(rendered).toContain("seniors");
+      expect(rendered).toContain(String(WAKE_BUDGET_PER_CHANNEL));
+      expect(rendered).toContain(String(WAKE_BUDGET_WINDOW_MINUTES));
+      // Two posts past the cap, so a tally that reported "1" every time - the
+      // shape an in-memory counter degrades to across a restart - is visible
+      // here as a wrong number rather than as a missing field.
+      expect(rendered).toContain('"suppressedCount":2');
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("keeps the channel stopped after every wake has aged out of the window", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await agentPosts(system, "aged", WAKE_BUDGET_PER_CHANNEL + 1);
+      expect((await wakesFrom(system, "seniors")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+
+      // The state the table reaches once ten minutes have passed: every wake
+      // has left the window. Done in SQL rather than by moving a clock because
+      // this runtime has the real one, and the property under test is not about
+      // time - it is that the LATCH is consulted at all.
+      //
+      // A ROLLING WINDOW ON ITS OWN REFILLS HERE. Without the latch the channel
+      // is admitted again and two agents resume, forever, at twenty wakes per
+      // ten minutes - a throttle, where `t3_bot-64d` asks for a stop with a
+      // human as the only way out. Delete the suppression check in `wake` and
+      // this is the test that reds.
+      await system.run(system.sql`DELETE FROM mention_wake_budget`);
+
+      await agentPosts(system, "after-window", 1);
+      expect((await wakesFrom(system, "seniors")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("keeps the channel stopped across a restart", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    let system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await agentPosts(system, "before-boot", WAKE_BUDGET_PER_CHANNEL + 1);
+      expect((await wakesFrom(system, "seniors")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+      await system.dispose();
+
+      // The runaway most worth bounding is the one that is also crashing the
+      // server: a budget held in memory is reset by every boot, so the cap
+      // would bound nothing in exactly the case it is needed. This is
+      // criterion 5 measured rather than asserted in a comment.
+      system = await makeSystem(databasePath);
+      await system.startReactor();
+      await agentPosts(system, "after-boot", 1);
+
+      expect((await wakesFrom(system, "seniors")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("still stores and serves the posts it refuses to wake anyone for", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await agentPosts(system, "stored", WAKE_BUDGET_PER_CHANNEL + 1);
+      expect((await wakesFrom(system, "seniors")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+
+      // ONLY THE WAKE IS CAPPED. The channel keeps working for whoever reads
+      // it - which is what makes the human reset possible at all, since a human
+      // has to be able to see what the agents were saying before deciding to
+      // step in. A cap that swallowed the post would hide its own cause.
+      const refused = await system.run(
+        system.sql`SELECT post_id FROM projection_channel_posts WHERE post_id = ${`stored-${WAKE_BUDGET_PER_CHANNEL}`}`,
+      );
+      expect(refused.length).toBe(1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("spends nothing for a post that wakes nobody", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+
+      // The author is excluded from its own mentions, so each of these resolves
+      // to no thread and starts no turn. They are not part of the amplification
+      // the budget bounds, and charging for them would let an agent talking to
+      // itself stop a channel that never woke anyone.
+      await agentPosts(system, "selftalk", WAKE_BUDGET_PER_CHANNEL + 5, {
+        mention: BYSTANDER_MENTION,
+      });
+      expect((await wakesFrom(system, "seniors")).length).toBe(0);
+
+      await agentPosts(system, "real", 1);
+      expect((await wakesFrom(system, "seniors")).length).toBe(1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
 });
