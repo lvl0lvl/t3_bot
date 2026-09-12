@@ -86,7 +86,20 @@ const make = Effect.gen(function* () {
     const threadIds = [
       ...new Set(
         channel.value.members
-          .filter((member) => member.memberKind === "thread" && mentioned.has(member.handle))
+          .filter(
+            (member) =>
+              member.memberKind === "thread" &&
+              mentioned.has(member.handle) &&
+              // Never the author. An agent does not need telling about its own
+              // post, and waking it would be a turn that starts itself: the
+              // woken agent is told to reply in the channel, and a reply that
+              // mentions its own handle wakes it again, forever, with each
+              // cycle costing a real turn.
+              !(
+                event.payload.authorRef.memberKind === "thread" &&
+                event.payload.authorRef.memberId === member.memberId
+              ),
+          )
           .map((member) => member.memberId),
       ),
     ].map((memberId) => ThreadId.make(memberId));

@@ -391,4 +391,37 @@ describe("MentionWakeReactor", () => {
       await removeDirectory(directory);
     }
   }, 30_000);
+
+  it("never wakes the author, even when the post mentions them", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      // The thread posts and names itself. Without the author exclusion this is
+      // a turn that starts itself: the woken agent is told to reply in the
+      // channel, its reply mentions its own handle, and it wakes again - each
+      // cycle a real turn, forever, with nobody having asked for any of them.
+      await system.run(
+        system.engine.dispatch({
+          type: "channel.post.create",
+          commandId: CommandId.make("cmd-post-self"),
+          channelId: CHANNEL_ID,
+          postId: ChannelPostId.make("post-self"),
+          authorRef: { memberKind: "thread", memberId: WOKEN },
+          body: "talking to myself",
+          mentions: [MENTION],
+          parentPostId: null,
+          createdAt: NOW,
+        }),
+      );
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      expect(await wakeMessages(system)).toHaveLength(0);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
 });
