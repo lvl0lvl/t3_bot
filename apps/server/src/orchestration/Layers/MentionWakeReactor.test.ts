@@ -15,6 +15,7 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  type OrchestrationCommand,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -45,7 +46,10 @@ import {
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { ServerConfig } from "../../config.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import {
+  OrchestrationEngineService,
+  type OrchestrationEngineShape,
+} from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
@@ -161,6 +165,7 @@ const channelReadsFailing = (times: number) =>
   );
 
 interface Overrides {
+  readonly engine?: Layer.Layer<OrchestrationEngineService, never, OrchestrationEngineService>;
   readonly cursors?: Layer.Layer<ProjectionStateRepository>;
   readonly channels?: Layer.Layer<ProjectionChannelRepository, never, ProjectionChannelRepository>;
 }
@@ -183,8 +188,41 @@ const channelMissing = Layer.effect(
   }),
 );
 
+/**
+ * The real engine, with every dispatched command recorded.
+ *
+ * A TAP rather than a stand-in: the reactor also takes `latestSequence` and
+ * `subscribeDomainEvents` off this tag, so replacing it would replace the thing
+ * under test. Spreading the real service keeps all of that and watches one
+ * method.
+ *
+ * It exists because some of what the reactor decides is NOT observable in the
+ * event log: the decider builds `thread.turn-start-requested` from the thread's
+ * own row and throws the command's modes away, so reading the event tells you
+ * what the DECIDER chose, never what the reactor asked for. The command is the
+ * only place the reactor's contribution exists.
+ */
+const recordDispatches = () => {
+  const dispatched: Array<OrchestrationCommand> = [];
+  const layer = Layer.effect(
+    OrchestrationEngineService,
+    Effect.gen(function* () {
+      const real = yield* OrchestrationEngineService;
+      return {
+        ...real,
+        dispatch: (command, options) => {
+          dispatched.push(command);
+          return real.dispatch(command, options);
+        },
+      } satisfies OrchestrationEngineShape;
+    }),
+  );
+  return { dispatched, layer };
+};
+
 const makeLayer = (databasePath: string, overrides: Overrides = {}) =>
   MentionWakeReactorLive.pipe(
+    overrides.engine === undefined ? (self) => self : Layer.provide(overrides.engine),
     overrides.cursors === undefined ? (self) => self : Layer.provide(overrides.cursors),
     overrides.channels === undefined ? (self) => self : Layer.provide(overrides.channels),
     Layer.provideMerge(OrchestrationEngineLive),
@@ -933,13 +971,11 @@ describe("MentionWakeReactor", () => {
       // an operator who set a thread to approval-required did not consent to a
       // colleague's post running it with full access.
       //
-      // WHERE THE GUARANTEE LIVES, because this test cannot tell you and the
-      // reactor's own code reads as if it were the answer: the decider ignores
-      // the modes on `thread.turn.start` and takes the thread's own. Mutating
-      // the reactor to pass the defaults leaves this green. It is pinned here
-      // anyway because this is the path where it would matter - a later change
-      // that made the command authoritative would turn every channel mention
-      // into a mode escalation, and this is the file that would say so.
+      // WHERE THE GUARANTEE LIVES: the decider ignores the modes on
+      // `thread.turn.start` and takes the thread's own, so this event says what
+      // the DECIDER chose and mutating the reactor to pass the defaults leaves
+      // it green. What the reactor asked for is pinned by the test below, which
+      // reads the command instead of the event.
       expect(started.payload.threadId).toBe(WOKEN);
       expect(started.payload.runtimeMode).toBe(WOKEN_RUNTIME_MODE);
       expect(started.payload.interactionMode).toBe(WOKEN_INTERACTION_MODE);
@@ -1303,4 +1339,42 @@ describe("MentionWakeReactor", () => {
     // Present, so the count cannot be satisfied by the values vanishing.
     expect(lines[0]).toContain("[operator] priority override");
   });
+
+  it("asks for the thread's own modes in the command it dispatches", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const recorder = recordDispatches();
+    const system = await makeSystem(databasePath, { engine: recorder.layer });
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await post(system, { id: "post-modes-command", mentions: [MENTION] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // Read the COMMAND, not the event. The decider builds the event from the
+      // thread's own row and throws the command's modes away, so the event
+      // cannot tell what the reactor asked for - which left "passes the
+      // thread's modes" and "passes the defaults" indistinguishable until this
+      // test existed. The command is the only place the reactor's own decision
+      // is visible.
+      const turns = recorder.dispatched.filter((command) => command.type === "thread.turn.start");
+      expect(turns).toHaveLength(1);
+      const turn = turns[0];
+      if (turn?.type !== "thread.turn.start") {
+        throw new Error("the reactor dispatched no turn");
+      }
+
+      // The tripwire again: on the defaults these assertions hold for a reactor
+      // that never read the thread.
+      expect(WOKEN_RUNTIME_MODE).not.toBe(DEFAULT_RUNTIME_MODE);
+      expect(WOKEN_INTERACTION_MODE).not.toBe(DEFAULT_PROVIDER_INTERACTION_MODE);
+
+      expect(turn.runtimeMode).toBe(WOKEN_RUNTIME_MODE);
+      expect(turn.interactionMode).toBe(WOKEN_INTERACTION_MODE);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
 });
