@@ -230,12 +230,15 @@ export type ChannelPost = typeof ChannelPost.Type;
 /**
  * A cursor is the `nextCursor` of an earlier read, handed back verbatim.
  *
- * Opaque to the agent, and `${channelId}:${sequence}` underneath. The channel
- * half is what makes a cursor from ANOTHER channel detectable: the sequence is
- * global, so a bare one matched no row here and the read answered with an empty
- * page - which is byte for byte "you are caught up" (`t3_bot-e60`).
+ * Opaque to the agent, and `${channelId}:${direction}:${sequence}` underneath.
+ * The channel half is what makes a cursor from ANOTHER channel detectable: the
+ * sequence is global, so a bare one matched no row here and the read answered
+ * with an empty page - which is byte for byte "you are caught up"
+ * (`t3_bot-e60`). The direction half is the same detection on the other axis:
+ * a cursor points AFTER its page going forward and BEFORE it going backward
+ * (`t3_bot-2oh`).
  *
- * TWO BOUNDS, EACH LOAD-BEARING.
+ * THREE BOUNDS, EACH LOAD-BEARING.
  *
  * The channel half repeats `OPAQUE_ID_PATTERN` from
  * `packages/contracts/src/baseSchemas.ts` rather than accepting anything up to
@@ -310,7 +313,7 @@ export const ReadChannelResult = Schema.Struct({
   nextCursor: Schema.NullOr(
     Schema.String.annotate({
       description:
-        "Pass as cursor to read the posts after this page, IN THIS CHANNEL ONLY — a cursor used on a different channel is refused, not answered. Null when there are no newer posts.",
+        "Pass as cursor to read the posts after this page, IN THIS CHANNEL ONLY — a cursor used on a different channel, or on a read in the other direction, is refused rather than answered. Null when there are no newer posts.",
     }),
   ),
 });

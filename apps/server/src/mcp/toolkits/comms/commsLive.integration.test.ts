@@ -701,10 +701,11 @@ describe("the comms toolkit on the live gateway", () => {
         // passed the suite.
         //
         // IT CARRIES A DIRECTION because `t3_bot-2oh` added one to the format,
-        // and a two-segment cursor no longer passes the schema. Without this
-        // segment the value stops being schema-valid, the refusal moves a layer
-        // up, and this test starts asserting the wrong branch while still
-        // passing for the wrong reason.
+        // and the refusal under test is the one about PROVENANCE. A two-segment
+        // value is admitted by the schema on purpose — the case below is about
+        // that — and refused by the decoder as a shape failure, so dropping the
+        // segment would still fail here, on a different branch, with a
+        // different sentence, and the assertions below read the sentence.
         const foreign = "channel-project-live:forward:3";
         const error = yield* call(
           "comms_read_channel",

@@ -815,9 +815,10 @@ describe("comms toolkit handlers", () => {
       // first page, which is the very defect `t3_bot-e60` fixes in the live
       // layer. 43 tests ran against that fake. Found by a verifier, not by
       // reading the comment directly above it saying fakes must not diverge.
-      // THREE PARTS, because the tool schema refuses anything else since
-      // `t3_bot-2oh` and a two-part value would be rejected a layer above this
-      // branch — making the test pass on the wrong error.
+      // THREE PARTS, so the refusal under test is the one about PROVENANCE.
+      // A two-part value is admitted by the schema on purpose and refused by
+      // the decoder as "malformed" (`t3_bot-2oh`), so it would still fail here
+      // — with the wrong reason, and the assertions below read the sentence.
       const foreign = "channel-somewhere-else:forward:2";
       const refused = yield* harness
         .call("comms_read_channel", { channel: "seniors", cursor: foreign })

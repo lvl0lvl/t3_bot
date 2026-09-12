@@ -315,11 +315,28 @@ export interface ReadPostsInput {
    * page with `nextCursor: null`: byte for byte the answer for "you are caught
    * up". Three unread posts behind a successful reply, undetectable by the
    * caller, on the feature whose whole purpose is catching up (`t3_bot-e60`).
+   *
+   * AND SO IS ONE FROM THE OTHER DIRECTION, for the same reason on the other
+   * axis (`t3_bot-2oh`), and one whose shape is not a cursor at all — including
+   * one issued before the direction segment existed. `ChannelCursorUnusable`
+   * carries which of the three it was, because the toolkit turns that into a
+   * sentence an agent acts on and one sentence for three causes was false for
+   * two of them.
    */
   readonly cursor: string | undefined;
   /**
    * "forward" is oldest-first from the cursor — an agent tailing a channel.
    * "backward" is the newest page and then upward — a UI opening one.
+   *
+   * PART OF THE CURSOR'S IDENTITY, not just of this call. A cursor points AFTER
+   * its page going forward and BEFORE it going backward, so the same number
+   * means opposite things; `direction` is encoded into every `nextCursor` and
+   * compared on the way back in. WHAT BREAKS: a caller that stores a cursor and
+   * later reads with the other direction — a UI whose user flips the order, a
+   * client resuming from a persisted cursor after its default changed — gets
+   * `ChannelCursorUnusable` rather than a page. That is the point; before it,
+   * the read answered with an early page and `nextCursor: null` over four
+   * unread posts (`t3_bot-2oh`).
    */
   readonly direction: ReadDirection;
 }
@@ -366,11 +383,13 @@ export interface ChannelGatewayShape {
    *   "backward" - the newest page, then upward; `nextCursor` points BEFORE the
    *                first post returned, and is null at the START of history.
    *
-   * `cursor` is opaque, belongs to THIS channel, and one from another is
-   * refused with `ChannelCursorUnusable` rather than answered with an empty
-   * page - the empty page is indistinguishable from "you are caught up", which
-   * is the defect this contract exists to prevent. `limit` is a maximum, not an
-   * exact count.
+   * `cursor` is opaque and belongs to THIS channel AND THIS DIRECTION. Three
+   * things make one unusable - another channel issued it, the other direction
+   * issued it, or it is not the shape a cursor has - and all three are refused
+   * with `ChannelCursorUnusable`, whose `reason` says which, rather than
+   * answered with an empty page. The empty page is indistinguishable from "you
+   * are caught up", which is the defect this contract exists to prevent.
+   * `limit` is a maximum, not an exact count.
    */
   readonly readPosts: (
     input: ReadPostsInput,
