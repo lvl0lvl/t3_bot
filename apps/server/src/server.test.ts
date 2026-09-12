@@ -8775,6 +8775,85 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     },
   });
 
+  it.effect("reads the snapshot BEFORE the channels, so one created in the gap still lands", () =>
+    Effect.gen(function* () {
+      // THE ORDER, pinned by its consequence rather than by a call sequence.
+      // Reversing the two reads passes every other test in this file, and the
+      // order is the thing three docstrings call load-bearing.
+      //
+      // The hazard it prevents: a channel created BETWEEN the two reads. Read
+      // the snapshot first and the later channel read sees the new channel, so
+      // it reaches the client. Read channels FIRST and the channel is absent
+      // from the list while its `channel.created` event sequence is already at
+      // or below the snapshot cursor the client then resumes from — so the
+      // upsert is deduped away as well, and the channel stays invisible until
+      // something unrelated changes it. That is the exact defect this PR
+      // exists to fix, arriving from the other side.
+      //
+      // The stub models "created in the gap" the only way a repository can: the
+      // channel exists for the channel read only once the snapshot read has
+      // happened.
+      let snapshotRead = false;
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionChannels: {
+            listChannelsForMember: () =>
+              Effect.succeed(
+                snapshotRead
+                  ? [
+                      channelRow({
+                        latestPostAt: null,
+                        members: [
+                          {
+                            handle: "walt",
+                            memberKind: "human",
+                            memberId: HUMAN_OPERATOR_MEMBER_ID,
+                          },
+                        ],
+                      }),
+                    ]
+                  : [],
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.sync(() => {
+                snapshotRead = true;
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
+            Stream.take(1),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      const first = items[0];
+      assert.equal(first?.kind, "snapshot");
+      if (first?.kind !== "snapshot") {
+        throw new Error("the shell stream did not open with a snapshot");
+      }
+      // Reversed, this is `[]` — the channel is lost with nothing going red.
+      assert.deepEqual(
+        first.snapshot.channels?.map((channel) => channel.id),
+        ["channel-project"],
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
   it.effect("the socket's shell snapshot carries the operator's channels", () =>
     Effect.gen(function* () {
       // The snapshot, not the live stream. `channel-upserted` fires only when a
