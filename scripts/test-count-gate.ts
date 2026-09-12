@@ -560,6 +560,71 @@ export const unmeasurableWorkspacesTouched = (
  * invisible to the PM). Covering a dirty tree is a second ref and a decision,
  * not a patch.
  */
+/**
+ * The base as a SHA that HEAD contains, or a refusal.
+ *
+ * RESOLVED ONCE, and every later use takes the result. `--base origin/main`
+ * names a remote-tracking ref, and worktrees share one `.git`, so that ref
+ * moves whenever ANY session fetches. A run that resolved it at the diff and
+ * again at the worktree could measure two different bases and report the
+ * difference as this PR's doing. Measured, twice in one evening, on this tool's
+ * own PRs: #30 merged mid-run, the base gained #30's new test, and the gate
+ * printed that test as LOST from a head that had never had it.
+ *
+ * CONTAINMENT IS THE REFUSAL, not staleness. A head that does not contain the
+ * base has rebase debt, and the table it would produce is a list of the base's
+ * gains dressed as the head's losses. That is exit 2 — COULD NOT MEASURE — with
+ * "rebase first", because an `--allow` over such a line makes the PR body lie.
+ * A head that contains a base which is itself behind `origin/main` is a
+ * different case and is NOT refused here: it is measured against the base it
+ * names, and the SHA on the scope line is what lets a reader see it.
+ *
+ * DOES NOT FETCH. A gate that mutated the repo it was asked to measure would be
+ * a worse bug than the one this fixes.
+ */
+export function resolveBase(repoRoot: string, base: string): string {
+  const resolved = NodeChildProcess.spawnSync(
+    "git",
+    ["rev-parse", "--verify", `${base}^{commit}`],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+    },
+  );
+  if (resolved.status !== 0) {
+    throw new CannotMeasure(
+      `could not resolve --base ${base} to a commit in ${repoRoot}. A shallow clone does this — ` +
+        `a CI checkout defaults to depth 1, and the ref has to be fetched before it can be measured.\n` +
+        (resolved.stderr ?? "").trim(),
+    );
+  }
+  const sha = resolved.stdout.trim();
+  const contained = NodeChildProcess.spawnSync(
+    "git",
+    ["merge-base", "--is-ancestor", sha, "HEAD"],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  if (contained.status !== 0) {
+    throw new CannotMeasure(
+      `HEAD does not contain ${base} (${sha.slice(0, 9)}). Rebase first: measured as-is, every ` +
+        `test the base gained since this branch forked would be reported as LOST from this PR, ` +
+        `and an --allow over that list would make the PR body lie.`,
+    );
+  }
+  return sha;
+}
+
+/**
+ * `origin/main@5aa0804c1` — the ref as asked and the SHA it resolved to.
+ *
+ * BOTH, because each answers a different reader. The ref is what the author
+ * typed and what the next person will type; the SHA is what the table is a
+ * statement about, and it is the SHA that goes stale. A base given as a SHA
+ * already prints once.
+ */
+export const describeBase = (asked: string, sha: string): string =>
+  asked === sha ? sha : `${asked}@${sha.slice(0, 9)}`;
+
 export function changedPaths(repoRoot: string, base: string): ReadonlyArray<string> {
   const result = NodeChildProcess.spawnSync(
     "git",
@@ -911,6 +976,11 @@ function main(): number {
 
   const scope = describeScope(process.cwd());
 
+  // THE BASE IS A SHA FROM HERE ON. `resolveBase` has the account; the short
+  // version is that the ref can move under the run and the SHA cannot, and a
+  // head that lacks the SHA is refused before a single suite runs.
+  const baseSha = resolveBase(process.cwd(), base);
+
   // SCOPE YOU CHANGED IS SCOPE YOU HAVE TO MEASURE. A workspace skipped for
   // being unmeasurable in a cold tree is acceptable only while the PR did not
   // touch it; the moment it did, "could not measure" is the true answer.
@@ -930,7 +1000,7 @@ function main(): number {
   // the closing line, and a run that says what it measured does not also have to
   // refuse over what it was told not to.
   const touched = unmeasurableWorkspacesTouched(
-    changedPaths(process.cwd(), base),
+    changedPaths(process.cwd(), baseSha),
     scope.unmeasurableWorkspaces,
     process.cwd(),
   );
@@ -943,7 +1013,7 @@ function main(): number {
   }
 
   const head = runSuite(process.cwd());
-  const baseSuite = withBaseWorktree(base, (cwd) => runSuite(cwd));
+  const baseSuite = withBaseWorktree(baseSha, (cwd) => runSuite(cwd));
   const rows = compare(baseSuite, head);
 
   const width = Math.max(...rows.map((row) => row.path.length), 4);
@@ -956,7 +1026,8 @@ function main(): number {
   // in the command either.
   const narrowing = TEST_TARGET === "" ? "" : ` [narrowed by '${TEST_TARGET}']`;
   write(
-    `measured ${scope.measured.length} workspace(s) against ${base}: ${scope.measured.join(", ")}` +
+    `measured ${scope.measured.length} workspace(s) against ${describeBase(base, baseSha)}: ` +
+      `${scope.measured.join(", ")}` +
       narrowing,
   );
   if (scope.skipped.length > 0) {
@@ -1018,7 +1089,8 @@ function main(): number {
     // lost went on to say no name was lost — and this is the line the PM reads
     // before merging.
     write(
-      `\nMeasured ${scope.measured.length} workspace(s) against ${base}${narrowing}: ` +
+      `\nMeasured ${scope.measured.length} workspace(s) against ${describeBase(base, baseSha)}` +
+        `${narrowing}: ` +
         (lostUnderAllow === 0
           ? "no test lost by count or by name."
           : `${lostUnderAllow} lost name(s), each explained by --allow above.`),
