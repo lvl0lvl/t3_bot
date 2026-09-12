@@ -242,8 +242,25 @@ export interface RunResult {
 }
 
 export type Verdict =
-  | { readonly _tag: "killed"; readonly by: ReadonlyArray<string> }
-  | { readonly _tag: "survived" }
+  /**
+   * `confirmed` is whether a SECOND run reproduced these reds.
+   *
+   * `false` is not a doubt about the kill — it means the confirming run collected
+   * fewer tests than the baseline, so it was not evidence either way and the first
+   * run's verdict stands unexamined. Without this the two printed identically, so a
+   * row whose only red was noise read as a kill whenever the second run happened to
+   * under-collect, and the exit code said every mutation was measured (`API-17-15`).
+   */
+  | { readonly _tag: "killed"; readonly by: ReadonlyArray<string>; readonly confirmed: boolean }
+  /**
+   * `reds` is present only on a kill DEMOTED because its reds did not reproduce.
+   *
+   * A plain survivor and a demoted kill are different findings. "Nothing in this suite
+   * depends on those lines" is true of the first and false of the second: something
+   * depended on them once and did not do it again, which is a flaky test or a flaky
+   * kill, and it is the row most needing a human.
+   */
+  | { readonly _tag: "survived"; readonly reds?: ReadonlyArray<string> }
   | { readonly _tag: "not-run"; readonly reason: string };
 
 /**
@@ -256,7 +273,11 @@ export type Verdict =
  */
 export const judge = (baseline: RunResult, mutant: RunResult): Verdict => {
   const newlyFailing = [...mutant.failed].filter((name) => !baseline.failed.has(name)).sort();
-  return newlyFailing.length === 0 ? { _tag: "survived" } : { _tag: "killed", by: newlyFailing };
+  // `confirmed: false` until `confirm` says otherwise: one run is one run, and the
+  // default has to be the weaker claim.
+  return newlyFailing.length === 0
+    ? { _tag: "survived" }
+    : { _tag: "killed", by: newlyFailing, confirmed: false };
 };
 
 /**
@@ -289,14 +310,20 @@ export const confirm = (
     return verdict;
   }
   // A confirming run that did not collect says nothing about the reds, so the first
-  // run's verdict stands rather than being weakened by an unmeasured second.
+  // run's verdict stands — and says so, because `confirmed: false` is the difference
+  // between "these reds reproduced" and "nobody looked".
   if (second.total === 0 || second.total < baseline.total) {
-    return verdict;
+    return { _tag: "killed", by: verdict.by, confirmed: false };
   }
   const again = judge(baseline, second);
   const reproduced =
     again._tag === "killed" ? verdict.by.filter((name) => again.by.includes(name)) : [];
-  return reproduced.length === 0 ? { _tag: "survived" } : { _tag: "killed", by: reproduced };
+  // DEMOTED, CARRYING WHAT IT LOST. The reds are kept on the survivor so the report can
+  // say this row reddened once and not again, rather than filing it with the rows
+  // nothing ever depended on.
+  return reproduced.length === 0
+    ? { _tag: "survived", reds: verdict.by }
+    : { _tag: "killed", by: reproduced, confirmed: true };
 };
 
 /**
@@ -414,12 +441,41 @@ export const formatReport = (
 
   const survivors = swept.filter((entry) => entry.verdict._tag === "survived");
   const notRun = swept.filter((entry) => entry.verdict._tag === "not-run");
+  // A DEMOTED KILL IS NOT A PLAIN SURVIVOR (`API-17-15`). "Nothing in this suite depends on
+  // those lines" is true of one and false of the other: something depended on them once and
+  // did not do it again, which is a flaky test or a flaky kill and the row most needing a
+  // human. Splitting them is the whole point of keeping `reds` on the verdict.
+  const inert = survivors.filter(
+    (entry) => entry.verdict._tag === "survived" && entry.verdict.reds === undefined,
+  );
+  const demoted = survivors.filter(
+    (entry) => entry.verdict._tag === "survived" && entry.verdict.reds !== undefined,
+  );
+  const unconfirmed = swept.filter(
+    (entry) => entry.verdict._tag === "killed" && !entry.verdict.confirmed,
+  );
   lines.push("");
-  if (survivors.length > 0) {
+  if (inert.length > 0) {
     lines.push(
-      `${survivors.length} survivor${survivors.length === 1 ? "" : "s"}: ${survivors
+      `${inert.length} survivor${inert.length === 1 ? "" : "s"}: ${inert
         .map((entry) => entry.mutation.id)
         .join(", ")}. Nothing in this suite depends on those lines.`,
+    );
+  }
+  if (demoted.length > 0) {
+    lines.push(
+      `${demoted.length} NO RED REPRODUCED: ${demoted
+        .map((entry) => entry.mutation.id)
+        .join(", ")}. Each reddened a test once and not again on a second run with the ` +
+        "same mutation applied — a flaky test or a flaky kill, and the rows to look at first.",
+    );
+  }
+  if (unconfirmed.length > 0) {
+    lines.push(
+      `${unconfirmed.length} KILLED BUT UNCONFIRMED: ${unconfirmed
+        .map((entry) => entry.mutation.id)
+        .join(", ")}. The confirming run collected fewer tests than the baseline, so ` +
+        "whether those reds reproduce is unmeasured; the first run's verdict stands.",
     );
   }
   if (notRun.length > 0) {
@@ -481,6 +537,24 @@ export class GuardSweepDirtyTreeError extends Schema.TaggedError<GuardSweepDirty
 ) {
   override get message(): string {
     return `A sweep restores files from git, so uncommitted work is what it would discard. Commit first.\n${this.status}`;
+  }
+}
+
+/**
+ * The config cannot be swept, decided before anything ran.
+ *
+ * SEPARATE FROM `GuardSweepUnmeasurableError`, whose message is fixed prose asserting
+ * "The baseline run produced no measurement" — true where it is used and false at a
+ * config check, where no baseline has run, no worktree exists and no suite has been
+ * spawned. A tool whose subject is not conflating unmeasured with other states cannot
+ * borrow the unmeasured error to say "this config is wrong" (`API-17-16`).
+ */
+export class GuardSweepConfigError extends Schema.TaggedError<GuardSweepConfigError>()(
+  "GuardSweepConfigError",
+  { detail: Schema.String },
+) {
+  override get message() {
+    return `This config cannot be swept: ${this.detail}`;
   }
 }
 
@@ -571,6 +645,29 @@ const mustSucceed = Effect.fn("guardSweep.mustSucceed")(function* (
   return run.stdout;
 }, Effect.scoped);
 
+/**
+ * The tracked paths a `git status --porcelain` line names.
+ *
+ * Used to refuse a mutation whose target the tree has already moved: the restore is
+ * `git checkout -- <file>`, which returns it to HEAD, so a file `setupCommand` wrote into
+ * cannot be restored to what the BASELINE was measured on. Nothing else writes to a
+ * scratch worktree between its creation and the first row.
+ *
+ * A rename reads `R  old -> new`, and the new name is the one a mutation could target.
+ */
+export const statusPaths = (status: string): ReadonlySet<string> => {
+  const paths = new Set<string>();
+  for (const line of status.split("\n")) {
+    if (line.trim() === "") {
+      continue;
+    }
+    const named = line.slice(3).trim();
+    const arrow = named.indexOf(" -> ");
+    paths.add(arrow === -1 ? named : named.slice(arrow + 4));
+  }
+  return paths;
+};
+
 const requireCleanTree = Effect.fn("guardSweep.requireCleanTree")(function* (root: string) {
   const status = yield* mustSucceed(["git", "status", "--porcelain"], root);
   if (status.trim() !== "") {
@@ -606,6 +703,12 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+
+  // READ ONCE, BEFORE THE BASELINE, because after the first restore this answer would
+  // be about the sweep's own writes rather than about what it inherited. Empty on
+  // `--in-place`, where the handler has already refused a dirty tree; on the worktree
+  // path the only writer between `git worktree add` and here is `setupCommand`.
+  const moved = statusPaths(yield* mustSucceed(["git", "status", "--porcelain"], root));
 
   yield* Console.log("baseline…");
   const baseline = yield* runSuite(config, root);
@@ -644,6 +747,23 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
       yield* Console.log(
         `${mutation.id}: NOT RUN — ${mutation.file} resolves outside the swept tree`,
       );
+      continue;
+    }
+    // `API-17-14`. `setupCommand` writing into a mutation target makes that row
+    // unmeasurable, and silently so: the baseline ran on HEAD+setup, the restore returns
+    // the file to HEAD, and every row after the first is measured on a third thing. A
+    // probe watched exactly that — three runs with setup's edit present, the fourth
+    // without it, a kill, a survivor, exit 2, and the survivor sentence saying nothing
+    // depends on those lines about a row whose tree changed underneath it.
+    //
+    // Per row, not fatal: the rows setup did not touch are still measurable, and the ones
+    // it did say why rather than aborting a sweep that has already been paid for.
+    if (moved.has(mutation.file)) {
+      const reason =
+        `the tree already differs from HEAD at ${mutation.file} (setupCommand writes ` +
+        "there), so restoring it would revert that change rather than the mutation";
+      swept.push({ mutation, verdict: { _tag: "not-run", reason } });
+      yield* Console.log(`${mutation.id}: NOT RUN — ${reason}`);
       continue;
     }
     const tracked = yield* capture(["git", "ls-files", "--error-unmatch", mutation.file], root);
@@ -797,6 +917,12 @@ export const exitCodeFor = (swept: ReadonlyArray<SweptMutation>): 0 | 2 | 3 => {
   if (swept.some((entry) => entry.verdict._tag === "not-run")) {
     return 3;
   }
+  // AN UNCONFIRMED KILL IS AN ABSENT MEASUREMENT, so it takes the code for one. Without
+  // this a row whose only red was noise exits 0 — "every mutation measured, every one
+  // killed" — whenever the confirming run happened to under-collect (`API-17-15`).
+  if (swept.some((entry) => entry.verdict._tag === "killed" && !entry.verdict.confirmed)) {
+    return 3;
+  }
   return swept.some((entry) => entry.verdict._tag === "survived") ? 2 : 0;
 };
 
@@ -884,7 +1010,7 @@ export const guardSweepCommand = Command.make(
       const parsed = yield* decodeSweepConfig(yield* fs.readFileString(config));
       const duplicated = duplicateMutationIds(parsed.mutations);
       if (duplicated.length > 0) {
-        return yield* new GuardSweepUnmeasurableError({
+        return yield* new GuardSweepConfigError({
           detail:
             `two mutations share an id (${duplicated.join(", ")}), and the report ` +
             "identifies every row by it",

@@ -16,6 +16,7 @@ import {
   formatReport,
   judge,
   readVitestJson,
+  statusPaths,
   type Mutation,
   type RunResult,
 } from "./guard-sweep.ts";
@@ -98,7 +99,13 @@ describe("judge", () => {
     const baseline = run(["f.ts > flaky"], 10);
     const verdict = judge(baseline, run(["f.ts > flaky", "g.ts > real", "h.ts > also"], 10));
     // Sorted, so the report's order does not depend on Set iteration order.
-    expect(verdict).toEqual({ _tag: "killed", by: ["g.ts > real", "h.ts > also"] });
+    expect(verdict).toEqual({
+      _tag: "killed",
+      by: ["g.ts > real", "h.ts > also"],
+      // ONE RUN IS ONE RUN: `judge` cannot know whether these reproduce, so its kills are
+      // unconfirmed and only a second run promotes them.
+      confirmed: false,
+    });
   });
 
   it("does not treat a baseline failure that went away as a kill", () => {
@@ -123,7 +130,11 @@ describe("judge", () => {
     const baseline = run(["f.ts > flaky"], 10);
     const mutant = run(["g.ts > real"], 10);
     expect(baseline.failed.size).toBe(mutant.failed.size);
-    expect(judge(baseline, mutant)).toEqual({ _tag: "killed", by: ["g.ts > real"] });
+    expect(judge(baseline, mutant)).toEqual({
+      _tag: "killed",
+      by: ["g.ts > real"],
+      confirmed: false,
+    });
   });
 });
 
@@ -245,7 +256,7 @@ describe("formatReport", () => {
     const report = formatReport(run([], 26), [
       {
         mutation: mutation({ id: "i", guard: "requireThing", axis: "inert" }),
-        verdict: { _tag: "killed", by: ["a > b"] },
+        verdict: { _tag: "killed", by: ["a > b"], confirmed: true },
       },
     ]);
     expect(report).toContain("Measured on the `inert` axis only: requireThing");
@@ -258,7 +269,7 @@ describe("formatReport", () => {
     const report = formatReport(run([], 26), [
       {
         mutation: mutation({ id: "w", guard: "requireShape", axis: "wider" }),
-        verdict: { _tag: "killed", by: ["a > c"] },
+        verdict: { _tag: "killed", by: ["a > c"], confirmed: true },
       },
     ]);
     expect(report).toContain("Measured on the `wider` axis only: requireShape");
@@ -268,11 +279,11 @@ describe("formatReport", () => {
     const report = formatReport(run([], 26), [
       {
         mutation: mutation({ id: "i", guard: "requireThing", axis: "inert" }),
-        verdict: { _tag: "killed", by: ["a > b"] },
+        verdict: { _tag: "killed", by: ["a > b"], confirmed: true },
       },
       {
         mutation: mutation({ id: "w", guard: "requireThing", axis: "wider" }),
-        verdict: { _tag: "killed", by: ["a > c"] },
+        verdict: { _tag: "killed", by: ["a > c"], confirmed: true },
       },
     ]);
     expect(report).not.toContain("axis only");
@@ -291,15 +302,15 @@ describe("formatReport", () => {
     const report = formatReport(run([], 26), [
       {
         mutation: mutation({ id: "both-i", guard: "requireCovered", axis: "inert" }),
-        verdict: { _tag: "killed", by: ["a > b"] },
+        verdict: { _tag: "killed", by: ["a > b"], confirmed: true },
       },
       {
         mutation: mutation({ id: "both-w", guard: "requireCovered", axis: "wider" }),
-        verdict: { _tag: "killed", by: ["a > c"] },
+        verdict: { _tag: "killed", by: ["a > c"], confirmed: true },
       },
       {
         mutation: mutation({ id: "half", guard: "requireHalf", axis: "inert" }),
-        verdict: { _tag: "killed", by: ["a > d"] },
+        verdict: { _tag: "killed", by: ["a > d"], confirmed: true },
       },
     ]);
     // ASSERTED ON THE NOTICE LINE, not on the whole report. My first attempt used
@@ -324,7 +335,10 @@ describe("formatReport", () => {
 
 describe("exitCodeFor", () => {
   const killed = (id: string) =>
-    ({ mutation: mutation({ id }), verdict: { _tag: "killed", by: ["f.ts > real"] } }) as const;
+    ({
+      mutation: mutation({ id }),
+      verdict: { _tag: "killed", by: ["f.ts > real"], confirmed: true },
+    }) as const;
   const survived = (id: string) =>
     ({ mutation: mutation({ id }), verdict: { _tag: "survived" } }) as const;
   const notRun = (id: string) =>
@@ -380,7 +394,7 @@ describe("confirm", () => {
     const baseline = run([], 10);
     const first = judge(baseline, run(["g.ts > real", "flaky.ts > unstable"], 10));
     const verdict = confirm(first, run(["g.ts > real"], 10), baseline);
-    expect(verdict).toEqual({ _tag: "killed", by: ["g.ts > real"] });
+    expect(verdict).toEqual({ _tag: "killed", by: ["g.ts > real"], confirmed: true });
   });
 
   it("calls it a SURVIVOR when every red was noise", () => {
@@ -388,7 +402,12 @@ describe("confirm", () => {
     // than a mutation quietly credited with a kill it did not earn.
     const baseline = run([], 10);
     const first = judge(baseline, run(["flaky.ts > unstable"], 10));
-    expect(confirm(first, run([], 10), baseline)).toEqual({ _tag: "survived" });
+    expect(confirm(first, run([], 10), baseline)).toEqual({
+      _tag: "survived",
+      // CARRYING WHAT IT LOST, so the report can say this row reddened once and not again
+      // rather than filing it with the rows nothing ever depended on.
+      reds: ["flaky.ts > unstable"],
+    });
   });
 
   it("keeps a kill whose reds both reproduced", () => {
@@ -397,6 +416,9 @@ describe("confirm", () => {
     expect(confirm(first, run(["g.ts > real", "h.ts > also"], 10), baseline)).toEqual({
       _tag: "killed",
       by: ["g.ts > real", "h.ts > also"],
+      // THE ONLY CASE THAT EARNS `true`: both reds appeared in two runs with the same
+      // mutation applied.
+      confirmed: true,
     });
   });
 
@@ -407,8 +429,18 @@ describe("confirm", () => {
     // baseline guard exists for, arrived at from the other side.
     const baseline = run([], 10);
     const first = judge(baseline, run(["g.ts > real"], 10));
-    expect(confirm(first, run([], 0), baseline)).toEqual({ _tag: "killed", by: ["g.ts > real"] });
-    expect(confirm(first, run([], 4), baseline)).toEqual({ _tag: "killed", by: ["g.ts > real"] });
+    // UNCONFIRMED rather than confirmed: the verdict stands because an uncollected run is
+    // no evidence either way, and the report has to be able to say nobody looked.
+    expect(confirm(first, run([], 0), baseline)).toEqual({
+      _tag: "killed",
+      by: ["g.ts > real"],
+      confirmed: false,
+    });
+    expect(confirm(first, run([], 4), baseline)).toEqual({
+      _tag: "killed",
+      by: ["g.ts > real"],
+      confirmed: false,
+    });
   });
 
   it("does not re-judge a survivor or a not-run", () => {
@@ -443,5 +475,87 @@ describe("duplicateMutationIds", () => {
     expect(
       duplicateMutationIds([{ id: "z" }, { id: "z" }, { id: "z" }, { id: "a" }, { id: "a" }]),
     ).toEqual(["a", "z"]);
+  });
+});
+
+describe("statusPaths", () => {
+  it("reads the path out of a porcelain line", () => {
+    expect([...statusPaths(" M src/a.ts\n?? src/b.ts\n")]).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("takes the NEW name of a rename", () => {
+    // `R  old -> new` is the form a hand-written parser gets wrong, and the new name is the
+    // one a mutation could target — a mutation aimed at the old name cannot resolve at all.
+    expect([...statusPaths("R  src/old.ts -> src/new.ts\n")]).toEqual(["src/new.ts"]);
+  });
+
+  it("is empty for a clean tree", () => {
+    // The `--in-place` path relies on this: the handler has already refused a dirty tree, so
+    // every row must pass the moved-target check rather than be refused by an empty string.
+    expect([...statusPaths("")]).toEqual([]);
+    expect([...statusPaths("\n")]).toEqual([]);
+  });
+});
+
+describe("the report's three kinds of not-a-plain-kill", () => {
+  const row = (id: string, verdict: Parameters<typeof formatReport>[1][number]["verdict"]) => ({
+    mutation: mutation({ id }),
+    verdict,
+  });
+  const baseline: RunResult = { failed: new Set<string>(), total: 10 };
+
+  it("keeps a demoted kill out of the inert survivors' sentence", () => {
+    // `API-17-15`. "Nothing in this suite depends on those lines" is true of an inert guard
+    // and FALSE of a row that reddened once and not again — that row is a flaky test or a
+    // flaky kill and it is the one most needing a human, so it must not be filed with the
+    // rows needing none.
+    const report = formatReport(baseline, [
+      row("inert", { _tag: "survived" }),
+      row("flaky", { _tag: "survived", reds: ["f.ts > sometimes"] }),
+    ]);
+    expect(report).toContain("1 survivor: inert. Nothing in this suite depends on those lines.");
+    expect(report).toContain("1 NO RED REPRODUCED: flaky");
+    // And the demoted row is NOT named in the inert sentence.
+    expect(report).not.toContain("inert, flaky");
+  });
+
+  it("says when a kill's reds were never confirmed", () => {
+    // Printed identically to a confirmed kill before this, so a row whose only red was noise
+    // read as a kill whenever the second run happened to under-collect.
+    const report = formatReport(baseline, [
+      row("solid", { _tag: "killed", by: ["f.ts > real"], confirmed: true }),
+      row("unchecked", { _tag: "killed", by: ["f.ts > real"], confirmed: false }),
+    ]);
+    expect(report).toContain("1 KILLED BUT UNCONFIRMED: unchecked");
+    expect(report).not.toContain("solid, unchecked");
+  });
+});
+
+describe("exitCodeFor, with confirmation", () => {
+  const killed = (id: string, confirmed: boolean) =>
+    ({
+      mutation: mutation({ id }),
+      verdict: { _tag: "killed", by: ["f.ts > real"], confirmed },
+    }) as const;
+
+  it("is 3 for an unconfirmed kill, not 0", () => {
+    // An unconfirmed kill is an ABSENT measurement and 3 is already the code for one.
+    // Exiting 0 here would say "every mutation measured, every one killed" over a row nobody
+    // checked — which is the sentence this tool exists to stop.
+    expect(exitCodeFor([killed("a", true), killed("b", false)])).toBe(3);
+  });
+
+  it("is still 0 when every kill was confirmed", () => {
+    expect(exitCodeFor([killed("a", true), killed("b", true)])).toBe(0);
+  });
+
+  it("is 3 rather than 2 when a demoted survivor sits beside an unconfirmed kill", () => {
+    // Both are absences; neither is the survivor finding that 2 reports.
+    expect(
+      exitCodeFor([
+        killed("a", false),
+        { mutation: mutation({ id: "b" }), verdict: { _tag: "survived", reds: ["x"] } },
+      ]),
+    ).toBe(3);
   });
 });
