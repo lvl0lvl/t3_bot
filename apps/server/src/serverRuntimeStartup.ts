@@ -30,6 +30,7 @@ import * as Scope from "effect/Scope";
 import * as ServerConfig from "./config.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
+import { seedHierarchy } from "./orchestration/HierarchySeeder.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as OrchestrationReactor from "./orchestration/Services/OrchestrationReactor.ts";
@@ -395,6 +396,30 @@ const toServerUpdateThreadContinuationError = (cause: unknown) =>
   isServerUpdateThreadContinuationError(cause)
     ? cause
     : new ServerUpdateThreadContinuationError({ cause });
+
+/**
+ * Seed the agent hierarchy, unless this server opted out with
+ * `--no-seed-hierarchy`.
+ *
+ * Exported for the same reason `resolveAutoBootstrapWelcomeTargets` is: the
+ * startup generator only runs under the whole live server layer, so the only
+ * way to pin what a phase DOES is to pin the effect the phase IS.
+ *
+ * The `noSeedHierarchy` check lives here and nowhere else. A copy of it at the
+ * call site would be the shape that has already cost this project a day: a
+ * guard wired in two places and tested in one, where the tested copy is green
+ * and the untested copy is what decides the real boot.
+ */
+export const seedHierarchyIfEnabled = Effect.gen(function* () {
+  const serverConfig = yield* ServerConfig.ServerConfig;
+  if (serverConfig.noSeedHierarchy) {
+    return;
+  }
+  yield* seedHierarchy({
+    workspaceRoot: serverConfig.cwd,
+    createdAt: DateTime.formatIso(yield* DateTime.now),
+  });
+});
 
 export const markRunningProviderSessionsForContinuation = Effect.gen(function* () {
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
@@ -879,6 +904,22 @@ export const make = (options?: StartupOptions) =>
 
       yield* Effect.logDebug("startup phase: syncing clean projects");
       yield* runStartupPhase("projects.auto-pull", syncAutoPullProjects);
+
+      // BEFORE the bootstrap fork, not after. `welcome.autobootstrap` is forked
+      // and also creates a project for this cwd, so seeding alongside it would
+      // race another writer of the same workspace root and one of the two would
+      // be refused by `requireActiveProjectWorkspaceRootAbsent`. Seeding to
+      // completion first makes the bootstrap resolve what this created, and
+      // costs the startup path one serialised phase.
+      yield* Effect.logDebug("startup phase: seeding the agent hierarchy");
+      yield* runStartupPhase(
+        "hierarchy.seed",
+        // A failed seed must not stop the server from booting: the same decision
+        // the bootstrap phase below makes, for the same reason. It costs nothing
+        // to retry, because every seed command carries a deterministic id — the
+        // next boot re-runs only the step that failed.
+        seedHierarchyIfEnabled.pipe(Effect.ignoreCause({ log: true })),
+      );
 
       const welcomeBase = yield* resolveWelcomeBase;
       const environment = yield* serverEnvironment.getDescriptor;

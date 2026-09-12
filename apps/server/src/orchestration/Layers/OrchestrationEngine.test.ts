@@ -21,6 +21,9 @@ import {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+
+import * as HierarchySeeder from "../HierarchySeeder.ts";
+import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import { it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -121,7 +124,10 @@ async function createOrchestrationSystem(
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
     readThread: (threadId: ThreadId) =>
       runtime.runPromise(snapshotQuery.getThreadDetailById(threadId)),
-    run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
+    // Not annotated to require `never`: the ManagedRuntime provides this layer's
+    // services, so an effect needing one of them is runnable here. Narrowing R to
+    // never made the harness refuse effects the runtime can satisfy.
+    run: runtime.runPromise,
     dispose: () => runtime.dispose(),
   };
 }
@@ -2179,6 +2185,148 @@ describe("OrchestrationEngine", () => {
       expect(readModel.projects.map((project) => project.id)).toContain(projectId);
     } finally {
       await system.dispose();
+    }
+  });
+
+  it("seeds the hierarchy, and a second boot reaches the decider with nothing", async () => {
+    // The demo has to be reproducible from an empty state directory, and a
+    // restart must not produce a second hierarchy.
+    //
+    // The assertion that matters is NOT "the counts are unchanged" — a command
+    // the decider REFUSED also leaves the counts unchanged, so that passes
+    // whether idempotence works by receipt or by the invariants rejecting a
+    // duplicate. Those are different mechanisms with different costs: the second
+    // writes a rejected receipt on every boot forever.
+    //
+    // So this asserts the MECHANISM: each seed receipt's accepted_at is
+    // byte-identical after the second boot. The engine checks the receipt before
+    // it calls the decider, so an unchanged accepted_at is proof the command
+    // short-circuited there rather than being decided again.
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-hierarchy-seed-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    const workspaceRoot = NodePath.join(directory, "repo");
+    // The project the server's own cwd bootstrap would have created. The seeder
+    // deliberately does NOT create one: a second project for the same workspace
+    // root is refused by requireActiveProjectWorkspaceRootAbsent, so a seeder
+    // that created its own passed this test and failed on the first real boot.
+    const seededProjectId = asProjectId("project-bootstrapped-from-cwd");
+    const seedCommandIds = [
+      "seed-thread-pm",
+      "seed-thread-boss1",
+      "seed-thread-boss3",
+      "seed-channel-project",
+      "seed-channel-seniors",
+    ];
+    const readAcceptedAt = (system: Awaited<ReturnType<typeof createOrchestrationSystem>>) =>
+      system.run(
+        Effect.gen(function* () {
+          const receipts = yield* OrchestrationCommandReceiptRepository;
+          const out: Record<string, string> = {};
+          for (const id of seedCommandIds) {
+            const receipt = yield* receipts.getByCommandId({ commandId: CommandId.make(id) });
+            out[id] = Option.isSome(receipt)
+              ? `${receipt.value.status}@${receipt.value.acceptedAt}`
+              : "MISSING";
+          }
+          return out;
+        }),
+      );
+
+    let system = await createOrchestrationSystem(databasePath);
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-bootstrap-project"),
+          projectId: seededProjectId,
+          title: "t3_bot",
+          workspaceRoot,
+          createdAt: now(),
+        }),
+      );
+      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
+
+      const seeded = await system.readModel();
+      expect(seeded.projects.filter((project) => project.deletedAt === null)).toHaveLength(1);
+      expect(seeded.threads.map((thread) => thread.id).sort()).toEqual([
+        "thread-boss1",
+        "thread-boss3",
+        "thread-pm",
+      ]);
+      expect(seeded.channels.map((channel) => channel.name).sort()).toEqual(["project", "seniors"]);
+
+      // Every seeded thread runs in auto. A guard sweep found this unpinned, and
+      // it is not cosmetic: under full-access the demo stalls on an approval
+      // prompt nobody is watching, which looks exactly like the agents failing
+      // to answer each other.
+      expect(seeded.threads.map((thread) => thread.runtimeMode)).toEqual(["auto", "auto", "auto"]);
+
+      // Membership by handle, because the handle is the mention key and the
+      // demo's whole behaviour is "a mention wakes a senior".
+      const seniors = seeded.channels.find((channel) => channel.name === "seniors");
+      expect(seniors?.members.map((member) => member.handle).sort()).toEqual([
+        "boss1",
+        "boss3",
+        "pm",
+      ]);
+      const projectChannel = seeded.channels.find((channel) => channel.name === "project");
+      expect(projectChannel?.members.map((member) => member.handle).sort()).toEqual(["pm", "walt"]);
+      // The human is a human: a human member carrying a thread's id is the
+      // impersonation route the member-shape invariant refuses.
+      expect(projectChannel?.members.find((member) => member.handle === "walt")?.memberKind).toBe(
+        "human",
+      );
+
+      const firstReceipts = await readAcceptedAt(system);
+      expect(Object.values(firstReceipts).every((value) => value.startsWith("accepted@"))).toBe(
+        true,
+      );
+
+      await system.dispose();
+      system = await createOrchestrationSystem(databasePath);
+
+      // Boot 2: the same commands, same ids. The project is already there, as it
+      // would be on a real restart.
+      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
+
+      const reseeded = await system.readModel();
+      expect(reseeded.projects.filter((project) => project.deletedAt === null)).toHaveLength(1);
+      expect(reseeded.threads).toHaveLength(3);
+      expect(reseeded.channels).toHaveLength(2);
+
+      // THE ASSERTION THIS TEST EXISTS FOR: not one receipt was rewritten, so
+      // not one command was decided a second time.
+      expect(await readAcceptedAt(system)).toEqual(firstReceipts);
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a project when no project owns the workspace root yet", async () => {
+    // The OTHER branch. The test above seeds into a project the bootstrap made,
+    // so it only ever exercises the resolve path — and the create path is the
+    // one that runs on a genuinely empty state directory, which is the state the
+    // demo is supposed to be reproducible from.
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-hierarchy-fresh-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    const workspaceRoot = NodePath.join(directory, "repo");
+    const system = await createOrchestrationSystem(databasePath);
+    try {
+      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
+
+      const seeded = await system.readModel();
+      const projects = seeded.projects.filter((project) => project.deletedAt === null);
+      expect(projects).toHaveLength(1);
+      expect(projects[0]?.workspaceRoot).toBe(workspaceRoot);
+      // The threads must hang off the project the seeder just made, not off
+      // nothing: a thread pointing at a project that does not exist is the same
+      // dangling shape the member-shape invariant refuses one level up.
+      expect(seeded.threads.every((thread) => thread.projectId === projects[0]?.id)).toBe(true);
+      expect(seeded.channels).toHaveLength(2);
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
     }
   });
 

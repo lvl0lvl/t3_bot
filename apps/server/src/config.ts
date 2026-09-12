@@ -87,6 +87,17 @@ export class ServerConfig extends Context.Service<
     readonly desktopTelemetryControlFd?: number | undefined;
     readonly resourceMonitorPath?: string | undefined;
     readonly autoBootstrapProjectFromCwd: boolean;
+    /**
+     * Opt OUT of seeding the agent hierarchy. Default false: this fork exists to
+     * run that hierarchy, so a server of it having #project, #seniors and the
+     * three threads is the product rather than a surprise.
+     *
+     * An opt-out rather than an opt-in, deliberately: an opt-in would mean the
+     * demo does not work until someone knows a flag exists, which is the same
+     * failure as not seeding at all. It goes away when the hierarchy becomes
+     * user-configurable and the seed becomes "the default when none is set".
+     */
+    readonly noSeedHierarchy: boolean;
     readonly logWebSocketEvents: boolean;
     readonly tailscaleServeEnabled: boolean;
     readonly tailscaleServePort: number;
@@ -200,6 +211,7 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
     ...derivedPaths,
     mode: "web",
     autoBootstrapProjectFromCwd: false,
+    noSeedHierarchy: true,
     logWebSocketEvents: false,
     tailscaleServeEnabled: false,
     tailscaleServePort: 443,

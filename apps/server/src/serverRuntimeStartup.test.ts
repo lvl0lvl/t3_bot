@@ -446,3 +446,90 @@ it.effect("completeAutoBootstrapWelcome settles an empty bootstrap result", () =
     assert.deepStrictEqual(completion, { bootstrapStatus: "complete" });
   }),
 );
+
+/**
+ * A projection surface with one method on it.
+ *
+ * The seed reads exactly one thing, and a test that spells out the other
+ * twenty-two `Effect.die("unused")` entries says nothing the one line does not.
+ * Anything else it reaches for throws rather than returning a plausible stub.
+ */
+const seedProjections = (
+  getActiveProjectByWorkspaceRoot: ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]["getActiveProjectByWorkspaceRoot"],
+) => ({ getActiveProjectByWorkspaceRoot }) as never;
+
+const seedEngine = (
+  dispatch: OrchestrationEngine.OrchestrationEngineService["Service"]["dispatch"],
+) => ({ dispatch }) as never;
+
+it.effect("the hierarchy seed is pointed at the server's own workspace root", () =>
+  Effect.gen(function* () {
+    const dispatched = yield* Ref.make<ReadonlyArray<Record<string, unknown>>>([]);
+    const rootsRead = yield* Ref.make<ReadonlyArray<string>>([]);
+
+    yield* ServerRuntimeStartup.seedHierarchyIfEnabled.pipe(
+      Effect.provideService(ServerConfig.ServerConfig, {
+        cwd: "/tmp/startup-project",
+        noSeedHierarchy: false,
+      } as never),
+      Effect.provideService(
+        ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+        seedProjections((workspaceRoot) =>
+          Ref.update(rootsRead, (roots) => [...roots, workspaceRoot]).pipe(
+            Effect.as(Option.none()),
+          ),
+        ),
+      ),
+      Effect.provideService(
+        OrchestrationEngine.OrchestrationEngineService,
+        seedEngine((command) =>
+          Ref.update(dispatched, (commands) => [...commands, command as never]).pipe(
+            Effect.as({ sequence: 1 }),
+          ),
+        ),
+      ),
+    );
+
+    const commands = yield* Ref.get(dispatched);
+    assert.deepStrictEqual(
+      commands.map((command) => command["type"]),
+      [
+        "project.create",
+        "thread.create",
+        "thread.create",
+        "thread.create",
+        "channel.create",
+        "channel.create",
+      ],
+    );
+
+    // WHICH root, not merely that it seeded. The seeder takes a path, and every
+    // wrong path available at the call site — baseDir, the state directory, the
+    // process cwd of whatever started the server — produces a hierarchy that
+    // looks correct and hangs off a project nobody opened.
+    assert.equal(commands[0]?.["workspaceRoot"], "/tmp/startup-project");
+    assert.deepStrictEqual(yield* Ref.get(rootsRead), ["/tmp/startup-project"]);
+  }),
+);
+
+it.effect("--no-seed-hierarchy seeds nothing, and does not even look", () =>
+  Effect.gen(function* () {
+    // Both collaborators die rather than record. An opt-out that still reads the
+    // projection has not opted out of anything a reviewer would care about, and
+    // a recording stub would let that pass.
+    yield* ServerRuntimeStartup.seedHierarchyIfEnabled.pipe(
+      Effect.provideService(ServerConfig.ServerConfig, {
+        cwd: "/tmp/startup-project",
+        noSeedHierarchy: true,
+      } as never),
+      Effect.provideService(
+        ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+        seedProjections(() => Effect.die("opted out, yet read the projection")),
+      ),
+      Effect.provideService(
+        OrchestrationEngine.OrchestrationEngineService,
+        seedEngine(() => Effect.die("opted out, yet dispatched a command")),
+      ),
+    );
+  }),
+);

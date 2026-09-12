@@ -50,6 +50,12 @@ const bootstrapFdFlag = Flag.integer("bootstrap-fd").pipe(
   Flag.withDescription("Read one-time bootstrap secrets from the given file descriptor."),
   Flag.optional,
 );
+const noSeedHierarchyFlag = Flag.boolean("no-seed-hierarchy").pipe(
+  Flag.withDescription(
+    "Do not seed the agent hierarchy (#project, #seniors, the pm/boss threads).",
+  ),
+  Flag.optional,
+);
 const autoBootstrapProjectFromCwdFlag = Flag.boolean("auto-bootstrap-project-from-cwd").pipe(
   Flag.withDescription(
     "Create a project for the current working directory on startup when missing.",
@@ -127,6 +133,10 @@ const EnvServerConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
+  noSeedHierarchy: Config.boolean("T3CODE_NO_SEED_HIERARCHY").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
   logWebSocketEvents: Config.boolean("T3CODE_LOG_WS_EVENTS").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -151,6 +161,7 @@ export interface CliServerFlags {
   readonly noBrowser: Option.Option<boolean>;
   readonly bootstrapFd: Option.Option<number>;
   readonly autoBootstrapProjectFromCwd: Option.Option<boolean>;
+  readonly noSeedHierarchy: Option.Option<boolean>;
   readonly logWebSocketEvents: Option.Option<boolean>;
   readonly tailscaleServeEnabled: Option.Option<boolean>;
   readonly tailscaleServePort: Option.Option<number>;
@@ -185,6 +196,7 @@ export const sharedServerCommandFlags = {
   noBrowser: noBrowserFlag,
   bootstrapFd: bootstrapFdFlag,
   autoBootstrapProjectFromCwd: autoBootstrapProjectFromCwdFlag,
+  noSeedHierarchy: noSeedHierarchyFlag,
   logWebSocketEvents: logWebSocketEventsFlag,
   tailscaleServeEnabled: tailscaleServeFlag,
   tailscaleServePort: tailscaleServePortFlag,
@@ -228,6 +240,7 @@ export const resolveServerConfig = (
       noBrowser: flags.noBrowser ?? Option.none(),
       bootstrapFd: flags.bootstrapFd ?? Option.none(),
       autoBootstrapProjectFromCwd: flags.autoBootstrapProjectFromCwd ?? Option.none(),
+      noSeedHierarchy: flags.noSeedHierarchy ?? Option.none(),
       logWebSocketEvents: flags.logWebSocketEvents ?? Option.none(),
       tailscaleServeEnabled: flags.tailscaleServeEnabled ?? Option.none(),
       tailscaleServePort: flags.tailscaleServePort ?? Option.none(),
@@ -313,6 +326,13 @@ export const resolveServerConfig = (
       ),
       () => mode === "web",
     );
+    const noSeedHierarchy = Option.getOrElse(
+      resolveOptionPrecedence(
+        normalizedFlags.noSeedHierarchy,
+        Option.fromUndefinedOr(env.noSeedHierarchy),
+      ),
+      () => false,
+    );
     const logWebSocketEvents = Option.getOrElse(
       resolveOptionPrecedence(
         normalizedFlags.logWebSocketEvents,
@@ -381,6 +401,7 @@ export const resolveServerConfig = (
       desktopTelemetryControlFd,
       resourceMonitorPath,
       autoBootstrapProjectFromCwd,
+      noSeedHierarchy,
       logWebSocketEvents,
       tailscaleServeEnabled,
       tailscaleServePort,
@@ -404,6 +425,7 @@ export const resolveCliAuthConfig = (
       noBrowser: Option.none(),
       bootstrapFd: Option.none(),
       autoBootstrapProjectFromCwd: Option.none(),
+      noSeedHierarchy: Option.none(),
       logWebSocketEvents: Option.none(),
       tailscaleServeEnabled: Option.none(),
       tailscaleServePort: Option.none(),
