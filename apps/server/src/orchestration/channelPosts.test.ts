@@ -248,7 +248,7 @@ layer("readChannelPostPage", (it) => {
       yield* seed(elsewhere, 3);
 
       const outcome = yield* readChannelPostPage({
-        request: request(channelId, { cursor: encodeChannelCursor(elsewhere, 2) }),
+        request: request(channelId, { cursor: encodeChannelCursor(elsewhere, "forward", 2) }),
         member,
       }).pipe(Effect.flip);
       assert.strictEqual(outcome._tag, "ChannelCursorRejected");
@@ -297,7 +297,7 @@ layer("readChannelPostPage", (it) => {
 
       const outcome = yield* readChannelPostPage({
         request: request(channelId, {
-          cursor: encodeChannelCursor(channelFor("somewhere-else"), 2),
+          cursor: encodeChannelCursor(channelFor("somewhere-else"), "forward", 2),
         }),
         member: stranger,
       }).pipe(Effect.flip);

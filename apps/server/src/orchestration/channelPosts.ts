@@ -40,6 +40,7 @@ import {
 import {
   channelPostOverFetch,
   decodeChannelCursor,
+  type ChannelPostDirection,
   resolveChannelPostPage,
 } from "./channelCursor.ts";
 
@@ -114,7 +115,7 @@ export function readChannelPostPage(input: {
       return yield* new ChannelPostsUnreadable({ channelId });
     }
 
-    const at = yield* resolveCursor(channelId, cursor);
+    const at = yield* resolveCursor(channelId, direction, cursor);
 
     const overFetch = channelPostOverFetch(limit);
     const rows =
@@ -145,6 +146,11 @@ export function readChannelPostPage(input: {
 
 const resolveCursor = (
   channelId: ChannelId,
+  // THE DIRECTION IS PART OF THE CURSOR'S IDENTITY, so it has to reach the
+  // decoder: a cursor points AFTER its page going forward and BEFORE it going
+  // backward, and one used in the other direction is refused rather than
+  // answered with a page (`t3_bot-2oh`).
+  direction: ChannelPostDirection,
   cursor: string | undefined,
 ): Effect.Effect<Option.Option<number>, ChannelCursorRejected> => {
   if (cursor === undefined) {

@@ -38,7 +38,7 @@ describe("resolveChannelPostPage", () => {
       rows: [row(1), row(2), row(3)],
     });
     expect(page.rows).toEqual([row(3)]);
-    expect(page.nextCursor).toBe("channel-a:3");
+    expect(page.nextCursor).toBe("channel-a:backward:3");
   });
 
   it("keeps the NEWEST rows going backward and the oldest going forward", () => {
@@ -66,10 +66,10 @@ describe("resolveChannelPostPage", () => {
     // returned, and paging repeats it forever.
     expect(
       resolveChannelPostPage({ channelId: "c", direction: "backward", limit: 2, rows }).nextCursor,
-    ).toBe("c:6");
+    ).toBe("c:backward:6");
     expect(
       resolveChannelPostPage({ channelId: "c", direction: "forward", limit: 2, rows }).nextCursor,
-    ).toBe("c:5");
+    ).toBe("c:forward:5");
   });
 
   it("says there is no next page when the store returned no extra row", () => {
@@ -117,7 +117,18 @@ describe("channelPostOverFetch", () => {
 describe("channelCursor", () => {
   it("round-trips a cursor the encoder produced", () => {
     expect(
-      Option.getOrNull(decodeChannelCursor("channel-a", encodeChannelCursor("channel-a", 7))),
+      Option.getOrNull(
+        decodeChannelCursor("channel-a", "forward", encodeChannelCursor("channel-a", "forward", 7)),
+      ),
+    ).toBe(7);
+    expect(
+      Option.getOrNull(
+        decodeChannelCursor(
+          "channel-a",
+          "backward",
+          encodeChannelCursor("channel-a", "backward", 7),
+        ),
+      ),
     ).toBe(7);
   });
 
@@ -126,22 +137,78 @@ describe("channelCursor", () => {
     // elsewhere is well-formed digits matching no row here, and answering it with an
     // empty page is byte for byte "you are caught up" (`t3_bot-e60`).
     expect(
-      Option.isNone(decodeChannelCursor("channel-b", encodeChannelCursor("channel-a", 7))),
+      Option.isNone(
+        decodeChannelCursor("channel-b", "forward", encodeChannelCursor("channel-a", "forward", 7)),
+      ),
     ).toBe(true);
+  });
+
+  it("refuses a cursor the OTHER DIRECTION issued", () => {
+    // The same lie on the other axis (`t3_bot-2oh`): a cursor points AFTER its
+    // page going forward and BEFORE it going backward, so the same number means
+    // opposite things and the read cannot tell which it was handed. Measured on
+    // the live gateway before the fix: a forward cursor read backward answered
+    // with an early page and `nextCursor: null` over four unread posts.
+    expect(
+      Option.isNone(
+        decodeChannelCursor(
+          "channel-a",
+          "backward",
+          encodeChannelCursor("channel-a", "forward", 7),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      Option.isNone(
+        decodeChannelCursor(
+          "channel-a",
+          "forward",
+          encodeChannelCursor("channel-a", "backward", 7),
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("refuses a cursor issued before the direction existed", () => {
+    // THE DEPLOY WINDOW. Every cursor a holder is carrying right now has two
+    // segments, and every one of them IS a forward cursor, because the only
+    // issuer hardcodes forward — so "assume forward" would be right every time
+    // and wrong never. Refused anyway: the assumption is unverifiable at the
+    // point of use, and a guard correct only by appeal to a caller's current
+    // behaviour is the defect class this module exists for. A refusal costs a
+    // re-read; a wrong page costs the posts the caller never learns it missed.
+    expect(Option.isNone(decodeChannelCursor("channel-a", "forward", "channel-a:7"))).toBe(true);
   });
 
   it("refuses digits that are not digits", () => {
     // `Number()` is laxer than any schema feeding this, and this function is also
     // the door a direct caller uses: `Number("")` is 0, so `"channel-a:"` decoded to
     // sequence 0 and the read answered it with the FIRST PAGE.
-    for (const cursor of ["channel-a:", "channel-a:0x2", "channel-a: 3 ", "channel-a:1e2", "7"]) {
-      expect(Option.isNone(decodeChannelCursor("channel-a", cursor))).toBe(true);
+    //
+    // THE FIXTURES CARRY A DIRECTION ON PURPOSE. Two-segment fixtures would be
+    // refused by the direction boundary above before ever reaching the digit
+    // check, and this test would go on passing while measuring nothing — which
+    // is precisely what a QA lane measured happening to the comms cursor tests
+    // when this field was added: three mutants the base suite killed survived
+    // at head because every fixture short-circuited. A test that passes for the
+    // wrong reason is the thing this whole file is about.
+    for (const cursor of [
+      "channel-a:forward:",
+      "channel-a:forward:0x2",
+      "channel-a:forward: 3 ",
+      "channel-a:forward:1e2",
+      "channel-a:forward:-1",
+      "7",
+    ]) {
+      expect(Option.isNone(decodeChannelCursor("channel-a", "forward", cursor))).toBe(true);
     }
   });
 
   it("accepts sequence zero when it is written as a digit", () => {
     // Distinct from the case above: the refusal is for text that is not a number,
     // not for the number zero, which is a legitimate sequence.
-    expect(Option.getOrNull(decodeChannelCursor("channel-a", "channel-a:0"))).toBe(0);
+    expect(
+      Option.getOrNull(decodeChannelCursor("channel-a", "forward", "channel-a:forward:0")),
+    ).toBe(0);
   });
 });
