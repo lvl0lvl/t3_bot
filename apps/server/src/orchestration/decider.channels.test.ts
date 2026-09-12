@@ -284,7 +284,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // the socket cannot tell from the operator. That is `t3_bot-46h`, and it
       // is the same collision the mention-wake reactor keeps its own kind check
       // for.
-      const event = yield* decideOrchestrationCommand({
+      const decided = yield* decideOrchestrationCommand({
         command: {
           type: "channel.member.remove",
           commandId: CommandId.make("cmd-remove-ref"),
@@ -298,8 +298,9 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
         issuer: ADMIN,
       });
 
-      expect(event.type).toBe("channel.member-removed");
-      if (event.type === "channel.member-removed") {
+      const event = Array.isArray(decided) ? decided[0] : decided;
+      expect(event?.type).toBe("channel.member-removed");
+      if (event?.type === "channel.member-removed") {
         // BOTH FIELDS. Asserting the id alone passes against an event that
         // hardcodes the wrong kind, which is the whole distinction the socket
         // gate turns on.
