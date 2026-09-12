@@ -24,7 +24,9 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Tracer from "effect/Tracer";
-import { describe, expect, it } from "vite-plus/test";
+import { HttpServer } from "effect/unstable/http";
+import { assert, it } from "@effect/vitest";
+import { describe } from "vite-plus/test";
 
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
@@ -126,6 +128,13 @@ const doubles = Layer.mergeAll(
     statusDetails: () => Effect.succeed({ isRepo: false }),
     pullCurrentBranch: () => Effect.die("the harness has nothing to pull"),
   } as never),
+  ServerSettings.layerTest(),
+  // Never called: `startupPresentation: "browser"` takes the branch that does
+  // not build headless access info. It is here because the requirement is on
+  // the TYPE of the startup effect, not on the branch taken — the layer has to
+  // satisfy every path the generator could run, and the one that wants an HTTP
+  // server is the one this config does not take.
+  Layer.succeed(HttpServer.HttpServer, {} as never),
 );
 
 /**
@@ -223,16 +232,18 @@ const boot = (input: { readonly noSeedHierarchy: boolean }) =>
       const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       return yield* projections.getCommandReadModel();
     }).pipe(
-      Effect.provide(startupLayer({ databasePath, baseDir, noSeedHierarchy: input.noSeedHierarchy })),
+      Effect.provide(
+        startupLayer({ databasePath, baseDir, noSeedHierarchy: input.noSeedHierarchy }),
+      ),
       Effect.withTracer(tracer),
       Effect.scoped,
     );
 
     return { readModel, spans };
-  });
+  }).pipe(Effect.provide(NodeServices.layer));
 
 describe("the startup generator", () => {
-  it.scoped("seeds the hierarchy and names every phase it ran", () =>
+  it.effect("seeds the hierarchy and names every phase it ran", () =>
     Effect.gen(function* () {
       const { readModel, spans } = yield* boot({ noSeedHierarchy: false });
 
@@ -240,45 +251,51 @@ describe("the startup generator", () => {
       // any phase from the generator reds it by name, and so does reordering
       // one past the command-readiness boundary — which is a real change, since
       // a phase after readiness no longer runs before the first client command.
-      expect(spans.filter((name) => name.startsWith("server.startup."))).toEqual([
-        "server.startup.keybindings.start",
-        "server.startup.settings.start",
-        "server.startup.reactors.start",
-        "server.startup.provider-sessions.reconcile",
-        "server.startup.projects.auto-pull",
-        "server.startup.hierarchy.seed",
-        "server.startup.http.wait",
-        "server.startup.auxiliary-roots.parked",
-        "server.startup.welcome.publish",
-      ]);
+      assert.deepStrictEqual(
+        spans.filter((name) => name.startsWith("server.startup.")),
+        [
+          "server.startup.keybindings.start",
+          "server.startup.settings.start",
+          "server.startup.reactors.start",
+          "server.startup.provider-sessions.reconcile",
+          "server.startup.projects.auto-pull",
+          "server.startup.hierarchy.seed",
+          "server.startup.http.wait",
+          "server.startup.auxiliary-roots.parked",
+          "server.startup.welcome.publish",
+        ],
+      );
 
       // And the hierarchy is actually there, read through the projections
       // rather than from the dispatch: the seed's own tests assert the
       // commands, and this one asserts the state a client would see.
-      expect(readModel.projects.filter((project) => project.deletedAt === null)).toHaveLength(1);
-      expect(readModel.threads.map((thread) => thread.id).sort()).toEqual([
+      assert.lengthOf(
+        readModel.projects.filter((project) => project.deletedAt === null),
+        1,
+      );
+      assert.deepStrictEqual(readModel.threads.map((thread) => thread.id).sort(), [
         "thread-boss1",
         "thread-boss3",
         "thread-pm",
       ]);
-      expect(readModel.channels.map((channel) => channel.name).sort()).toEqual([
+      assert.deepStrictEqual(readModel.channels.map((channel) => channel.name).sort(), [
         "project",
         "seniors",
       ]);
     }),
   );
 
-  it.scoped("runs the phase and seeds nothing when the server opted out", () =>
+  it.effect("runs the phase and seeds nothing when the server opted out", () =>
     Effect.gen(function* () {
       const { readModel, spans } = yield* boot({ noSeedHierarchy: true });
 
       // The PHASE still runs — the check lives inside the effect, not at the
       // call site, so that a test can pin one copy of it. What changes is what
       // it did.
-      expect(spans).toContain("server.startup.hierarchy.seed");
-      expect(readModel.projects).toHaveLength(0);
-      expect(readModel.threads).toHaveLength(0);
-      expect(readModel.channels).toHaveLength(0);
+      assert.include(spans, "server.startup.hierarchy.seed");
+      assert.lengthOf(readModel.projects, 0);
+      assert.lengthOf(readModel.threads, 0);
+      assert.lengthOf(readModel.channels, 0);
     }),
   );
 });
