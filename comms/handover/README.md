@@ -28,7 +28,16 @@ It needs the decider branch present: the three imports from
 `orchestration/commandInvariants.ts` are the contract, and it is written so that
 if those move, it fails rather than skips.
 
-**The two renames are APPLIED — the file is ready to drop in unmodified.**
+**LANDED 2026-09-12 in PR #10 (t3_bot-iin), ADAPTED rather than unmodified.** The note below was
+written before #6 canonicalised handles in the decider, and by the time this landed its fixtures
+named a membership the aggregate refuses (`Walt` and `walt` in one channel) and asserted a
+case-shifted mention was unresolvable. Both were correct against the aggregate it was built on.
+The landed version derives its membership from the decider's own canonicalisation, so a fixture
+cannot assert a state the aggregate would refuse. It also records what it can no longer see: with
+canonical membership, emitting the lookup key and emitting the stored handle are the same bytes,
+so the key/value rule is pinned in `handlers.test.ts` instead.
+
+**The two renames are APPLIED — the file was ready to drop in but not to run unchanged.**
 Both were the only ones needed. The toolkit's is aliased as
 `toolkitCanonicalChannelName` so the decider's keeps the bare name it has
 everywhere else.
@@ -88,7 +97,7 @@ reference assertion says THAT and the rows say WHICH INPUTS moved, by code point
 without rediscovering the set. Every row is an input where the two really
 disagreed on 2026-09-12.
 
-**When to land it.** With `t3_bot-iin`, in the same change that imports
+**LANDED 2026-09-12 in PR #10, unmodified.** With `t3_bot-iin`, in the same change that imports
 `@t3tools/shared/channelIdentity` and deletes the toolkit's copies — the change
 whose whole purpose this test guards. `t3_bot-0uq` now depends on `iin` in the
 bead graph, so nothing can make the seam reachable before the copy is gone.
