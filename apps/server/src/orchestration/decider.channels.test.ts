@@ -1,0 +1,190 @@
+import {
+  ChannelId,
+  ChannelMemberHandle,
+  ChannelPostId,
+  CommandId,
+  type OrchestrationReadModel,
+} from "@t3tools/contracts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+
+import { decideOrchestrationCommand } from "./decider.ts";
+
+const NOW = "2026-01-01T00:00:00.000Z";
+const CHANNEL = ChannelId.make("channel-1");
+const BOSS1 = ChannelMemberHandle.make("boss1");
+const PM = ChannelMemberHandle.make("pm");
+
+/** A #seniors-shaped channel: one thread member and one human. */
+function makeReadModel(
+  members: ReadonlyArray<{ handle: string; memberKind: "thread" | "human"; memberId: string }> = [
+    { handle: "boss1", memberKind: "thread", memberId: "thread-boss1" },
+    { handle: "pm", memberKind: "thread", memberId: "thread-pm" },
+  ],
+): OrchestrationReadModel {
+  return {
+    snapshotSequence: 0,
+    projects: [],
+    threads: [],
+    channels: [
+      {
+        id: CHANNEL,
+        name: "seniors",
+        members: members.map((member) => ({
+          handle: ChannelMemberHandle.make(member.handle),
+          memberKind: member.memberKind,
+          memberId: member.memberId,
+        })),
+        archivedAt: null,
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    ],
+    updatedAt: NOW,
+  };
+}
+
+function postCommand(overrides: {
+  readonly authorMemberId?: string;
+  readonly mentions?: ReadonlyArray<string>;
+}) {
+  return {
+    type: "channel.post.create",
+    commandId: CommandId.make("cmd-post-1"),
+    channelId: CHANNEL,
+    postId: ChannelPostId.make("post-1"),
+    authorRef: {
+      memberKind: "thread" as const,
+      memberId: overrides.authorMemberId ?? "thread-pm",
+    },
+    body: "what is 2+2",
+    mentions: (overrides.mentions ?? ["boss1"]).map((handle) => ChannelMemberHandle.make(handle)),
+    parentPostId: null,
+    createdAt: NOW,
+  } as const;
+}
+
+it.layer(NodeServices.layer)("channel decider", (it) => {
+  it.effect("resolves authorHandle from membership onto the event", () =>
+    Effect.gen(function* () {
+      const decided = yield* decideOrchestrationCommand({
+        command: postCommand({}),
+        readModel: makeReadModel(),
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events[0]?.type).toBe("channel.post-created");
+      if (events[0]?.type === "channel.post-created") {
+        // The reactor reads one event and must know who wrote it without a join.
+        expect(events[0].payload.authorHandle).toBe(PM);
+        expect(events[0].payload.mentions).toEqual([BOSS1]);
+      }
+    }),
+  );
+
+  it.effect("rejects a post whose author is not a member", () =>
+    Effect.gen(function* () {
+      const error = yield* decideOrchestrationCommand({
+        command: postCommand({ authorMemberId: "thread-stranger" }),
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+    }),
+  );
+
+  it.effect("rejects the whole post when any mention does not resolve", () =>
+    Effect.gen(function* () {
+      // One good handle and one bad one: the post must not land with the good
+      // half applied, because a dropped mention wakes nobody while looking sent.
+      const error = yield* decideOrchestrationCommand({
+        command: postCommand({ mentions: ["boss1", "nobody"] }),
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+    }),
+  );
+
+  it.effect("rejects a post to a channel that does not exist", () =>
+    Effect.gen(function* () {
+      const error = yield* decideOrchestrationCommand({
+        command: postCommand({}),
+        readModel: { ...makeReadModel(), channels: [] },
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+    }),
+  );
+
+  it.effect("rejects creating a channel whose handles collide", () =>
+    Effect.gen(function* () {
+      // Handle is the mention key, so a duplicate makes "@boss1" ambiguous.
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-1"),
+          channelId: ChannelId.make("channel-2"),
+          name: "project",
+          members: [
+            { handle: BOSS1, memberKind: "thread", memberId: "thread-a" },
+            { handle: BOSS1, memberKind: "thread", memberId: "thread-b" },
+          ],
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+    }),
+  );
+
+  it.effect("rejects adding a member whose handle is already taken", () =>
+    Effect.gen(function* () {
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add-1"),
+          channelId: CHANNEL,
+          member: { handle: BOSS1, memberKind: "thread", memberId: "thread-other" },
+        },
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+    }),
+  );
+
+  it.effect("rejects removing a handle that is not a member", () =>
+    Effect.gen(function* () {
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.remove",
+          commandId: CommandId.make("cmd-remove-1"),
+          channelId: CHANNEL,
+          handle: ChannelMemberHandle.make("nobody"),
+        },
+        readModel: makeReadModel(),
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+    }),
+  );
+
+  it.effect("creates a channel and stamps createdAt and updatedAt together", () =>
+    Effect.gen(function* () {
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-2"),
+          channelId: ChannelId.make("channel-3"),
+          name: "project",
+          members: [{ handle: PM, memberKind: "thread", memberId: "thread-pm" }],
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events[0]?.type).toBe("channel.created");
+      if (events[0]?.type === "channel.created") {
+        expect(events[0].payload.createdAt).toBe(NOW);
+        expect(events[0].payload.updatedAt).toBe(NOW);
+        expect(events[0].aggregateKind).toBe("channel");
+      }
+    }),
+  );
+});
