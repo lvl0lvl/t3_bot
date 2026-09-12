@@ -1713,7 +1713,11 @@ export const ChannelPostCreatedPayload = Schema.Struct({
   authorRef: ChannelAuthorRef,
   authorHandle: ChannelMemberHandle,
   body: TrimmedNonEmptyString,
-  mentions: Schema.Array(ChannelMemberHandle),
+  // Capped here as well as on the command. The reactor reads the EVENT, so a
+  // cap only on the command bounds the representation nothing downstream uses.
+  // Tightening a persisted-event schema is only safe because no channel event
+  // exists yet; after the first one this becomes a migration.
+  mentions: ChannelMentions,
   parentPostId: Schema.NullOr(ChannelPostId),
   createdAt: IsoDateTime,
 });
