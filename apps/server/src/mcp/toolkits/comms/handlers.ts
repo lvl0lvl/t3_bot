@@ -86,11 +86,20 @@ const canonicalHandle = (handle: string): string => stripLeadingSigils(handle, /
  * That is the same defect as folding case, one axis over, and emitting the
  * stored handle closes both at once — it is correct for whatever the aggregate
  * holds rather than correct only while the toolkit and the aggregate agree.
+ *
+ * AN EXACT MATCH WINS. Members can share a canonical key — "boss1" and
+ * "@boss1" both key on "boss1" — and the forgiving map keeps whichever came
+ * last, so an agent naming one member byte-for-byte could wake the other and
+ * be told it succeeded. Trying the raw handle first removes that: the only
+ * cases left to insertion order are the ones where the agent's spelling
+ * genuinely matches neither member exactly, where there is nothing to choose
+ * between them.
  */
 export function resolveMentions(
   requested: ReadonlyArray<string>,
   members: ReadonlyArray<ChannelGateway.ChannelMember>,
 ): { readonly handles: ReadonlyArray<string> } | { readonly unknown: ReadonlyArray<string> } {
+  const byExactHandle = new Map(members.map((member) => [member.handle, member] as const));
   const byHandle = new Map(
     members.map((member) => [canonicalHandle(member.handle), member] as const),
   );
@@ -100,13 +109,21 @@ export function resolveMentions(
   const seenUnknown = new Set<string>();
   for (const entry of requested) {
     const handle = canonicalHandle(entry);
-    if (handle.length === 0) continue;
-    const member = byHandle.get(handle);
+    const member = byExactHandle.get(entry.trim()) ?? byHandle.get(handle);
+    // Keyed on the member rather than on the spelling: two members CAN be named
+    // in one post now that an exact match wins, and keying on the canonical
+    // form would silently drop the second of them.
     if (member !== undefined) {
-      if (!seenHandles.has(handle)) {
-        seenHandles.add(handle);
+      if (!seenHandles.has(member.handle)) {
+        seenHandles.add(member.handle);
         handles.push(member.handle);
       }
+    } else if (handle.length === 0) {
+      // Noise an agent's formatting produced — "@" on its own, a stray space.
+      // Deliberately ignored rather than failing the post, and reachable only
+      // when no member is spelled that way, since an exact match is tried
+      // first and wins.
+      continue;
     } else if (!seenUnknown.has(handle)) {
       seenUnknown.add(handle);
       unknown.push(handle);

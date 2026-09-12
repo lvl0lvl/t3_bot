@@ -677,16 +677,34 @@ describe("comms toolkit helpers", () => {
     ).toEqual({ handles: ["@boss1"] });
   });
 
-  it("cannot distinguish two members whose handles share a lookup key", () => {
-    // Recorded rather than fixed: "boss1" and "@boss1" collapse to one key, so
-    // one of them is unreachable through a mention and which one is decided by
-    // Map insertion order. The toolkit cannot invent a distinction the key does
-    // not carry — the aggregate has to refuse the duplicate, which is what the
-    // canonical uniqueness check on t3_bot-iin does. Until then this is the
-    // honest behaviour, and asserting it means the day it changes, this fails.
+  it("gives an exactly-spelled handle to the member who owns it", () => {
+    // "boss1" and "@boss1" share a canonical key, and the forgiving map keeps
+    // whichever came last. Without exact-match precedence an agent naming the
+    // FIRST member byte-for-byte woke the second one and was told it worked —
+    // a different memberId, on a call returning success.
+    const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
+      { handle: "boss1", memberKind: "thread", memberId: "thread-a" },
+      { handle: "@boss1", memberKind: "human", memberId: "human-b" },
+    ];
+    expect(resolveMentions(["boss1"], members)).toEqual({ handles: ["boss1"] });
+    expect(resolveMentions(["@boss1"], members)).toEqual({ handles: ["@boss1"] });
+    // Both in one post: keying the dedupe on the canonical form would drop the
+    // second, which is the silent half of the same bug.
+    expect(resolveMentions(["boss1", "@boss1"], members)).toEqual({
+      handles: ["boss1", "@boss1"],
+    });
+  });
+
+  it("falls back to insertion order only when no spelling matches exactly", () => {
+    // The case where the key really does carry no distinction: "@@boss1"
+    // canonicalizes onto the shared key and is byte-identical to neither
+    // member, so there is nothing to choose between them and last-writer-wins
+    // is as good an answer as any. Asserted so that if it ever stops being
+    // arbitrary, someone has to say why. (Case is NOT a route here — handles
+    // are not folded, so "BOSS1" reaches nobody and reports unknown.)
     expect(
       resolveMentions(
-        ["boss1"],
+        ["@@boss1"],
         [
           { handle: "boss1", memberKind: "thread", memberId: "thread-a" },
           { handle: "@boss1", memberKind: "human", memberId: "human-b" },
