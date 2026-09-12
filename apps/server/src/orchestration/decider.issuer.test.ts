@@ -261,14 +261,24 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       // the compiler cannot force a call site to pass it — this is what stops a
       // forgotten issuer from meaning "unauthorized but allowed".
       //
-      // The REFUSAL has to be the typed invariant error, not merely something
-      // going wrong. Forcing this guard's presence check to take the
-      // issuer-present branch makes it succeed with `undefined`, the next guard
-      // dereferences that, and all seven commands come back as a DEFECT — which
-      // an `exit._tag === "Failure"` check reads as a refusal, because `Failure`
-      // covers a Die as well as a Fail. That is the input this test now
-      // distinguishes: a crash is not a refusal, and downstream it is the
-      // difference between a rejection on the wire and an unhandled 500.
+      // THE REFUSAL HAS TO BE THE TYPED INVARIANT ERROR, not merely something going
+      // wrong. Force this guard's presence check to take the issuer-present branch
+      // and it succeeds with `undefined`, the next guard dereferences that, and all
+      // seven commands come back as a DEFECT — which an `exit._tag === "Failure"`
+      // check counts as a refusal, because `Failure` is true of a Die as well as a
+      // Fail. That is what this test could not see.
+      //
+      // WHAT KILLS THAT MUTANT IS `Effect.flip`, NOT THE ASSERTIONS BELOW, and the
+      // distinction is worth keeping straight because it decides what may be
+      // changed here. A defect propagates out of the flip, so the test dies before
+      // either `expect` runs — measured: delete both and the mutant still dies.
+      // Going back to `Effect.exit` while keeping the assertions restores the hole
+      // in full.
+      //
+      // Downstream a typed failure is CATCHABLE BY TAG and a defect is not:
+      // `git/linkCreatedPullRequest.ts` catches this error by name. It is not the
+      // difference between a refusal and a 500 on the HTTP door — `Effect.catch`
+      // there maps the typed error to an internal error too, which is `t3_bot-nqf`.
       const refused: Array<string> = [];
       for (const type of channelCommandTypes()) {
         const command = channelProbe(type);
@@ -276,6 +286,13 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
         if (command === undefined) continue;
         // `Effect.flip` yields the typed error and lets a defect through, so a
         // dereference crash fails this test instead of being counted here.
+        //
+        // THE MESSAGE, because the tag alone is not enough for one of the seven.
+        // Six call this guard first in their branch, so nothing else can refuse
+        // them; `channel.post.create` has `requireChannel` ahead of it, so against
+        // an absent channel a DIFFERENT invariant refuses first and satisfies the
+        // tag while the issuer check is gone. Measured on that input: with the
+        // message assertion this test reds, with only the tag it passes.
         const error = yield* decideOrchestrationCommand({
           command: command as never,
           readModel: readModel(),
@@ -288,6 +305,12 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
         }
         refused.push(type);
       }
+      // THE ENUMERATION, not the refusal — which is a demotion worth recording.
+      // The push above is unconditional now, so every path that could skip it
+      // throws first and reaching this line implies it passes. Before this test
+      // asserted the typed error it was the load-bearing assertion; it is not any
+      // more, and a reader trusting it to catch a command that does not refuse
+      // would be wrong. What it still does is prove the loop ran over all seven.
       expect(refused).toEqual(channelCommandTypes());
     }),
   );
