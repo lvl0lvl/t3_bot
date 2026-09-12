@@ -8,7 +8,7 @@ import type { ChannelId, EnvironmentId } from "@t3tools/contracts";
 import { ArchiveIcon, HashIcon, SendIcon } from "lucide-react";
 import { useState } from "react";
 
-import { useChannel, useEnvironmentSupportsChannels } from "../state/entities";
+import { useChannel, useChannelSupport } from "../state/entities";
 import {
   canSendChannelPost,
   resolveChannelComposerState,
@@ -44,9 +44,18 @@ export function ChannelView({
   const channel = useChannel({ environmentId, channelId });
   const state = resolveChannelViewState({
     channelExists: channel !== null,
-    serverSupportsChannels: useEnvironmentSupportsChannels(environmentId),
+    support: useChannelSupport(environmentId),
   });
 
+  // NOTHING, not a spinner, and not a guess about the server. This is the
+  // thread route's own behaviour while its shell is in flight
+  // (`_chat.$environmentId.$threadId.tsx` renders null), and a spinner would be
+  // the lying spinner this repo names as a defect — nothing here is slow, the
+  // snapshot simply has not landed. Saying "this server has no channels" for
+  // these few frames is what this state exists to stop.
+  if (state === "loading") {
+    return null;
+  }
   if (channel === null) {
     return <ChannelUnavailable state={state} />;
   }

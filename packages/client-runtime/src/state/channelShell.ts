@@ -9,6 +9,16 @@ import { Atom } from "effect/unstable/reactivity";
 import type { EnvironmentCatalogState } from "./connections.ts";
 import { arrayElementsEqual } from "./entities.ts";
 
+/**
+ * What an environment has said about channels.
+ *
+ * `unknown` means no snapshot has arrived, which is NOT the same as a server
+ * that has no channels: the first resolves on its own in milliseconds and the
+ * second never does. A boolean cannot hold both, and when this was a boolean the
+ * UI blamed the server's version for a snapshot still in flight.
+ */
+export type ChannelSupport = "unknown" | "unsupported" | "supported";
+
 /** One channel in one environment. Neither id identifies a channel alone. */
 export interface ScopedChannelRef {
   readonly environmentId: EnvironmentId;
@@ -91,16 +101,25 @@ export function createEnvironmentChannelShellAtoms(input: {
   );
 
   /**
-   * Whether this environment has told us about channels at all.
+   * What this environment has told us about channels — THREE answers, not two.
    *
-   * Separate from the list because the list cannot carry the distinction: an
-   * environment with no snapshot yet, one whose server has no channels, and one
-   * reporting zero memberships all produce `[]`.
+   * `EMPTY_CHANNELS` above names three states that all flatten to `[]`, and an
+   * earlier version of this atom was a boolean, so it could express two of them.
+   * The one it could not was the one that matters most: `snapshotAtom` is `null`
+   * until a snapshot arrives, so "not asked yet" read as "the server has none",
+   * and the route told the operator to go update a server that was working. On
+   * every reload while sitting on a channel URL.
+   *
+   * `unknown` is therefore a real answer rather than a placeholder, and the
+   * caller must decide what to do with it. Collapsing it into either of the
+   * other two is the defect this shape exists to prevent.
    */
-  const environmentSupportsChannelsAtom = Atom.family((environmentId: EnvironmentId) =>
-    Atom.make(
-      (get): boolean => get(input.snapshotAtom(environmentId))?.channels !== undefined,
-    ).pipe(Atom.withLabel("environment-supports-channels")),
+  const environmentChannelSupportAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get): ChannelSupport => {
+      const snapshot = get(input.snapshotAtom(environmentId));
+      if (snapshot === null) return "unknown";
+      return snapshot.channels === undefined ? "unsupported" : "supported";
+    }).pipe(Atom.withLabel("environment-channel-support")),
   );
 
   let previousChannels: ReadonlyArray<EnvironmentChannelShell> = [];
@@ -150,7 +169,7 @@ export function createEnvironmentChannelShellAtoms(input: {
 
   return {
     environmentChannelsAtom,
-    environmentSupportsChannelsAtom,
+    environmentChannelSupportAtom,
     channelsAtom,
     channelAtom: (ref: ScopedChannelRef) => channelAtomFamily(channelKey(ref)),
   };

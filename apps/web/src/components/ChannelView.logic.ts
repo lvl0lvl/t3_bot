@@ -1,7 +1,7 @@
-import type { EnvironmentChannelShell } from "@t3tools/client-runtime/state/shell";
+import type { ChannelSupport, EnvironmentChannelShell } from "@t3tools/client-runtime/state/shell";
 
 /**
- * What the channel route renders, as three named outcomes.
+ * What the channel route renders, as four named outcomes.
  *
  * "unavailable" and "unsupported" are the pair worth naming. A channel the
  * client does not hold and a server that has no channels both produce no
@@ -10,20 +10,33 @@ import type { EnvironmentChannelShell } from "@t3tools/client-runtime/state/shel
  * server that has none wastes their time and hides the real problem, which is
  * the server's version.
  *
+ * "loading" EXISTS BECAUSE ITS ABSENCE WAS A LIE. This was three outcomes over
+ * a boolean, so a snapshot still in flight fell into "unsupported" and the route
+ * told the operator to update a server that was working — on every reload while
+ * sitting on a channel URL. A state the code cannot express is a state the code
+ * gets wrong.
+ *
  * The client cannot separate "no such channel" from "you are not a member", and
  * does not try: the server sends only the channels the member is in, so the two
  * are one fact on this side of the wire.
  */
-export type ChannelViewState = "ready" | "unavailable" | "unsupported";
+export type ChannelViewState = "ready" | "loading" | "unavailable" | "unsupported";
 
 export function resolveChannelViewState(input: {
   readonly channelExists: boolean;
-  readonly serverSupportsChannels: boolean;
+  readonly support: ChannelSupport;
 }): ChannelViewState {
+  // HOLDING THE CHANNEL IS THE STRONGEST FACT and is checked first. A live
+  // `channel-upserted` can arrive against a snapshot that carried no channels
+  // field, so a view that checked support first would blank a channel it could
+  // render.
   if (input.channelExists) {
     return "ready";
   }
-  return input.serverSupportsChannels ? "unavailable" : "unsupported";
+  if (input.support === "unknown") {
+    return "loading";
+  }
+  return input.support === "supported" ? "unavailable" : "unsupported";
 }
 
 /**

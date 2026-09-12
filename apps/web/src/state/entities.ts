@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
+  ChannelSupport,
   EnvironmentChannelShell,
   EnvironmentProject,
   EnvironmentThread,
@@ -47,7 +48,11 @@ const EMPTY_THREAD_STATUS_ATOM = Atom.make<EnvironmentThreadStatus>("empty").pip
 const EMPTY_CHANNEL_ATOM = Atom.make<EnvironmentChannelShell | null>(null).pipe(
   Atom.withLabel("web-channel-shell:empty"),
 );
-const NO_CHANNEL_SUPPORT_ATOM = Atom.make(false).pipe(Atom.withLabel("web-channel-support:empty"));
+// A null environment is not a server without channels — it is no server yet,
+// which is exactly the distinction the boolean form got wrong.
+const UNKNOWN_CHANNEL_SUPPORT_ATOM = Atom.make<ChannelSupport>("unknown").pipe(
+  Atom.withLabel("web-channel-support:unknown"),
+);
 
 const activeEnvironmentIdAtom = Atom.make<EnvironmentId | null>(null).pipe(
   Atom.keepAlive,
@@ -103,17 +108,21 @@ export function useChannel(
 }
 
 /**
- * Whether this environment's server speaks channels at all.
+ * What this environment has said about channels: unknown, unsupported, or
+ * supported.
  *
  * Distinct from "the list is empty" on purpose. An older server sends no
  * channels field, and telling an operator "no channels yet" about a server that
  * cannot have them is a lie the list alone cannot avoid.
+ *
+ * Three values rather than a boolean, because a snapshot that has not arrived is
+ * not an old server — and while this was a boolean the route said it was.
  */
-export function useEnvironmentSupportsChannels(environmentId: EnvironmentId | null): boolean {
+export function useChannelSupport(environmentId: EnvironmentId | null): ChannelSupport {
   return useAtomValue(
     environmentId === null
-      ? NO_CHANNEL_SUPPORT_ATOM
-      : environmentChannelShells.environmentSupportsChannelsAtom(environmentId),
+      ? UNKNOWN_CHANNEL_SUPPORT_ATOM
+      : environmentChannelShells.environmentChannelSupportAtom(environmentId),
   );
 }
 

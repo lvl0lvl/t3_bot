@@ -8,32 +8,35 @@ import {
 
 describe("resolveChannelViewState", () => {
   it("renders the channel when the client holds it", () => {
-    expect(resolveChannelViewState({ channelExists: true, serverSupportsChannels: true })).toBe(
-      "ready",
-    );
+    expect(resolveChannelViewState({ channelExists: true, support: "supported" })).toBe("ready");
   });
 
-  it("tells a missing channel apart from a server that has none", () => {
-    // THE PAIR IS THE TEST. Both inputs produce no channel, and asserting only
-    // one of them would pass for a view that showed one message for both — which
-    // is the version that tells an operator to ask for an invite to a server
-    // that cannot have channels at all.
-    expect(resolveChannelViewState({ channelExists: false, serverSupportsChannels: true })).toBe(
+  it("says nothing about the server until the snapshot has arrived", () => {
+    // THE DEFECT THIS STATE EXISTS FOR. With a boolean, "not asked yet" and "the
+    // server has none" were one value, so every reload on a channel URL rendered
+    // "This server has no channels. Update the server on that machine to use
+    // them." — said to an operator about a server that was working fine.
+    //
+    // All THREE absences in one test, because "loading" alone would pass for an
+    // implementation that returned it always, and the pair alone is what the
+    // boolean version already satisfied.
+    expect(resolveChannelViewState({ channelExists: false, support: "unknown" })).toBe("loading");
+    expect(resolveChannelViewState({ channelExists: false, support: "supported" })).toBe(
       "unavailable",
     );
-    expect(resolveChannelViewState({ channelExists: false, serverSupportsChannels: false })).toBe(
+    expect(resolveChannelViewState({ channelExists: false, support: "unsupported" })).toBe(
       "unsupported",
     );
   });
 
-  it("renders the channel it holds even on a server that reports no support", () => {
-    // Not a contrived combination: the snapshot's `channels` field is what says
-    // "supported", and a live `channel-upserted` can arrive against a snapshot
-    // that had no field. Holding the channel is the stronger fact, and a view
-    // that checked support FIRST would blank a channel it could render.
-    expect(resolveChannelViewState({ channelExists: true, serverSupportsChannels: false })).toBe(
-      "ready",
-    );
+  it("renders the channel it holds even before the snapshot says channels exist", () => {
+    // Not contrived: a live `channel-upserted` can arrive against a snapshot
+    // that carried no channels field, and on a reconnect the support state is
+    // "unknown" while the channel is already held. Holding the channel is the
+    // stronger fact, so it is checked FIRST — a view that checked support first
+    // would blank a channel it could render, or wait for a snapshot forever.
+    expect(resolveChannelViewState({ channelExists: true, support: "unsupported" })).toBe("ready");
+    expect(resolveChannelViewState({ channelExists: true, support: "unknown" })).toBe("ready");
   });
 });
 

@@ -39,12 +39,27 @@ const snapshot = (
   ...(channels === undefined ? {} : { channels }),
 });
 
+/**
+ * `snapshots` maps an environment to its snapshot, or to `PENDING` for one whose
+ * shell has NOT ARRIVED.
+ *
+ * That second case is the whole reason this parameter is not just a Map of
+ * snapshots. Every earlier version of this harness built `AsyncResult.success`
+ * only, so "no snapshot yet" was unreachable from the suite — which is exactly
+ * how a boolean over a three-state fact passed every test here while the route
+ * told operators to update a working server.
+ */
+const PENDING = Symbol("shell has not arrived");
+
 function makeHarness(
-  snapshots: ReadonlyArray<readonly [EnvironmentId, OrchestrationShellSnapshot]>,
+  snapshots: ReadonlyArray<readonly [EnvironmentId, OrchestrationShellSnapshot | typeof PENDING]>,
 ) {
   const byEnvironment = new Map(snapshots);
   const shellStateAtoms = Atom.family((environmentId: EnvironmentId) => {
     const found = byEnvironment.get(environmentId);
+    if (found === PENDING) {
+      return Atom.make(AsyncResult.initial<EnvironmentShellState>());
+    }
     return Atom.make(
       AsyncResult.success<EnvironmentShellState>({
         snapshot: found === undefined ? Option.none() : Option.some(found),
@@ -222,6 +237,30 @@ describe("channel shell atoms", () => {
     expect(fromPoint).toBe(fromList);
   });
 
+  it("reports a shell that has not arrived as unknown, not as unsupported", () => {
+    // THE STATE THE SUITE COULD NOT BUILD. `createEnvironmentSnapshotAtom`
+    // returns null until a snapshot lands, so a boolean
+    // `snapshot?.channels !== undefined` computed false — indistinguishable
+    // from a server that has no channels. The route then rendered "This server
+    // has no channels. Update the server on that machine to use them." on every
+    // reload while sitting on a channel URL.
+    //
+    // All THREE values in one test, because the pair alone cannot show that
+    // three are distinguished: two of them would pass for any two-valued
+    // implementation.
+    const harness = makeHarness([
+      [ENVIRONMENT_ID, PENDING],
+      [OTHER_ENVIRONMENT_ID, snapshot(undefined)],
+    ]);
+
+    expect(
+      harness.registry.get(harness.channels.environmentChannelSupportAtom(ENVIRONMENT_ID)),
+    ).toBe("unknown");
+    expect(
+      harness.registry.get(harness.channels.environmentChannelSupportAtom(OTHER_ENVIRONMENT_ID)),
+    ).toBe("unsupported");
+  });
+
   it("tells an empty channel list apart from a server that has no channels", () => {
     // `[]` means "you are in no channels" and is fixed by joining one. An absent
     // field means the server predates channels, or no snapshot has arrived, and
@@ -234,11 +273,11 @@ describe("channel shell atoms", () => {
     ]);
 
     expect(
-      harness.registry.get(harness.channels.environmentSupportsChannelsAtom(ENVIRONMENT_ID)),
-    ).toBe(true);
+      harness.registry.get(harness.channels.environmentChannelSupportAtom(ENVIRONMENT_ID)),
+    ).toBe("supported");
     expect(
-      harness.registry.get(harness.channels.environmentSupportsChannelsAtom(OTHER_ENVIRONMENT_ID)),
-    ).toBe(false);
+      harness.registry.get(harness.channels.environmentChannelSupportAtom(OTHER_ENVIRONMENT_ID)),
+    ).toBe("unsupported");
     expect(harness.registry.get(harness.channels.channelsAtom)).toEqual([]);
   });
 });
