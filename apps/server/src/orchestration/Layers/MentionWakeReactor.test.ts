@@ -64,6 +64,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { MentionWakeBudgetRepositoryLive } from "../../persistence/Layers/MentionWakeBudget.ts";
 import { MentionWakeBudgetRepository } from "../../persistence/Services/MentionWakeBudget.ts";
+import { ChannelPostWakeRepository } from "../../persistence/Services/ChannelPostWakes.ts";
 import { MentionWakeReactor, MENTION_WAKE_CURSOR } from "../Services/MentionWakeReactor.ts";
 import {
   HELD_BACKLOG_LIMIT,
@@ -309,6 +310,7 @@ const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
   const turns = await runtime.runPromise(Effect.service(ProjectionTurnRepository));
   const sql = await runtime.runPromise(Effect.service(SqlClient.SqlClient));
   const budget = await runtime.runPromise(Effect.service(MentionWakeBudgetRepository));
+  const wakes = await runtime.runPromise(Effect.service(ChannelPostWakeRepository));
   const scope = await runtime.runPromise(Scope.make());
   return {
     engine,
@@ -319,6 +321,7 @@ const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
     turns,
     sql,
     budget,
+    wakes,
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     startReactor: () =>
       runtime.runPromise(Scope.provide(reactor.start(), scope) as Effect.Effect<void>),
@@ -1879,7 +1882,7 @@ describe("MentionWakeReactor", () => {
     }
   }, 30_000);
 
-  it("loses the second post's link once a turn is RUNNING", async () => {
+  it("keeps the second post's link once a turn is RUNNING, where the projection drops it", async () => {
     const { directory, databasePath } = await makeDatabasePath();
     const system = await makeSystem(databasePath);
     try {
@@ -1950,15 +1953,37 @@ describe("MentionWakeReactor", () => {
       const turnRow = rows.find((row) => row.turnId === RUNNING_TURN);
       expect(turnRow?.pendingMessageId).toBe(firstKey);
 
-      // AND THE SECOND POST'S KEY IS ON NO ROW AT ALL. This is the assertion
-      // that separates the two implementations, and it is deliberately not
-      // "post-second has a turnId": it does have one, the live turn's, which is
-      // exactly why a turnId cannot identify it.
+      // AND THE SECOND POST'S KEY IS ON NEITHER PROJECTION ROW. This was the
+      // whole defect, and it is still true — the projection is unchanged, and
+      // it should be: the turn row's `??` is upstream's rule and the staging
+      // row is a staging row. What changed is that the key was CAPTURED on its
+      // way out.
       expect(rows.some((row) => row.pendingMessageId === secondKey)).toBe(false);
       const pending = await system.run(
         system.turns.getPendingTurnStartByThreadId({ threadId: WOKEN }),
       );
       expect(Option.isNone(pending)).toBe(true);
+
+      // THE LINK TABLE HOLDS BOTH POSTS, EACH POINTING AT THE TURN THAT FOLDED
+      // IT. Keyed by the post, which is criterion 2: the two share a turn id by
+      // construction, so the turn id could never have told them apart, and the
+      // post id is the only key under which "this post went unanswered" can be
+      // said about one of them and not the other.
+      //
+      // BOTH, not just the second. The first post's key survives on the turn
+      // row, so a reader COULD find it there — but a reader that has to consult
+      // two places depending on which post it holds is the two-spellings defect
+      // moved into the read path. One table answers for every wake.
+      const links = await system.run(
+        system.wakes.listByPostIds({
+          channelId: CHANNEL_ID,
+          postIds: ["post-first", "post-second"],
+        }),
+      );
+      expect(links.map((link) => [link.postId, link.threadId, link.turnId]).sort()).toEqual([
+        ["post-first", WOKEN, RUNNING_TURN],
+        ["post-second", WOKEN, RUNNING_TURN],
+      ]);
 
       // BOTH POSTS DID WAKE THE THREAD, so what is missing is a link the
       // projection dropped rather than a wake that never happened.

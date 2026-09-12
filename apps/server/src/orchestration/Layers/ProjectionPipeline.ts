@@ -26,6 +26,9 @@ import { OrchestrationEventStore } from "../../persistence/Services/Orchestratio
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionChannelRepositoryLive } from "../../persistence/Layers/ProjectionChannels.ts";
 import { ProjectionChannelRepository } from "../../persistence/Services/ProjectionChannels.ts";
+import { ChannelPostWakeRepositoryLive } from "../../persistence/Layers/ChannelPostWakes.ts";
+import { ChannelPostWakeRepository } from "../../persistence/Services/ChannelPostWakes.ts";
+import { parseWakeKey } from "./MentionWakeReactor.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
@@ -495,6 +498,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const projectionThreadSessionRepository = yield* ProjectionThreadSessionRepository;
     const projectionTurnRepository = yield* ProjectionTurnRepository;
     const projectionPendingApprovalRepository = yield* ProjectionPendingApprovalRepository;
+    const channelPostWakeRepository = yield* ChannelPostWakeRepository;
 
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -1630,6 +1634,36 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             });
           }
 
+          // THE POST-TO-TURN LINK IS CAPTURED HERE, BEFORE THE DELETE BELOW
+          // DESTROYS IT, and this is the only place it can be. The staging row
+          // holds the post-derived key and the session-set carries the turn id;
+          // one line later the staging row is gone, and the turn row took the
+          // key only if it had none — the `??` above — so on a running thread
+          // every post after the first is about to have its key nowhere
+          // (`t3_bot-j6o`, measured in `MentionWakeReactor.test.ts`).
+          //
+          // ONLY A WAKE'S KEY. Every ordinary user turn stages a row too, under
+          // a plain message id; `parseWakeKey` answers `None` for those and
+          // they are not this table's business.
+          //
+          // IN THE SAME TRANSACTION AS THE DELETE, without doing anything: every
+          // projector `apply` runs inside `sql.withTransaction`
+          // (`runProjectorForEvent`), so the link and the delete commit
+          // together or not at all. A crash between them cannot leave the key
+          // destroyed and uncaptured.
+          if (Option.isSome(pendingTurnStart)) {
+            const wake = parseWakeKey(String(pendingTurnStart.value.messageId));
+            if (Option.isSome(wake)) {
+              yield* channelPostWakeRepository.link({
+                channelId: wake.value.channelId,
+                postId: wake.value.postId,
+                threadId: wake.value.threadId,
+                turnId,
+                linkedAt: event.payload.session.updatedAt,
+              });
+            }
+          }
+
           yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
             threadId: event.payload.threadId,
           });
@@ -2267,5 +2301,6 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   Layer.provideMerge(ProjectionThreadSessionRepositoryLive),
   Layer.provideMerge(ProjectionTurnRepositoryLive),
   Layer.provideMerge(ProjectionPendingApprovalRepositoryLive),
+  Layer.provideMerge(ChannelPostWakeRepositoryLive),
   Layer.provideMerge(ProjectionStateRepositoryLive),
 );

@@ -43,7 +43,12 @@ const makeChannelPostWakeRepository = Effect.gen(function* () {
     }),
     Result: ChannelPostWake,
     execute: ({ channelId, postIds }) => sql`
-      SELECT channel_id, post_id, thread_id, turn_id, linked_at
+      SELECT
+        channel_id AS "channelId",
+        post_id AS "postId",
+        thread_id AS "threadId",
+        turn_id AS "turnId",
+        linked_at AS "linkedAt"
         FROM channel_post_wake
        WHERE channel_id = ${channelId}
          AND post_id IN ${sql.in(postIds)}
