@@ -60,10 +60,17 @@ const normalizeHandle = (handle: string): string => handle.trim().replace(/^@+/,
  * way to tell that from a delivered one. It reports every bad handle at once so
  * a retry does not discover them one at a time.
  *
- * Both sides of the comparison are normalized, and the NORMALIZED handle is
- * what is emitted — keying on one form and emitting another lets two members
- * whose handles differ only by a sigil collapse into one entry and resolve a
- * mention to the wrong member.
+ * Matching is forgiving, EMISSION IS NOT. Both sides of the lookup are
+ * normalized so an agent can write "@Boss1", "boss1" or "  @boss1  " and reach
+ * the same member — but what goes out is the member's own stored handle, byte
+ * for byte, because the aggregate resolves a mention against its membership
+ * with an exact comparison. Emitting the normalized key instead makes a member
+ * stored as "@@PM" unmentionable: every spelling an agent would type collapses
+ * to "PM", and "PM" resolves to nobody, so the whole post is rejected.
+ *
+ * That is the same defect as folding case, one axis over, and emitting the
+ * stored handle closes both at once — it is correct for whatever the aggregate
+ * holds rather than correct only while the toolkit and the aggregate agree.
  */
 export function resolveMentions(
   requested: ReadonlyArray<string>,
@@ -79,10 +86,11 @@ export function resolveMentions(
   for (const entry of requested) {
     const handle = normalizeHandle(entry);
     if (handle.length === 0) continue;
-    if (byHandle.has(handle)) {
+    const member = byHandle.get(handle);
+    if (member !== undefined) {
       if (!seenHandles.has(handle)) {
         seenHandles.add(handle);
-        handles.push(handle);
+        handles.push(member.handle);
       }
     } else if (!seenUnknown.has(handle)) {
       seenUnknown.add(handle);
@@ -251,10 +259,12 @@ const make = Effect.gen(function* () {
           .pipe(Effect.catchTags(storeUnavailableAsRead), Effect.catchCause(readDefect));
         return {
           channel: channel.name,
-          // Sigil-free, case intact — the exact bytes a mention must carry,
-          // because the aggregate matches handles byte-for-byte. Folding here
-          // silently breaks every mention the agent writes back (t3_bot-iin).
-          members: channel.members.map((member) => normalizeHandle(member.handle)),
+          // The members' own stored handles, byte for byte. The aggregate
+          // matches a mention against its membership exactly, so any tidying
+          // here — folding case, stripping a sigil — hands the agent a string
+          // guaranteed to resolve to nobody, and the post it is used in is
+          // rejected whole.
+          members: channel.members.map((member) => member.handle),
           posts: page.posts.map((post) => ({
             postId: post.postId,
             author: post.authorHandle,

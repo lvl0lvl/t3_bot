@@ -414,11 +414,11 @@ describe("comms toolkit handlers", () => {
         ],
       });
       const result = yield* harness.call("comms_read_channel", { channel: "seniors" });
-      // Byte-identical to what a mention must carry, because the aggregate
-      // matches handles byte-for-byte. This echo is the last place the handle
-      // regression can be reintroduced silently, since nothing downstream
-      // reads it back.
-      expect(result.members).toEqual(["PM", "Big  \uFF22oss@", "Ren\u00E9e"]);
+      // The stored bytes, unchanged — including the sigils. A mention is
+      // matched against membership exactly, so a handle tidied on the way out
+      // is a handle that resolves to nobody. This echo is the last place that
+      // can be reintroduced silently, since nothing downstream reads it back.
+      expect(result.members).toEqual(["@@PM", "Big  \uFF22oss@", "Ren\u00E9e"]);
     }),
   );
 
@@ -654,15 +654,30 @@ describe("comms toolkit helpers", () => {
     expect(normalizeChannelName("#   ")).toEqual("");
   });
 
-  it("collapses duplicate mentions to one normalized handle", () => {
+  it("collapses duplicate spellings of one member to a single handle", () => {
     expect(resolveMentions(["@boss1", "boss1", "  @boss1  "], MEMBERS)).toEqual({
       handles: ["boss1"],
     });
   });
 
-  it("emits the normalized handle so sigil-differing members cannot collapse", () => {
-    // Keying on the normalized form and emitting the raw one would resolve this
-    // mention to whichever member happened to be last.
+  it("emits the member's stored handle, not the form the agent typed", () => {
+    // The agent types the convenient form; what goes out is what the channel
+    // holds. Emitting the lookup key instead is only harmless while every
+    // stored handle already equals its own key — for a member stored "@boss1"
+    // the key is "boss1", which the aggregate matches against nobody, and the
+    // post is rejected whole.
+    expect(
+      resolveMentions(["boss1"], [{ handle: "@boss1", memberKind: "human", memberId: "human-b" }]),
+    ).toEqual({ handles: ["@boss1"] });
+  });
+
+  it("cannot distinguish two members whose handles share a lookup key", () => {
+    // Recorded rather than fixed: "boss1" and "@boss1" collapse to one key, so
+    // one of them is unreachable through a mention and which one is decided by
+    // Map insertion order. The toolkit cannot invent a distinction the key does
+    // not carry — the aggregate has to refuse the duplicate, which is what the
+    // canonical uniqueness check on t3_bot-iin does. Until then this is the
+    // honest behaviour, and asserting it means the day it changes, this fails.
     expect(
       resolveMentions(
         ["boss1"],
@@ -671,7 +686,7 @@ describe("comms toolkit helpers", () => {
           { handle: "@boss1", memberKind: "human", memberId: "human-b" },
         ],
       ),
-    ).toEqual({ handles: ["boss1"] });
+    ).toEqual({ handles: ["@boss1"] });
   });
 
   it("reports unknown handles once each, in the order they appeared", () => {
