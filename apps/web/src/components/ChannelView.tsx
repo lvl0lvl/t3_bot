@@ -1,4 +1,8 @@
 import { mentionedHandles } from "@t3tools/client-runtime/channel-mentions";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentChannelShell } from "@t3tools/client-runtime/state/shell";
 import type { ChannelId, EnvironmentId } from "@t3tools/contracts";
 import { ArchiveIcon, HashIcon, SendIcon } from "lucide-react";
@@ -18,6 +22,7 @@ import { formatDayAwareTimestamp } from "../timestampFormat";
 import { Button } from "./ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import { Textarea } from "./ui/textarea";
+import { stackedThreadToast, toastManager } from "./ui/toast";
 import { WorkspacePageHeader } from "./WorkspacePageHeader";
 
 /**
@@ -168,12 +173,34 @@ function ChannelComposer({ channel }: { readonly channel: EnvironmentChannelShel
       },
     }).then((result) => {
       setSending(false);
-      // The draft survives a refusal. An unresolvable mention fails the whole
-      // post, and clearing the box on failure would lose what the operator
-      // typed with no way to get it back.
       if (result._tag === "Success") {
         setBody("");
+        return;
       }
+      // AN INTERRUPT IS NOT A FAILURE — the three sibling call sites
+      // (ChatView, GitActionsControl, ChatMarkdown) all skip it, and a
+      // cancelled send that raised "Could not post" would be a lie.
+      if (isAtomCommandInterrupted(result)) {
+        return;
+      }
+      // The draft survives a refusal, and the reason is now VISIBLE. Without
+      // this branch a refused post was indistinguishable from one not yet
+      // sent: the text stayed, Send re-enabled, and pressing Enter again
+      // failed identically forever with only a console line to say why.
+      //
+      // The server's message is what the operator needs, not a generic one.
+      // `requireChannelMentionsResolve` names the handles that resolved to
+      // nobody, and `requireCanonicalChannelHandle` names the forbidden code
+      // point as "U+200B" — both of which tell the operator what to change in
+      // the text they can still see.
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: `Could not post to #${channel.name}`,
+          description: error instanceof Error ? error.message : "An unexpected error occurred.",
+        }),
+      );
     });
   };
 
