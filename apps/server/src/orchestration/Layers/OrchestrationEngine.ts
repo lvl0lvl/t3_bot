@@ -1,9 +1,9 @@
 import type {
+  OrchestrationAggregateId,
+  OrchestrationAggregateKind,
   OrchestrationClientOrigin,
   OrchestrationEvent,
   OrchestrationReadModel,
-  ProjectId,
-  ThreadId,
 } from "@t3tools/contracts";
 import { OrchestrationCommand } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -80,8 +80,8 @@ interface CommandEnvelope {
  * later command on an unsettled Deferred.
  */
 function commandToAggregateRef(command: OrchestrationCommand): {
-  readonly aggregateKind: "project" | "thread";
-  readonly aggregateId: ProjectId | ThreadId;
+  readonly aggregateKind: OrchestrationAggregateKind;
+  readonly aggregateId: OrchestrationAggregateId;
 } | null {
   switch (command.type) {
     case "project.create":
@@ -130,6 +130,17 @@ function commandToAggregateRef(command: OrchestrationCommand): {
       return {
         aggregateKind: "thread",
         aggregateId: command.threadId,
+      };
+    case "channel.create":
+    case "channel.meta.update":
+    case "channel.archive":
+    case "channel.unarchive":
+    case "channel.member.add":
+    case "channel.member.remove":
+    case "channel.post.create":
+      return {
+        aggregateKind: "channel",
+        aggregateId: command.channelId,
       };
     default: {
       command satisfies never;
