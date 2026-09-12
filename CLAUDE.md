@@ -54,6 +54,10 @@ message types: `comms/README.md` there.
   the property (both orderings gave the same error on clean handles; idempotence over rows with no
   hidden sigil; a guard tested only in the permissive direction). Choose the fixture from the property.
 - A test is proven by a named mutant going red, not by being green. Restore mutations from a byte copy.
+- **Mutate each guard in both directions: inert AND wider.** An inert mutant proves what the guard
+  refuses; a wider mutant proves what it must admit. Every guard has an admit side, and the admit side
+  is usually the feature (an author exclusion widened to "threads wake nobody" stayed green over a reactor
+  whose whole purpose is agents mentioning agents).
 - **Ask what the assertion does when the subject is ABSENT.** `findIndex` returns -1 and -1 is less than
   any index; a nonce "not equal to the constant I tried" admits every other constant; a count of zero
   wakes is satisfied when the wake went to the other thread. Assert existence before position, the
