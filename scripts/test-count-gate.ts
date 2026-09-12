@@ -108,6 +108,8 @@ export interface RunnerReport {
     readonly name?: string;
     /** The FILE's status. `"failed"` with no assertions means it never loaded. */
     readonly status?: string;
+    /** The collection error, when the file failed to load. Worth repeating. */
+    readonly message?: string;
     readonly assertionResults?: ReadonlyArray<{
       readonly fullName?: string;
       readonly title?: string;
@@ -228,7 +230,13 @@ export function toSuite(parsed: RunnerReport, cwd: string): Suite {
     if (assertions.length === 0 && file.status === "failed") {
       throw new CannotMeasure(
         `${relative} failed to load in ${cwd}, so its tests were never counted. ` +
-          `Fix the file and re-run: a file that cannot load is not a file with no tests.`,
+          `Fix the file and re-run: a file that cannot load is not a file with no tests.` +
+          // THE RUNNER ALREADY SAYS WHAT BROKE. A bug lane counted three signals
+          // separating "did not load" from "has no tests" — this status, the
+          // top-level `success`, and this message — and the parser read none of
+          // them. Repeating it here is the difference between a refusal the
+          // author can act on and one they have to reproduce.
+          (file.message === undefined || file.message === "" ? "" : `\n  ${file.message}`),
       );
     }
     const names = assertions
