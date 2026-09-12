@@ -109,7 +109,15 @@ export const SweepConfig = Schema.Struct({
 });
 export type SweepConfig = typeof SweepConfig.Type;
 
-const decodeSweepConfig = Schema.decodeUnknownEffect(SweepConfig);
+/**
+ * Decoded straight from the file's text, not via `JSON.parse`.
+ *
+ * `Schema.fromJsonString` is the repo's rule (`preferSchemaOverJson`) and it is
+ * the better shape here anyway: malformed JSON and a well-formed config with a
+ * missing field become one typed failure instead of a thrown SyntaxError beside
+ * a decode error.
+ */
+const decodeSweepConfig = Schema.decodeUnknownEffect(Schema.fromJsonString(SweepConfig));
 
 // ---------------------------------------------------------------------------
 // Applying one mutation — the part that has been wrong before
@@ -458,8 +466,7 @@ export const guardSweepCommand = Command.make(
   ({ config, repo, inPlace }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const raw = yield* fs.readFileString(config);
-      const parsed = yield* decodeSweepConfig(JSON.parse(raw));
+      const parsed = yield* decodeSweepConfig(yield* fs.readFileString(config));
 
       if (inPlace) {
         yield* Console.log(`sweeping ${repo} IN PLACE — no copy was made`);
