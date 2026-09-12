@@ -9459,6 +9459,151 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
+  /**
+   * The post rows a paged read returns, and the paging input it was given.
+   *
+   * `asked` records the member ref so a door that stopped passing it is a red
+   * test rather than a silently wider read, and `paged` records the repository
+   * input so the direction and the over-fetch are visible at the door too.
+   */
+  const postsByMember = (input: {
+    readonly asked: Array<{ readonly memberKind: string; readonly memberId: string }>;
+    readonly paged: Array<{ readonly limit: number; readonly beforeSequence: number | undefined }>;
+  }) => ({
+    ...channelsByMember({ asked: input.asked }),
+    listPostsBackward: (page: {
+      readonly limit: number;
+      readonly beforeSequence: number | undefined;
+    }) => {
+      // Projected, not stored whole: the input also carries `channelId`, which
+      // the request already asserts, and a three-field comparison would fail for
+      // a reason that has nothing to do with paging.
+      input.paged.push({ limit: page.limit, beforeSequence: page.beforeSequence });
+      return Effect.succeed([
+        {
+          postId: ChannelPostId.make("post-1"),
+          channelId: ChannelId.make("channel-project"),
+          sequence: 1,
+          authorHandle: ChannelMemberHandle.make("pm"),
+          body: "what is 2+2",
+          mentions: [],
+          parentPostId: null,
+          createdAt: "2026-01-01T00:00:01.000Z",
+        },
+      ]);
+    },
+  });
+
+  it.effect("the SOCKET door reads a channel's posts as the connection's member", () =>
+    Effect.gen(function* () {
+      const asked: Array<{ readonly memberKind: string; readonly memberId: string }> = [];
+      const paged: Array<{ readonly limit: number; readonly beforeSequence: number | undefined }> =
+        [];
+
+      yield* buildAppUnderTest({
+        layers: { projectionChannels: postsByMember({ asked, paged }) },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const page = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.readChannelPosts]({
+            channelId: ChannelId.make("channel-project"),
+            direction: "backward",
+            limit: 2,
+          }),
+        ),
+      );
+
+      assert.deepStrictEqual(
+        page.posts.map((post) => post.id),
+        ["post-1"],
+      );
+      // THE REF THIS DOOR PASSED, projected to two fields and compared strictly
+      // — a `ChannelMemberRef` is a class with a third own property, so it can
+      // never be `deepStrictEqual` to a two-field literal.
+      assert.equal(asked.length, 1);
+      assert.deepStrictEqual(
+        { memberKind: asked[0]?.memberKind, memberId: asked[0]?.memberId },
+        { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+      );
+      // And it over-fetched by one, which is what makes `nextCursor: null` mean
+      // the end rather than probably the end.
+      assert.deepStrictEqual(paged, [{ limit: 3, beforeSequence: undefined }]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("the HTTP door reads a channel's posts as the operator too", () =>
+    Effect.gen(function* () {
+      // THE SECOND DOOR, and its own test rather than a shared helper called
+      // twice. #20 wired the channel shell into the socket and not into HTTP;
+      // the browser bootstraps over HTTP, so the sidebar stayed empty while
+      // every socket-side test passed. N sites, N tests.
+      const asked: Array<{ readonly memberKind: string; readonly memberId: string }> = [];
+      const paged: Array<{ readonly limit: number; readonly beforeSequence: number | undefined }> =
+        [];
+
+      yield* buildAppUnderTest({
+        layers: { projectionChannels: postsByMember({ asked, paged }) },
+      });
+
+      const response = yield* fetchEffect(
+        yield* getHttpServerUrl(
+          "/api/orchestration/channels/channel-project/posts?direction=backward&limit=2",
+        ),
+        { headers: { cookie: yield* getAuthenticatedSessionCookieHeader() } },
+      );
+      const page = yield* responseJsonEffect<{
+        readonly posts: ReadonlyArray<{ readonly id: string }>;
+        readonly nextCursor: string | null;
+      }>(response);
+
+      assert.equal(response.status, 200);
+      assert.deepStrictEqual(
+        page.posts.map((post) => post.id),
+        ["post-1"],
+      );
+      assert.isNull(page.nextCursor);
+      assert.equal(asked.length, 1);
+      assert.deepStrictEqual(
+        { memberKind: asked[0]?.memberKind, memberId: asked[0]?.memberId },
+        { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+      );
+      assert.deepStrictEqual(paged, [{ limit: 3, beforeSequence: undefined }]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("the HTTP door refuses a channel the operator is not in", () =>
+    Effect.gen(function* () {
+      // `channelsByMember` answers a non-operator with `channel-someone-else`,
+      // so asking for `channel-project` as the operator's door while the
+      // repository holds a different channel exercises the membership refusal
+      // rather than an absent channel.
+      const asked: Array<{ readonly memberKind: string; readonly memberId: string }> = [];
+      const paged: Array<{ readonly limit: number; readonly beforeSequence: number | undefined }> =
+        [];
+
+      yield* buildAppUnderTest({
+        layers: { projectionChannels: postsByMember({ asked, paged }) },
+      });
+
+      const response = yield* fetchEffect(
+        yield* getHttpServerUrl(
+          "/api/orchestration/channels/channel-not-mine/posts?direction=backward&limit=2",
+        ),
+        { headers: { cookie: yield* getAuthenticatedSessionCookieHeader() } },
+      );
+      const body = yield* responseJsonEffect<{ readonly reason?: string }>(response);
+
+      assert.equal(response.status, 404);
+      assert.equal(body.reason, "channel_not_found");
+      // IT NEVER REACHED THE POST READ. A refusal that paged first would have
+      // told the caller the channel exists by how long it took, and would have
+      // spent a query on a channel it was not going to answer.
+      assert.lengthOf(paged, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("the HTTP shell route carries the operator's channels", () =>
     Effect.gen(function* () {
       // THE DOOR THAT WAS BROKEN, and the one the socket test cannot cover. A

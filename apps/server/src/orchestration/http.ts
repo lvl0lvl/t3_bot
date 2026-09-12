@@ -116,18 +116,23 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
             },
             member: refFromOperatorSession(),
           }).pipe(
-            Effect.catchTag("ChannelPostsUnreadable", () =>
-              failEnvironmentNotFound("channel_not_found"),
-            ),
-            // A FOREIGN CURSOR IS A BAD REQUEST, not an empty page. The empty
-            // page is byte for byte "you are caught up", which is what
-            // `t3_bot-e60` was filed for.
-            Effect.catchTag("ChannelCursorRejected", () =>
-              failEnvironmentInvalidRequest("invalid_cursor"),
-            ),
-            Effect.catch((cause) =>
-              failEnvironmentInternal("orchestration_snapshot_failed", cause),
-            ),
+            // ONE TOTAL MAPPING, not a chain ending in a catch-all. A trailing
+            // `Effect.catch` here caught the 404 this handler had just produced
+            // and reported it as a 500, so every membership refusal on this door
+            // was an internal error — the door test is what said so. Listing the
+            // tags makes a new error in the shared handler a type error here
+            // instead of a silent 500.
+            Effect.catchTags({
+              ChannelPostsUnreadable: () => failEnvironmentNotFound("channel_not_found"),
+              // A FOREIGN CURSOR IS A BAD REQUEST, not an empty page. The empty
+              // page is byte for byte "you are caught up", which is what
+              // `t3_bot-e60` was filed for.
+              ChannelCursorRejected: () => failEnvironmentInvalidRequest("invalid_cursor"),
+              PersistenceDecodeError: (cause) =>
+                failEnvironmentInternal("orchestration_snapshot_failed", cause),
+              PersistenceSqlError: (cause) =>
+                failEnvironmentInternal("orchestration_snapshot_failed", cause),
+            }),
           );
         }),
       )
