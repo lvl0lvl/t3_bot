@@ -47,6 +47,15 @@ message types: `comms/README.md` there.
 - Discovered work → `bd create` with a dep on the parent. Don't hold it in your head.
 - `bd sync --flush-only` before every commit that touches `.beads/`.
 
+## Tests
+
+- **Before asking what the assertion says, ask what input distinguishes the two implementations.**
+  Every surviving mutant on 2026-09-11 had a careful assertion over a fixture that could not exercise
+  the property (both orderings gave the same error on clean handles; idempotence over rows with no
+  hidden sigil; a guard tested only in the permissive direction). Choose the fixture from the property.
+- A test is proven by a named mutant going red, not by being green. Restore mutations from a byte copy.
+- Comments state the input that would break the code, not the reason it is safe.
+
 ## Merge gate
 
 **Nothing merges to `main` without `/review-pr` first.** Flow: senior opens PR against
