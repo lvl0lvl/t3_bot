@@ -137,8 +137,9 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // apart. The test above uses handles that canonicalise cleanly, so it
       // passes under either order; this one goes red the moment the guards swap.
       const error = yield* decideOrchestrationCommand({
-        command: postCommand({ authorMemberId: "thread-stranger", mentions: ["@"] }),
+        command: postCommand({ mentions: ["@"] }),
         readModel: makeReadModel(),
+        issuer: STRANGER,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
@@ -459,11 +460,69 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           },
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       });
       const events = Array.isArray(decided) ? decided : [decided];
       expect(events[0]?.type).toBe("channel.member-added");
       if (events[0]?.type === "channel.member-added") {
         expect(events[0].payload.member.handle).toBe(ChannelMemberHandle.make("boss3"));
+      }
+    }),
+  );
+
+  // A member whose handle canonicalises to NOTHING is the source of a whole
+  // family of bugs one layer up: keyed on "", it gets woken by every spelling
+  // that also canonicalises to nothing. The aggregate refuses to create such a
+  // member at all, which is what makes that member impossible rather than
+  // merely handled. Both write paths, because one of them refusing is not the
+  // aggregate refusing.
+  it.effect("refuses a member whose handle has no canonical form on create", () =>
+    Effect.gen(function* () {
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-sigil-handle"),
+          channelId: ChannelId.make("channel-sigil-handle"),
+          name: "juniors",
+          members: [
+            {
+              // Passes the branded TrimmedNonEmptyString, canonicalises to "".
+              handle: ChannelMemberHandle.make("@"),
+              memberKind: "thread",
+              memberId: "thread-nobody",
+            },
+          ],
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+        issuer: ADMIN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("no canonical form");
+      }
+    }),
+  );
+
+  it.effect("refuses a member whose handle has no canonical form on add", () =>
+    Effect.gen(function* () {
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add-sigil-handle"),
+          channelId: CHANNEL,
+          member: {
+            handle: ChannelMemberHandle.make("@@"),
+            memberKind: "thread",
+            memberId: "thread-nobody",
+          },
+        },
+        readModel: makeReadModel(),
+        issuer: ADMIN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("no canonical form");
       }
     }),
   );
@@ -617,6 +676,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           name: "#SENIORS",
         },
         readModel: twoChannels,
+        issuer: ADMIN,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
