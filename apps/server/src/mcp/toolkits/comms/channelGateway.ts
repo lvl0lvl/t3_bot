@@ -178,17 +178,36 @@ export interface ChannelPostRecord {
   readonly createdAt: string;
 }
 
-/** Not exported. Its absence elsewhere is what makes the type unconstructible. */
-declare const memberRefBrand: unique symbol;
+/**
+ * NOT EXPORTED, and a class rather than a symbol brand.
+ *
+ * A `unique symbol` property stops an object LITERAL and not a SPREAD: a spread
+ * copies the brand along with everything else, so
+ * `{ ...someRealRef, memberId: "someone-else" }` typechecks — the exact mistake
+ * the brand exists to stop, expressible by copying a legitimate ref and
+ * changing one field. A PRIVATE field is the version a spread cannot carry,
+ * because spreading an instance yields a plain object without it.
+ */
+class MemberRef {
+  private readonly nominal!: void;
+  readonly memberKind: "thread" | "human";
+  readonly memberId: string;
+  constructor(memberKind: "thread" | "human", memberId: string) {
+    this.memberKind = memberKind;
+    this.memberId = memberId;
+  }
+}
 
 /**
  * WHO IS ASKING. Derived from the caller's own credential, NEVER from a request
  * field.
  *
  * UNCONSTRUCTIBLE OUTSIDE THIS FILE, and that is a type error rather than a
- * convention: the brand below is a `unique symbol` that is not exported, so an
- * object literal with `memberKind` and `memberId` does not satisfy this type
- * anywhere else. An earlier version of this docstring asserted that property
+ * convention: it is a class with a PRIVATE field, not exported, so neither an
+ * object literal nor a SPREAD of a real ref satisfies the type elsewhere. The
+ * spread mattered — a symbol brand admitted
+ * `{ ...someRealRef, memberId: "someone-else" }`, which is the mistake this
+ * exists to stop, written by copying a legitimate ref. An earlier version of this docstring asserted that property
  * over a plain interface which was built inline five times in its own tests —
  * documenting a guard is not having one, and three review lanes said so.
  *
@@ -207,11 +226,7 @@ declare const memberRefBrand: unique symbol;
  * property is not validation — nothing here validates anything. It is that the
  * WRONG thing is conspicuous.
  */
-export interface ChannelMemberRef {
-  readonly memberKind: "thread" | "human";
-  readonly memberId: string;
-  readonly [memberRefBrand]: true;
-}
+export type ChannelMemberRef = MemberRef;
 
 /**
  * The member an MCP tool call acts as: the credential's own thread.
@@ -222,8 +237,7 @@ export interface ChannelMemberRef {
  */
 export const refFromMcpCredential = (
   scope: McpInvocationContext.McpInvocationScope,
-): ChannelMemberRef =>
-  ({ memberKind: "thread", memberId: scope.threadId }) as unknown as ChannelMemberRef;
+): ChannelMemberRef => new MemberRef("thread", scope.threadId);
 
 /**
  * The member a browser request acts as: the operator.
@@ -235,10 +249,7 @@ export const refFromMcpCredential = (
  * this signature changes in one place and every caller inherits it.
  */
 export const refFromOperatorSession = (): ChannelMemberRef =>
-  ({
-    memberKind: "human",
-    memberId: HUMAN_OPERATOR_MEMBER_ID,
-  }) as unknown as ChannelMemberRef;
+  new MemberRef("human", HUMAN_OPERATOR_MEMBER_ID);
 
 export type ReadDirection = "forward" | "backward";
 
