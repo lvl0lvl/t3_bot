@@ -1752,6 +1752,15 @@ describe("MentionWakeReactor", () => {
       // claim: a dispatched messageId that the projector dropped, renamed, or
       // overwrote leaves the post with no turn to find, and every one of those
       // assertions still passes. This reads the PROJECTION.
+      // WHAT THIS CANNOT SEE, said here rather than left for a lane: `wakeKey`
+      // is on BOTH sides of the comparison, so a change to how the key is
+      // COMPOSED - dropping the channel from it, say - moves the reactor and
+      // this assertion together and survives. That is the right scope: the
+      // property here is that the link lands in the projection where a reader
+      // computing the same function will look for it. The key's composition is
+      // pinned by "wakes for the same post id in two different channels", which
+      // is where a two-channel fixture can tell the difference. Measured:
+      // dropping the channel from `wakeKey` reds that test and not this one.
       const derived = wakeKey(CHANNEL_ID, "post-correlate", WOKEN);
       const pending = await system.run(
         system.turns.getPendingTurnStartByThreadId({ threadId: WOKEN }),
