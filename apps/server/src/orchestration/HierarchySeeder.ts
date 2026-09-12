@@ -75,6 +75,20 @@ const PROJECT_CHANNEL = ChannelId.make("channel-project");
 const SENIORS_CHANNEL = ChannelId.make("channel-seniors");
 
 /**
+ * The instance id this seeder SHIPPED with, which no build can resolve.
+ *
+ * A literal rather than `defaultInstanceIdForDriver(ProviderDriverKind.make("claude"))`,
+ * which is what produced it: writing the typo again to describe the typo invites someone to
+ * "fix" this line and silently disarm the repair below. This is a historical fact about what
+ * is in databases, not a value the product derives.
+ *
+ * The Claude driver's kind is `claudeAgent`. `ProviderDriverKind` is a branded slug, so
+ * `make("claude")` typechecked, stored, and failed four layers downstream at the provider
+ * boundary with "references unknown provider instance 'claude'".
+ */
+const SHIPPED_BAD_INSTANCE_ID = "claude";
+
+/**
  * The human's member id, from the one place that defines it.
  *
  * It was a local constant here and is now shared with the WebSocket layer,
@@ -171,6 +185,50 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
     });
   }
 
+  // THE CREATES ABOVE DO NOTHING ON AN ENVIRONMENT THAT HAS ALREADY BOOTED, and that is
+  // not a defect in them — it is the receipt short-circuit doing its job. It compares the
+  // commandId and the aggregate ref and never the payload, so #16's correction to
+  // `instanceId` lands on a fresh database and is skipped on every environment that booted
+  // before it. Those threads keep `instanceId: 'claude'`, every mention-wake fails at the
+  // provider boundary, and `seedHierarchy` returns success. Observed on a scratch home that
+  // had booted once (`t3_bot-p4u`).
+  //
+  // The file's own rule, two commands below: never change the payload of a deterministic
+  // command that has shipped. A NEW id is the whole fix, and the new command's own receipt is
+  // what makes this idempotent from the third boot onward.
+  //
+  // ONE READ, and it is the second in this function. The header is careful about what the
+  // first one costs; this one costs the same and for the same reason it is safe: the repair
+  // still carries a deterministic id, so a lost race degrades to a refused duplicate rather
+  // than a second write.
+  const readModel = yield* projections.getCommandReadModel();
+  for (const thread of SEEDED_THREADS) {
+    const existing = readModel.threads.find((row) => row.id === thread.id);
+    // Absent means the create above just made it, with the right instance already.
+    if (existing === undefined) {
+      continue;
+    }
+    // THE OLD VALUE, NOT "ANYTHING UNRESOLVABLE". An operator who has re-pointed a thread
+    // owns that choice even if this build cannot resolve it either — a seeder that overwrote
+    // it would be worse than the bug. So this fires only on the exact id that shipped.
+    if (existing.modelSelection.instanceId !== SHIPPED_BAD_INSTANCE_ID) {
+      continue;
+    }
+    yield* dispatch({
+      type: "thread.meta.update",
+      commandId: CommandId.make(`seed-thread-${thread.handle}-instance-repair`),
+      threadId: thread.id,
+      // SPREAD, not a fresh selection. `modelSelection` is replaced wholesale by this
+      // command, so writing `{ instanceId, model }` would discard a `model` or `options` the
+      // operator had changed. Repairing the one field the seeder got wrong is the difference
+      // between fixing a thread and re-seeding it.
+      modelSelection: {
+        ...existing.modelSelection,
+        instanceId: defaultInstanceIdForDriver(CLAUDE_DRIVER_KIND),
+      },
+    });
+  }
+
   // Channels last, because a `thread` member must resolve to a live thread
   // wherever `requireChannelMemberShape` is present. See the header.
   yield* dispatch({
@@ -237,4 +295,11 @@ export const __testing = {
   SEEDED_THREADS,
   WALT_MEMBER_ID,
   SEED_ISSUER,
+  // So a test can replay the OLD seed under the ids the old seeder used, rather than
+  // approximating it — the whole point is that those receipts already exist.
+  SEED_PROJECT_ID,
+  // So a test can replay the OLD seed without spelling the typo itself — a test that wrote
+  // "claude" would keep passing if this constant were changed, and it is the constant the
+  // repair turns on.
+  SHIPPED_BAD_INSTANCE_ID,
 };

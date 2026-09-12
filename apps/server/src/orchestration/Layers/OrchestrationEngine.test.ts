@@ -2311,6 +2311,196 @@ describe("OrchestrationEngine", () => {
     }
   });
 
+  it("repairs a seeded thread whose instance id predates the driver-kind fix", async () => {
+    // `t3_bot-p4u`. `thread.create` carries a deterministic `seed-thread-<handle>` id, and the
+    // receipt short-circuit compares the commandId and the aggregate ref — never the payload.
+    // So the corrected `instanceId` reaches a fresh database and is SKIPPED on every
+    // environment that booted before the correction. Observed on a scratch home that had
+    // booted once: `projection_threads` still carried `{instanceId:'claude'}`, every
+    // mention-wake failed at the provider boundary, and `seedHierarchy` returned success.
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-seed-repair-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    const workspaceRoot = NodePath.join(directory, "repo");
+    const seeded = HierarchySeeder.__testing.SEEDED_THREADS;
+    const shippedBad = HierarchySeeder.__testing.SHIPPED_BAD_INSTANCE_ID;
+
+    const repairCommandIds = seeded.map((thread) => `seed-thread-${thread.handle}-instance-repair`);
+    const readRepairReceipts = (system: Awaited<ReturnType<typeof createOrchestrationSystem>>) =>
+      system.run(
+        Effect.gen(function* () {
+          const receipts = yield* OrchestrationCommandReceiptRepository;
+          const out: Record<string, string> = {};
+          for (const id of repairCommandIds) {
+            const receipt = yield* receipts.getByCommandId({ commandId: CommandId.make(id) });
+            out[id] = Option.isSome(receipt)
+              ? `${receipt.value.status}@${receipt.value.acceptedAt}`
+              : "MISSING";
+          }
+          return out;
+        }),
+      );
+
+    let system = await createOrchestrationSystem(databasePath);
+    try {
+      // BOOT ONE, ON THE OLD SEEDER. The same command ids it used, and the instance id it
+      // shipped — so the receipts the new seeder's creates will short-circuit on are the real
+      // ones. Seeding normally and then corrupting the selection would reach the same rows by
+      // a route that does not exist, and would still pass if the short-circuit were removed.
+      await system.run(
+        Effect.gen(function* () {
+          const engine = yield* OrchestrationEngineService;
+          const dispatch = (command: Parameters<typeof engine.dispatch>[0]) =>
+            engine.dispatch(command, { issuer: HierarchySeeder.__testing.SEED_ISSUER });
+          yield* dispatch({
+            type: "project.create",
+            commandId: CommandId.make("seed-project"),
+            projectId: HierarchySeeder.__testing.SEED_PROJECT_ID,
+            title: "t3_bot",
+            workspaceRoot,
+            createdAt: now(),
+          } as never);
+          for (const thread of seeded) {
+            yield* dispatch({
+              type: "thread.create",
+              commandId: CommandId.make(`seed-thread-${thread.handle}`),
+              threadId: thread.id,
+              projectId: HierarchySeeder.__testing.SEED_PROJECT_ID,
+              title: thread.title,
+              modelSelection: {
+                instanceId: ProviderInstanceId.make(shippedBad),
+                model: "claude-opus-5",
+              },
+              runtimeMode: "auto",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              createdAt: now(),
+            } as never);
+          }
+        }),
+      );
+
+      // The fixture is the defect: every seeded thread unresolvable.
+      const before = await system.readModel();
+      expect(before.threads).toHaveLength(seeded.length);
+      for (const thread of before.threads) {
+        expect(thread.modelSelection.instanceId).toBe(shippedBad);
+      }
+
+      // THE OPERATOR RE-POINTS ONE OF THEM, before the repair ever runs. This is acceptance
+      // (3), and it is in the same test on purpose: a separate test would let the repair pass
+      // one and fail the other while both suites stayed green.
+      const rePointed = seeded[0]!;
+      const rePointedInstance = defaultInstanceIdForDriver(
+        ProviderDriverKind.make("somethingTheOperatorPicked"),
+      );
+      await system.run(
+        Effect.gen(function* () {
+          const engine = yield* OrchestrationEngineService;
+          yield* engine.dispatch(
+            {
+              type: "thread.meta.update",
+              commandId: CommandId.make("operator-repointed-this-one"),
+              threadId: rePointed.id,
+              modelSelection: { instanceId: rePointedInstance, model: "a-model-they-chose" },
+            } as never,
+            { issuer: HierarchySeeder.__testing.SEED_ISSUER },
+          );
+        }),
+      );
+
+      // AND ONE WHOSE MODEL THEY CHANGED WITHOUT RE-POINTING IT. The instance is still the
+      // seeder's mistake, so the repair owns it; the model is the operator's, so the repair
+      // must leave it. This is the only case that can see the difference between spreading the
+      // existing selection and writing a fresh one — the re-pointed thread above is skipped by
+      // the guard, so its model survives whatever the repair writes.
+      const modelChanged = seeded[1]!;
+      await system.run(
+        Effect.gen(function* () {
+          const engine = yield* OrchestrationEngineService;
+          yield* engine.dispatch(
+            {
+              type: "thread.meta.update",
+              commandId: CommandId.make("operator-changed-only-the-model"),
+              threadId: modelChanged.id,
+              modelSelection: {
+                instanceId: ProviderInstanceId.make(shippedBad),
+                model: "a-model-they-picked-but-same-instance",
+              },
+            } as never,
+            { issuer: HierarchySeeder.__testing.SEED_ISSUER },
+          );
+        }),
+      );
+
+      await system.dispose();
+
+      // BOOT TWO, on the new code.
+      system = await createOrchestrationSystem(databasePath);
+      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
+
+      const repaired = await system.readModel();
+
+      // (1) EVERY SEEDED THREAD RESOLVES, except the one the operator owns. Against the record
+      // the product keys by, not a list written here: a list written here would agree with the
+      // seeder rather than with the build, which is how this defect shipped the first time.
+      const builtInInstanceIds = new Set(
+        Object.keys(PROVIDER_DISPLAY_NAMES).map((kind) =>
+          defaultInstanceIdForDriver(ProviderDriverKind.make(kind)),
+        ),
+      );
+      for (const thread of repaired.threads) {
+        if (thread.id === rePointed.id) {
+          continue;
+        }
+        // Named individually so a failure says WHICH thread and WHICH instance.
+        expect(
+          builtInInstanceIds.has(thread.modelSelection.instanceId),
+          `thread ${thread.id} has unresolvable instance '${thread.modelSelection.instanceId}'`,
+        ).toBe(true);
+      }
+
+      // (3) THE RE-POINTED THREAD IS UNTOUCHED, instance AND model. An operator owns their
+      // choice even when this build cannot resolve it — the guard is the id that shipped, not
+      // "anything unresolvable", and a seeder overwriting a provider selection would be worse
+      // than the bug it fixes.
+      const operators = repaired.threads.find((thread) => thread.id === rePointed.id);
+      expect(operators?.modelSelection.instanceId).toBe(rePointedInstance);
+      expect(operators?.modelSelection.model).toBe("a-model-they-chose");
+
+      // AND THE CHANGED MODEL SURVIVED ITS REPAIR. `thread.meta.update` replaces
+      // `modelSelection` wholesale, so a repair writing a fresh one would silently reset this
+      // to the seeded model while fixing the instance — a repair that fixes a thread by
+      // re-seeding it.
+      const kept = repaired.threads.find((thread) => thread.id === modelChanged.id);
+      expect(kept?.modelSelection.model).toBe("a-model-they-picked-but-same-instance");
+      expect(builtInInstanceIds.has(kept!.modelSelection.instanceId)).toBe(true);
+
+      // (2) IDEMPOTENT ON THE THIRD BOOT, which is a statement about receipts rather than
+      // about rows: the repair has its own deterministic id, so its own receipt short-circuits
+      // it exactly as the create's does. Comparing the rows would pass against a repair that
+      // re-decided the same command every boot and wrote the same answer.
+      const receiptsAfterSecond = await readRepairReceipts(system);
+      await system.dispose();
+      system = await createOrchestrationSystem(databasePath);
+      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
+      expect(await readRepairReceipts(system)).toEqual(receiptsAfterSecond);
+
+      // And the repair fired for the two it owned and never for the operator's.
+      expect(receiptsAfterSecond[`seed-thread-${rePointed.handle}-instance-repair`]).toBe(
+        "MISSING",
+      );
+      for (const thread of seeded.filter((row) => row.id !== rePointed.id)) {
+        expect(receiptsAfterSecond[`seed-thread-${thread.handle}-instance-repair`]).toMatch(
+          /^accepted@/,
+        );
+      }
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("seeds only provider instances this build can resolve", async () => {
     // THE WALKTHROUGH P0. The seeder asked for instance `claude`; the Claude
     // driver's kind is `claudeAgent`. `ProviderDriverKind` is a branded SLUG, so
