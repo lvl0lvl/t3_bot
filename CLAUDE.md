@@ -54,6 +54,10 @@ message types: `comms/README.md` there.
   the property (both orderings gave the same error on clean handles; idempotence over rows with no
   hidden sigil; a guard tested only in the permissive direction). Choose the fixture from the property.
 - A test is proven by a named mutant going red, not by being green. Restore mutations from a byte copy.
+- **Ask what the assertion does when the subject is ABSENT.** `findIndex` returns -1 and -1 is less than
+  any index; a nonce "not equal to the constant I tried" admits every other constant; a count of zero
+  wakes is satisfied when the wake went to the other thread. Assert existence before position, the
+  property rather than the mutant you wrote, and re-read every negative when a fixture grows a subject.
 - Comments state the input that would break the code, not the reason it is safe.
 - Before pushing, write the adversarial question you would give a reviewer — "what legitimate input
   does this now reject that worked before?" — and answer it yourself. Writing the prompt is the review.
