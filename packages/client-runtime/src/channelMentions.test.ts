@@ -47,6 +47,42 @@ describe("mentionedHandles", () => {
     expect(mentionedHandles("worth a look (@walt has context)")).toEqual(["walt"]);
   });
 
+  it("reads a mention wrapped in emphasis, quotes, or backticks", () => {
+    // EVERY ONE OF THESE RETURNED [] BEFORE. The opener set and the terminator
+    // set were written separately, so `*`, `"` and a backtick could END a handle
+    // but not BEGIN a mention — the post was accepted, the sidebar reordered,
+    // and the member was never woken.
+    //
+    // Silent is what makes it serious. `requireChannelMentionsResolve` refuses a
+    // post whose mention resolves to nobody so that a post cannot look sent
+    // while waking nobody; a mention dropped here never reaches that guard, so
+    // nothing reports the loss — not the server, which never saw the mention,
+    // and not the client, which succeeded.
+    expect(mentionedHandles("**@boss1** urgent")).toEqual(["boss1"]);
+    expect(mentionedHandles('she said "@boss1" earlier')).toEqual(["boss1"]);
+    expect(mentionedHandles("`@boss1` please")).toEqual(["boss1"]);
+    expect(mentionedHandles("<@boss1>")).toEqual(["boss1"]);
+    expect(mentionedHandles("@walt/@boss3 either of you")).toEqual(["walt", "boss3"]);
+  });
+
+  it("keeps a hyphen inside a handle, and so cannot open a mention after one", () => {
+    // The one trade the single set forces, stated as a test rather than left to
+    // be discovered. `-` is a handle character on BOTH sides: `@boss-1` is one
+    // handle, which a roster may well need, and the cost is that `-@walt` with
+    // no space is not a mention. A character cannot be both a handle character
+    // and a boundary.
+    expect(mentionedHandles("@boss-1 owns it")).toEqual(["boss-1"]);
+    expect(mentionedHandles("-@walt unspaced bullet")).toEqual([]);
+  });
+
+  it("reads a handle that is an emoji", () => {
+    // `channelIdentity` supports emoji handles deliberately — refusing them was
+    // a regression it records — so the parser must not be narrower than the
+    // roster it parses against. A letters-and-digits handle class would drop
+    // this one silently, which is the same failure as the emphasis case.
+    expect(mentionedHandles("ping @\u{1F525} about the build")).toEqual(["\u{1F525}"]);
+  });
+
   it("keeps every distinct handle in the order they were typed", () => {
     expect(mentionedHandles("@pm @boss1 @boss3 standup")).toEqual(["pm", "boss1", "boss3"]);
   });

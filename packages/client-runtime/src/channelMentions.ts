@@ -2,23 +2,46 @@ import { ChannelMemberHandle } from "@t3tools/contracts";
 import { canonicalChannelHandle } from "@t3tools/shared/channelIdentity";
 
 /**
- * An "@" that STARTS a mention: at the beginning of the body, or after
- * whitespace or an opening bracket.
+ * The characters a handle cannot contain: whitespace and ASCII punctuation,
+ * except `-` and `_`.
  *
- * The boundary is the whole rule. A mention that resolves to nobody makes the
- * decider refuse the entire post, so over-collecting does not produce a stray
- * mention — it loses the operator's message. "email me at walt@example.com"
- * would otherwise send "example.com" as a mention and the post would come back
- * refused with nothing obviously wrong in what was typed.
+ * ONE SET, USED FOR BOTH SIDES OF THE BOUNDARY, and that is the point rather
+ * than tidiness. The first version of this listed the openers and the
+ * terminators separately and they disagreed: thirteen characters could END a
+ * handle but not BEGIN a mention. So `**@boss1** urgent`, `"@boss1" said` and
+ * `` `@boss1` `` produced NO mention at all — the post was accepted, the
+ * sidebar reordered, and the named member was never woken.
  *
- * The handle runs to the first whitespace or the first character that reads as
- * punctuation around a mention rather than part of one. Sentence punctuation has
- * to terminate ("@walt." at the end of a sentence is a mention of walt), which
- * means a handle cannot contain those characters — acceptable, since the seeded
- * handles are words, and a handle that needs a comma cannot be typed in prose at
- * all.
+ * That is worse than either failure alone, because it defeats the server's own
+ * guard rather than tripping it. `requireChannelMentionsResolve` refuses a post
+ * whose mention resolves to nobody precisely so a post cannot look sent while
+ * waking nobody; a mention dropped HERE never reaches it, so nothing anywhere
+ * reports the loss.
+ *
+ * `-` and `_` stay OUT of this set, so they are handle characters on both
+ * sides: `@boss-1` parses as one handle, and the cost is that `-@walt` with no
+ * space parses as none. A character cannot be both a handle character and a
+ * boundary, and of the two readings "handles may contain hyphens" is the one a
+ * roster actually needs.
+ *
+ * Written with doubled backslashes rather than as a `String.raw` template:
+ * `String.raw` preserves the backslash a template literal needs before a
+ * backtick, and `\\`` is an invalid escape inside a `u`-mode character class.
  */
-const MENTION_PATTERN = /(?:^|(?<=[\s([{<]))@([^\s([{<>)\]},.;:!?"'`]+)/gu;
+const NON_HANDLE = "\\s!-,./:-@[-^`{-~";
+
+/**
+ * An "@" that starts a mention, and the handle that follows it.
+ *
+ * Built from `NON_HANDLE` twice — as the lookbehind, and negated as the handle
+ * body — so the opener and the terminator are the same set by construction.
+ *
+ * A mention that resolves to nobody makes the decider refuse the entire post,
+ * so over-collecting does not produce a stray mention: it loses the operator's
+ * message. "email me at walt@example.com" sends nothing, because the "@" there
+ * is preceded by a handle character and therefore begins no mention.
+ */
+const MENTION_PATTERN = new RegExp(`(?:^|(?<=[${NON_HANDLE}]))@([^${NON_HANDLE}]+)`, "gu");
 
 /**
  * The mention keys in a post body, canonical and deduplicated.
