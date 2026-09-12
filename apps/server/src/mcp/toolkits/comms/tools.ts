@@ -170,6 +170,15 @@ const CURSOR_PATTERN = /^[0-9]+$/;
 
 export const ReadChannelResult = Schema.Struct({
   channel: Schema.String,
+  // NAMED FOR THE DECISION, not for the state. An agent reading this has one
+  // question - can I write here - and `archived: true` makes it infer the
+  // consequence from a word about the channel's lifecycle. Without the field
+  // the only way to find out is to post and be refused, which costs a call and
+  // still does not say whether the refusal is permanent.
+  postable: Schema.Boolean.annotate({
+    description:
+      "False when the channel is archived: you can read it, and a post will be refused. Do not retry a post to an unpostable channel.",
+  }),
   members: Schema.Array(Schema.String).annotate({
     description: "Handles of everyone in the channel, so you know who you can mention.",
   }),

@@ -585,6 +585,7 @@ describe("comms toolkit handlers", () => {
       const result = yield* harness.call("comms_read_channel", { channel: "#seniors" });
       expect(result).toEqual({
         channel: "seniors",
+        postable: true,
         members: ["pm", "boss1", "boss3", "walt"],
         posts: [
           {

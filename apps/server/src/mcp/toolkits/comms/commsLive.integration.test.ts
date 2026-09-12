@@ -573,6 +573,11 @@ describe("the comms toolkit on the live gateway", () => {
 
         const read = yield* call("comms_read_channel", { channel: "seniors" }, BOSS3);
         expect(read.channel).toBe("seniors");
+        // AND THE READ SAYS SO, which is the only way an agent learns without
+        // burning a post to find out. Archived became a first-class channel
+        // state in this change and had no surface showing it: the refusal
+        // above was the whole of the signal, after the fact.
+        expect(read.postable).toBe(false);
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );

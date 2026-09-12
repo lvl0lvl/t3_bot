@@ -319,6 +319,10 @@ const make = Effect.gen(function* () {
           .pipe(Effect.catchTags(storeUnavailableAsRead), Effect.catchCause(readDefect));
         return {
           channel: channel.name,
+          // The same value `publish` refuses on, read off the same channel, so
+          // the two cannot drift into telling an agent it may post and then
+          // refusing it.
+          postable: channel.archivedAt === null,
           // The members' own stored handles, byte for byte. The aggregate
           // matches a mention against its membership exactly, so any tidying
           // here — folding case, stripping a sigil — hands the agent a string
