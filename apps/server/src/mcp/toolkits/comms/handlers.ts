@@ -221,10 +221,11 @@ const make = Effect.gen(function* () {
       return yield* new CommsChannelNotFoundError({ channel: normalized });
     }
     const channel = yield* channels
-      // THE CREDENTIAL'S thread, never a field from the tool call. The ref is
-      // a parameter now, so "read as someone else" is one argument away and
-      // there is no decider on the read side to refuse it.
-      .getChannelForMember(normalized, { memberKind: "thread", memberId: scope.threadId })
+      // THE CREDENTIAL'S scope, never a field from the tool call. The
+      // constructor takes the scope rather than a thread id precisely so there
+      // is no signature an agent-supplied value fits - the ref is a parameter
+      // now, and the read side has no decider to refuse a wrong one.
+      .getChannelForMember(normalized, ChannelGateway.refFromMcpCredential(scope))
       .pipe(
         Effect.catchTags(isWrite ? storeUnavailableAsWrite : storeUnavailableAsRead),
         Effect.catchCause(isWrite ? writeDefect : readDefect),

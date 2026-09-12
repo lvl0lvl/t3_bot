@@ -202,11 +202,55 @@ export interface ChannelPostRecord {
  * A caller adding itself: assert the KIND you pass, not only the id. The
  * toolkit's lookup tests do, which is what makes "derived from the credential"
  * checkable rather than a sentence in a docstring.
+ *
+ * CONSTRUCTED ONLY BY THE TWO FUNCTIONS BELOW. Not exported as a shape to build
+ * inline, because a docstring is not a guard and this one has nothing behind it.
+ *
+ * DO NOT COLLAPSE THEM INTO `makeChannelMemberRef(kind, id)`. That is the
+ * obvious simplification and it prevents nothing: it accepts the same two
+ * fields from anywhere, so a handler passing `payload.memberId` through it is
+ * indistinguishable from one passing the session's. The names below are load
+ * bearing precisely because they are named for the SOURCE — taking the id from
+ * a REQUEST is then not expressible without visibly going around the function,
+ * and going around it is a thing a reviewer sees in a diff.
+ *
+ * The property is not "validate the ref". Nothing here validates anything. It
+ * is: make the WRONG thing conspicuous, rather than merely making the right
+ * thing available.
  */
 export interface ChannelMemberRef {
   readonly memberKind: "thread" | "human";
   readonly memberId: string;
 }
+
+/**
+ * The member an MCP tool call is acting as: the credential's own thread.
+ *
+ * Takes the invocation scope rather than a thread id, so there is no signature
+ * a request field fits. The agent's arguments are not in scope here and cannot
+ * be.
+ */
+export const refFromMcpCredential = (scope: { readonly threadId: string }): ChannelMemberRef => ({
+  memberKind: "thread",
+  memberId: scope.threadId,
+});
+
+/**
+ * The member a browser request is acting as: the operator, from the session.
+ *
+ * NAMED FOR THE SOURCE, which is the whole of its value. `fromHuman(id)` would
+ * accept a memberId out of a request payload and look correct doing it; this
+ * one is wrong-looking at the call site the moment the argument is not a
+ * session. For M1 the operator is a single seeded identity, so the session
+ * carries no member of its own yet and this returns the constant — when it
+ * does, this is the one line that changes and every caller inherits it.
+ */
+export const refFromOperatorSession = (session: {
+  readonly operatorMemberId: string;
+}): ChannelMemberRef => ({
+  memberKind: "human",
+  memberId: session.operatorMemberId,
+});
 
 export type ReadDirection = "forward" | "backward";
 

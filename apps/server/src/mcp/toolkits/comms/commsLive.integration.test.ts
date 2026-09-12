@@ -44,7 +44,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { MentionWakeReactor } from "../../../orchestration/Services/MentionWakeReactor.ts";
 import { MentionWakeReactorLive } from "../../../orchestration/Layers/MentionWakeReactor.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ChannelGateway } from "./channelGateway.ts";
+import { ChannelGateway, refFromMcpCredential, refFromOperatorSession } from "./channelGateway.ts";
 import { ChannelGatewayLive } from "./channelGatewayLive.ts";
 import { CommsToolkitHandlersLive } from "./handlers.ts";
 import { CommsToolkit } from "./tools.ts";
@@ -712,6 +712,47 @@ describe("the comms toolkit on the live gateway", () => {
         });
         expect(older.posts.map((post) => post.body)).toEqual(["first"]);
         expect(older.nextCursor).toBeNull();
+      }).pipe(Effect.provide(TestLayer)),
+    30_000,
+  );
+
+  it.effect(
+    "reads as the CREDENTIAL's member, whatever the arguments carry",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+
+        // The write side already has this test - "posts as the CREDENTIAL's
+        // thread, whatever the arguments say" - and it is enforced there by the
+        // decider, which refuses a command with no issuer. THE READ SIDE HAS NO
+        // SUCH GUARD: a handler that passed an agent-supplied member would
+        // return the right answer for the wrong member, successfully, forever.
+        // Nothing would fail. So the constructor is the guard, and this is the
+        // test that it is spent rather than bypassed.
+        const smuggled = yield* call(
+          "comms_read_channel",
+          {
+            channel: "seniors",
+            // Not in the schema, and sent anyway - the shape a caller would use
+            // if it ever tried to read on someone else's behalf.
+            memberId: BOSS1,
+            memberKind: "human",
+          },
+          BOSS3,
+        );
+        expect(smuggled.channel).toBe("seniors");
+
+        // And the constructors carry their SOURCE, both fields. Asserting the
+        // id alone would pass against a constructor that hardcoded the wrong
+        // kind, which is the mutation the colliding roster exists for.
+        expect(refFromMcpCredential({ threadId: BOSS3 })).toEqual({
+          memberKind: "thread",
+          memberId: BOSS3,
+        });
+        expect(refFromOperatorSession({ operatorMemberId: "human-walt" })).toEqual({
+          memberKind: "human",
+          memberId: "human-walt",
+        });
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );
