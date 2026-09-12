@@ -8628,7 +8628,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
-  it.effect("a post in a channel this connection is not in reports a removal", () =>
+  it.effect("says nothing about a post in a channel this connection is not in", () =>
     Effect.gen(function* () {
       // The admitting test above passes for a stream that ignores membership
       // entirely, so this is the half that makes the filter load-bearing. A
@@ -8671,13 +8671,24 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.subscribeShell]({
             requestCompletionMarker: true,
-          }).pipe(Stream.take(3), Stream.runCollect),
+          }).pipe(Stream.take(2), Stream.runCollect),
         ),
       ).pipe(Effect.timeout("2 seconds"));
 
       assert.equal(items[0]?.kind, "snapshot");
-      assert.equal(items[1]?.kind, "channel-removed");
-      assert.deepEqual(items[2], { kind: "synchronized" });
+      // Snapshot, then the completion marker, and NOTHING in between. The
+      // marker is what makes this a real negative rather than an item that had
+      // not arrived yet: the stream reached its end.
+      assert.deepEqual(items[1], { kind: "synchronized" });
+      // NO UPSERT is the load-bearing half — drop the membership filter and the
+      // channel's shell, with its name and its activity, arrives here.
+      assert.equal(items.filter((item) => item.kind === "channel-upserted").length, 0);
+      // AND NO BARE ID, which is the disclosure itself. This test used to
+      // ASSERT that id arriving; that assertion was the defect `t3_bot-7br`
+      // exists to close. The property it protects — the filter is load-bearing
+      // — is unchanged; silence is simply the right answer for a non-member who
+      // has nothing to drop.
+      assert.equal(items.filter((item) => item.kind === "channel-removed").length, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
@@ -8768,6 +8779,82 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(items[0]?.kind, "snapshot");
       assert.deepEqual(items[1], { kind: "synchronized" });
       assert.equal(items.filter((item) => item.kind === "channel-removed").length, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("keeps a removal that a later event in the same batch would coalesce away", () =>
+    Effect.gen(function* () {
+      // COALESCING KEEPS ONE EVENT PER AGGREGATE PER WINDOW, the latest. So a
+      // removal followed closely by a post in the same channel loses to the
+      // post — and with it the only signal telling this client to stop showing
+      // a channel it is no longer in. The refetch cannot recover it: by then the
+      // member is gone from the row, which is the whole difficulty this PR is
+      // about.
+      //
+      // The fact of a removal is therefore carried forward through coalescing
+      // even when the event that carried it does not survive. Without that, this
+      // connection is silently left holding a channel it cannot read.
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const ownRemoval = {
+        ...foreignRemovalEvent,
+        eventId: EventId.make("event-channel-member-removed-coalesced"),
+        payload: {
+          ...(foreignRemovalEvent as unknown as { payload: Record<string, unknown> }).payload,
+          handle: ChannelMemberHandle.make("walt"),
+          memberKind: "human",
+          memberId: HUMAN_OPERATOR_MEMBER_ID,
+        },
+      } as unknown as OrchestrationEvent;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            // The roster no longer holds the operator, which is what a real
+            // removal leaves behind.
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [{ handle: "pm", memberKind: "thread", memberId: "thread-pm" }],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                // Both inside one coalescing window, removal FIRST so the post
+                // is the survivor — the ordering that loses the removal.
+                yield* PubSub.publish(liveEvents, ownRemoval);
+                yield* PubSub.publish(liveEvents, channelPostEvent);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      const removals = items.filter((item) => item.kind === "channel-removed");
+      assert.equal(removals.length, 1);
+      assert.equal(
+        removals[0]?.kind === "channel-removed" ? removals[0].channelId : null,
+        "channel-project",
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
@@ -8909,13 +8996,20 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.subscribeShell]({
             requestCompletionMarker: true,
-          }).pipe(Stream.take(3), Stream.runCollect),
+          }).pipe(Stream.take(2), Stream.runCollect),
         ),
       ).pipe(Effect.timeout("2 seconds"));
 
       assert.equal(items[0]?.kind, "snapshot");
-      assert.equal(items[1]?.kind, "channel-removed");
-      assert.deepEqual(items[2], { kind: "synchronized" });
+      // Snapshot, then the marker. The impostor is a THREAD whose memberId is
+      // the operator's own, differing in `memberKind` ALONE: compare memberId
+      // without kind and this roster "contains" the operator, so the channel's
+      // shell arrives here. That impersonation is what this asserts against and
+      // it is untouched by `t3_bot-7br` — only the absence of a
+      // `channel-removed` is new, because a non-member with nothing to drop is
+      // now told nothing at all.
+      assert.deepEqual(items[1], { kind: "synchronized" });
+      assert.equal(items.filter((item) => item.kind === "channel-upserted").length, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 

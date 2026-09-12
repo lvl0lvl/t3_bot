@@ -829,6 +829,11 @@ const makeWsRpcLayer = (
         aggregateKind: event.aggregateKind,
         aggregateId: event.aggregateId,
         sequence: event.sequence,
+        // TWO FIELDS, and the second is not redundant. `removedMember` says WHO
+        // left when the event knows; `sawRemoval` says a removal happened at
+        // all, which is the question the non-member branch has to answer for a
+        // historical event that carries no ref.
+        sawRemoval: event.type === "channel.member-removed",
         removedMember:
           event.type === "channel.member-removed" &&
           event.payload.memberKind !== undefined &&
@@ -866,7 +871,12 @@ const makeWsRpcLayer = (
             return threadUpsertOrRemove(ThreadId.make(event.aggregateId), event.sequence);
           default:
             if (event.aggregateKind === "channel") {
-              return channelUpsertOrRemove(event.aggregateId, event.sequence, event.removedMember);
+              return channelUpsertOrRemove(
+                event.aggregateId,
+                event.sequence,
+                event.sawRemoval,
+                event.removedMember,
+              );
             }
             if (event.aggregateKind !== "thread") {
               return Effect.succeed(Option.none());
@@ -995,6 +1005,7 @@ const makeWsRpcLayer = (
       const channelUpsertOrRemove = (
         aggregateId: string,
         sequence: number,
+        sawRemoval: boolean,
         removedMember:
           | { readonly memberKind: "thread" | "human"; readonly memberId: string }
           | undefined,
@@ -1016,7 +1027,7 @@ const makeWsRpcLayer = (
             });
             return Option.none<OrchestrationShellStreamEvent>();
           }
-          return yield* channelShellFor(decoded.value, sequence, removedMember);
+          return yield* channelShellFor(decoded.value, sequence, sawRemoval, removedMember);
         });
 
       /**
@@ -1056,6 +1067,7 @@ const makeWsRpcLayer = (
       const channelShellFor = (
         channelId: ChannelId,
         sequence: number,
+        sawRemoval: boolean,
         removedMember:
           | { readonly memberKind: "thread" | "human"; readonly memberId: string }
           | undefined,
@@ -1095,28 +1107,37 @@ const makeWsRpcLayer = (
                         sequence,
                         channel: toChannelShell(row),
                       })
-                    : // NOT A MEMBER. Two different situations reach here and
-                      // they must not get the same answer: this connection was
-                      // just removed from a channel it holds, or it was never in
-                      // this channel and is watching someone else's roster
-                      // change. Emitting a bare `channelId` for the second is
-                      // how every connected client learned that a channel with
-                      // that id exists (`t3_bot-7br`).
+                    : // NOT A MEMBER, AND SILENT UNLESS A REMOVAL SAYS OTHERWISE.
                       //
-                      // SILENT ONLY WHEN THE EVENT PROVES IT WAS SOMEONE ELSE.
-                      // Absent ref means the event predates this field, or the
-                      // event was coalesced away within a batch — and in both
-                      // cases we cannot tell, so we EMIT. That asymmetry is
-                      // deliberate and it is the lesson of the two fixes this
-                      // one replaces: suppressing on "I don't know" loses a real
-                      // removal, and an operator removed while disconnected is
-                      // never told to drop the channel. A disclosure with no
-                      // live victim is the cheaper failure.
-                      removedMember !== undefined &&
-                        !(
-                          removedMember.memberKind === connectionMember.memberKind &&
-                          removedMember.memberId === connectionMember.memberId
-                        )
+                      // The default is `none`, and getting that backwards is how
+                      // the first version of this fix closed one path out of
+                      // seven. `removedMember` rides only on
+                      // `channel.member-removed`, so gating on it alone left
+                      // every OTHER channel event — a post, a member added, a
+                      // meta update, created, archived, unarchived — still
+                      // emitting a bare `channelId` to a connection that is not
+                      // a member. That is the original defect, and a security
+                      // lane measured all six still doing it.
+                      //
+                      // A NON-MEMBER HAS NOTHING TO DROP for those events: it was
+                      // never told the channel exists, so there is no state to
+                      // correct and nothing to send. Only a REMOVAL can oblige us
+                      // to speak, because only a removal can mean "you held this
+                      // and must stop".
+                      //
+                      // WHEN A REMOVAL DID HAPPEN, the fail-open stands and it is
+                      // the lesson of the two fixes this one replaces: emit
+                      // unless the ref PROVES it was someone else. An absent ref
+                      // means the event predates the field, and suppressing on
+                      // "I don't know" loses a real removal — an operator removed
+                      // while disconnected would never be told to drop the
+                      // channel.
+                      !sawRemoval ||
+                        (removedMember !== undefined &&
+                          !(
+                            removedMember.memberKind === connectionMember.memberKind &&
+                            removedMember.memberId === connectionMember.memberId
+                          ))
                       ? Option.none<OrchestrationShellStreamEvent>()
                       : Option.some<OrchestrationShellStreamEvent>({
                           kind: "channel-removed" as const,
@@ -1150,7 +1171,20 @@ const makeWsRpcLayer = (
           }
           const latestByAggregate = new Map<string, ShellEvent>();
           for (const event of events) {
-            latestByAggregate.set(`${event.aggregateKind}:${event.aggregateId}`, event);
+            const key = `${event.aggregateKind}:${event.aggregateId}`;
+            const prior = latestByAggregate.get(key);
+            // THE LATEST EVENT WINS, EXCEPT FOR THE FACT OF A REMOVAL, which is
+            // carried forward. Coalescing keeps one event per aggregate, so a
+            // `channel.member-removed` followed in the same window by a post or
+            // a meta update would otherwise be dropped — and with it the only
+            // signal telling a client it must stop showing that channel. The
+            // refetch cannot recover it: by then the member is gone from the
+            // row, which is the whole difficulty this PR is about.
+            latestByAggregate.set(key, {
+              ...event,
+              sawRemoval: event.sawRemoval || prior?.sawRemoval === true,
+              removedMember: event.removedMember ?? prior?.removedMember,
+            });
           }
           const survivors = Array.from(latestByAggregate.values()).sort(
             (left, right) => left.sequence - right.sequence,
