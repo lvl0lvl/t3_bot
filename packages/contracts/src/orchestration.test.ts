@@ -1592,3 +1592,70 @@ it("isProviderSendTurnSupportedImageMimeType accepts raster formats and rejects 
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("IMAGE/JPEG"), true);
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("image/svg+xml"), false);
 });
+
+/**
+ * The wire exclusion, asserted rather than assumed.
+ *
+ * Channel commands are dispatchable but deliberately not decodable from a
+ * client. That exclusion was the only thing preventing forged channel
+ * authorship before the issuer landed, and nothing recorded it — so adding one
+ * of these to ClientOrchestrationCommand to "finish the integration" would have
+ * opened the hole with every test still green.
+ */
+it.effect("does not decode channel commands from a client", () =>
+  Effect.gen(function* () {
+    const groups: ReadonlyArray<{
+      readonly members: ReadonlyArray<{
+        readonly fields: { readonly type: { readonly literal: string } };
+      }>;
+    }> = OrchestrationCommand.members as never;
+    const channelTypes = [
+      ...new Set(
+        groups
+          .flatMap((group) => group.members)
+          .map((member) => member.fields.type.literal)
+          .filter((literal) => literal.startsWith("channel.")),
+      ),
+    ].sort();
+    // If this is empty the traversal broke and the loop below proves nothing.
+    assert.strictEqual(channelTypes.length, 7, `found: ${channelTypes.join(", ")}`);
+
+    const decoded: Array<string> = [];
+    for (const type of channelTypes) {
+      const exit = yield* Effect.exit(
+        decodeClientOrchestrationCommand({
+          type,
+          commandId: "cmd-wire-probe",
+          channelId: "channel-1",
+          name: "seniors",
+          members: [],
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      if (Exit.isSuccess(exit)) decoded.push(type);
+    }
+    // An RPC client can only be given a `human` issuer, which would make every
+    // browser session a channel administrator.
+    assert.deepStrictEqual(
+      decoded,
+      [],
+      `these channel commands decode from the wire: ${decoded.join(", ")}`,
+    );
+  }),
+);
+
+it.effect("drops an issuer a client tries to supply", () =>
+  Effect.gen(function* () {
+    // The engine stamps the issuer from the caller's credential. What matters
+    // here is that a supplied one never survives decoding into the command the
+    // engine then dispatches — whatever the wire says, the field is not there.
+    const command = yield* decodeClientOrchestrationCommand({
+      type: "thread.archive",
+      commandId: "cmd-issuer-probe",
+      threadId: "thread-1",
+      issuer: { memberKind: "human", memberId: "human-attacker" },
+    });
+    assert.strictEqual(command.type, "thread.archive");
+    assert.isFalse(Object.keys(command).includes("issuer"));
+  }),
+);

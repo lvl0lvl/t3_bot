@@ -419,6 +419,13 @@ it.layer(NodeServices.layer)("router and decider agree", (it) => {
         const planned = yield* decideOrchestrationCommand({
           command,
           readModel: readModel(),
+          // Channel commands are refused without an issuer, so the probe
+          // carries one or every channel row would drop out of the comparison
+          // and this table would go green having compared nothing.
+          issuer:
+            type === "channel.post.create"
+              ? { memberKind: "thread", memberId: THREAD_ID }
+              : { memberKind: "human", memberId: "human-walt" },
           // `exit`, not `result`: a probe payload that omits a command's own
           // fields makes some decider cases DEFECT rather than reject, and a
           // defect is not a typed failure. Either way the command simply did

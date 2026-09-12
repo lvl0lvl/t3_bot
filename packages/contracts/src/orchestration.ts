@@ -477,12 +477,38 @@ export const ChannelMember = Schema.Struct({
 });
 export type ChannelMember = typeof ChannelMember.Type;
 
-/** Identifies a post's author. Derived server-side, never supplied by an agent. */
+/**
+ * Identifies a post's author on the EVENT. Derived from the command's issuer,
+ * which the engine stamps from the caller's credential.
+ *
+ * This is not a command field. It used to be, and nothing bound it to the
+ * caller: any caller could post as anyone. The comment here claimed "never
+ * supplied by an agent" while the command carried it and no code checked — an
+ * invariant asserted in a docstring and enforced nowhere.
+ */
 export const ChannelAuthorRef = Schema.Struct({
   memberKind: Schema.Literals(["thread", "human"]),
   memberId: TrimmedNonEmptyString,
 });
 export type ChannelAuthorRef = typeof ChannelAuthorRef.Type;
+
+/**
+ * Who issued a command, stamped by the engine from the caller's credential.
+ *
+ * Never read off the wire. Entry points supply it: `human` for an RPC client,
+ * `thread` for an MCP-credentialed agent call (memberId is its threadId), and
+ * `system` for seeds and reactors. The engine OVERWRITES whatever a caller
+ * sends rather than rejecting it — refusing a supplied issuer would confirm the
+ * field exists and is load-bearing.
+ *
+ * `system` is deliberately not a channel member kind: a reactor has no handle,
+ * so it cannot author a post, only administer.
+ */
+export const CommandIssuer = Schema.Struct({
+  memberKind: Schema.Literals(["human", "thread", "system"]),
+  memberId: TrimmedNonEmptyString,
+});
+export type CommandIssuer = typeof CommandIssuer.Type;
 
 /**
  * A channel as the decider sees it. Membership is here because every write
@@ -1083,7 +1109,9 @@ const ChannelPostCreateCommand = Schema.Struct({
   commandId: CommandId,
   channelId: ChannelId,
   postId: ChannelPostId,
-  authorRef: ChannelAuthorRef,
+  // No author field. The decider derives the author from the command's issuer,
+  // which the engine stamps from the caller's credential. A caller that could
+  // name its own author could post as anyone.
   body: TrimmedNonEmptyString,
   mentions: ChannelMentions,
   // Threading is a field, not a second command.
@@ -1442,6 +1470,22 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
 
+/**
+ * What the WebSocket layer will decode from a client. Deliberately NOT every
+ * dispatchable command.
+ *
+ * Channel commands are absent on purpose. They are authorized by the command's
+ * engine-stamped issuer, and the only issuer an RPC client can be given today is
+ * `human` — which would make every browser session a channel administrator. The
+ * MCP path supplies a `thread` issuer from its credential and is where agent
+ * channel access belongs.
+ *
+ * This exclusion used to be the ONLY thing preventing forged authorship, by
+ * accident: nothing recorded that it was load-bearing, so adding a channel
+ * command here to "finish the integration" would have opened it silently.
+ * `orchestration.test.ts` asserts the absence, so that is now a failing test
+ * rather than a silent grant.
+ */
 export const ClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,

@@ -3,6 +3,7 @@ import type {
   ChannelId,
   ChannelMember,
   ChannelMemberHandle,
+  CommandIssuer,
   OrchestrationChannel,
   OrchestrationCommand,
   OrchestrationProject,
@@ -42,6 +43,82 @@ export function listThreadsByProjectId(
   projectId: ProjectId,
 ): ReadonlyArray<OrchestrationThread> {
   return readModel.threads.filter((thread) => thread.projectId === projectId);
+}
+
+/**
+ * The issuer the engine stamped, refusing a command that arrived without one.
+ *
+ * The issuer rides the decider's input rather than the 89 command structs, so
+ * the compiler cannot force a caller to supply it. This closes that: a channel
+ * command with no issuer is REFUSED, never processed unauthenticated. Fail-open
+ * was the original bug — `requireChannelAuthorIsMember` asked whether the
+ * author was SOME member and never whether it was the CALLER.
+ *
+ * Every `channel.*` branch calls this. `decider.issuer.test.ts` asserts that by
+ * name over the whole command union, so a new channel command that skips it
+ * fails a test instead of shipping unauthorized.
+ */
+export function requireCommandIssuer(input: {
+  readonly command: OrchestrationCommand;
+  readonly issuer: CommandIssuer | undefined;
+}): Effect.Effect<CommandIssuer, OrchestrationCommandInvariantError> {
+  if (input.issuer !== undefined) {
+    return Effect.succeed(input.issuer);
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `Command '${input.command.type}' arrived without an issuer and cannot be authorized.`,
+    ),
+  );
+}
+
+/**
+ * The author of a post, derived from the issuer — never from the command.
+ *
+ * A `system` issuer is refused: a reactor has no handle, so it has nothing to
+ * appear as in a channel. It may administer, not speak.
+ */
+export function requireIssuerCanAuthor(input: {
+  readonly command: OrchestrationCommand;
+  readonly issuer: CommandIssuer;
+}): Effect.Effect<ChannelAuthorRef, OrchestrationCommandInvariantError> {
+  if (input.issuer.memberKind === "system") {
+    return Effect.fail(
+      invariantError(
+        input.command.type,
+        "A system issuer has no handle and cannot author a channel post.",
+      ),
+    );
+  }
+  return Effect.succeed({
+    memberKind: input.issuer.memberKind,
+    memberId: input.issuer.memberId,
+  });
+}
+
+/**
+ * Membership and channel administration are human-or-system only for M1.
+ *
+ * An agent thread that could add itself would be granting itself post and read
+ * rights on any channel whose id it can name, and one that could remove a peer
+ * would silently evict it from the wake set. Both were unguarded: `member.add`
+ * checked only handle uniqueness and `member.remove` only that the handle was
+ * present, neither asked who was issuing.
+ */
+export function requireIssuerCanAdminister(input: {
+  readonly command: OrchestrationCommand;
+  readonly issuer: CommandIssuer;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  if (input.issuer.memberKind !== "thread") {
+    return Effect.void;
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `A thread issuer cannot administer a channel: '${input.command.type}' requires a human or system issuer.`,
+    ),
+  );
 }
 
 /**

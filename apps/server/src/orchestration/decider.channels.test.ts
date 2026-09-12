@@ -16,6 +16,16 @@ const CHANNEL = ChannelId.make("channel-1");
 const BOSS1 = ChannelMemberHandle.make("boss1");
 const PM = ChannelMemberHandle.make("pm");
 
+/**
+ * The engine stamps the issuer from the caller's credential; the decider never
+ * takes it from the command. `pm` is a seeded member, so it can author. `walt`
+ * is a human who is NOT a member: humans administer, members speak, and the two
+ * are separate powers.
+ */
+const PM_ISSUER = { memberKind: "thread", memberId: "thread-pm" } as const;
+const ADMIN = { memberKind: "human", memberId: "human-walt" } as const;
+const STRANGER = { memberKind: "thread", memberId: "thread-stranger" } as const;
+
 /** A #seniors-shaped channel: one thread member and one human. */
 function makeReadModel(
   members: ReadonlyArray<{ handle: string; memberKind: "thread" | "human"; memberId: string }> = [
@@ -45,19 +55,13 @@ function makeReadModel(
   };
 }
 
-function postCommand(overrides: {
-  readonly authorMemberId?: string;
-  readonly mentions?: ReadonlyArray<string>;
-}) {
+function postCommand(overrides: { readonly mentions?: ReadonlyArray<string> }) {
   return {
     type: "channel.post.create",
     commandId: CommandId.make("cmd-post-1"),
     channelId: CHANNEL,
     postId: ChannelPostId.make("post-1"),
-    authorRef: {
-      memberKind: "thread" as const,
-      memberId: overrides.authorMemberId ?? "thread-pm",
-    },
+    // No author field: the command cannot name who it is from.
     body: "what is 2+2",
     mentions: (overrides.mentions ?? ["boss1"]).map((handle) => ChannelMemberHandle.make(handle)),
     parentPostId: null,
@@ -71,6 +75,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       const decided = yield* decideOrchestrationCommand({
         command: postCommand({}),
         readModel: makeReadModel(),
+        issuer: PM_ISSUER,
       });
       const events = Array.isArray(decided) ? decided : [decided];
       expect(events[0]?.type).toBe("channel.post-created");
@@ -85,8 +90,9 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
   it.effect("rejects a post whose author is not a member", () =>
     Effect.gen(function* () {
       const error = yield* decideOrchestrationCommand({
-        command: postCommand({ authorMemberId: "thread-stranger" }),
+        command: postCommand({}),
         readModel: makeReadModel(),
+        issuer: STRANGER,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       // Pins THIS invariant: without it another guard firing first would
@@ -107,8 +113,9 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // cleanly, so moving canonicalisation ahead of the author check does not
       // change this error — the test below is the one that pins the ordering.
       const error = yield* decideOrchestrationCommand({
-        command: postCommand({ authorMemberId: "thread-stranger", mentions: ["boss1", "nobody"] }),
+        command: postCommand({ mentions: ["boss1", "nobody"] }),
         readModel: makeReadModel(),
+        issuer: STRANGER,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
@@ -148,6 +155,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       const error = yield* decideOrchestrationCommand({
         command: postCommand({ mentions: ["boss1", "nobody"] }),
         readModel: makeReadModel(),
+        issuer: PM_ISSUER,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       // Pins THIS invariant: without it another guard firing first would
@@ -163,6 +171,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       const error = yield* decideOrchestrationCommand({
         command: postCommand({}),
         readModel: { ...makeReadModel(), channels: [] },
+        issuer: PM_ISSUER,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       // Pins THIS invariant: without it another guard firing first would
@@ -189,6 +198,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           createdAt: NOW,
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       // Pins THIS invariant: without it another guard firing first would
@@ -209,6 +219,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           member: { handle: BOSS1, memberKind: "thread", memberId: "thread-other" },
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       // Pins THIS invariant: without it another guard firing first would
@@ -229,6 +240,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           handle: ChannelMemberHandle.make("nobody"),
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       // Pins THIS invariant: without it another guard firing first would
@@ -275,14 +287,28 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
         postCommand({}),
       ] as const;
 
+      // Administration needs a human issuer and authoring needs a member one,
+      // so the post carries its own. A single issuer for the whole list would
+      // refuse half of them and the loop would prove nothing.
+      let compared = 0;
       for (const command of commands) {
-        const decided = yield* decideOrchestrationCommand({ command, readModel: makeReadModel() });
+        const decided = yield* decideOrchestrationCommand({
+          command,
+          readModel: makeReadModel(),
+          issuer: command.type === "channel.post.create" ? PM_ISSUER : ADMIN,
+        });
         const events = Array.isArray(decided) ? decided : [decided];
         for (const event of events) {
           expect(event.aggregateKind).toBe("channel");
           expect(event.aggregateId).toBe(CHANNEL);
+          compared += 1;
         }
       }
+      // A refused command emits no events and drops out of the loop silently,
+      // so the count is what stops this passing while proving nothing.
+      expect(compared, "every command in the list must have produced an event").toBe(
+        commands.length,
+      );
     }),
   );
 
@@ -303,6 +329,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           createdAt: NOW,
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       });
       const events = Array.isArray(decided) ? decided : [decided];
       expect(events[0]?.type).toBe("channel.created");
@@ -328,6 +355,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           createdAt: NOW,
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
@@ -346,6 +374,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           name: "##",
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
@@ -368,6 +397,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           createdAt: NOW,
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       });
       const events = Array.isArray(decided) ? decided : [decided];
       // Asserted, not just narrowed: a wrong event type makes the branch below
@@ -400,6 +430,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           createdAt: NOW,
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       });
       const events = Array.isArray(decided) ? decided : [decided];
       // Asserted, not just narrowed: a wrong event type makes the branch below
@@ -459,6 +490,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           createdAt: NOW,
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
@@ -477,6 +509,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           handle: ChannelMemberHandle.make("@Boss1"),
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       });
       const events = Array.isArray(decided) ? decided : [decided];
       expect(events[0]?.type).toBe("channel.member-removed");
@@ -491,6 +524,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       const decided = yield* decideOrchestrationCommand({
         command: postCommand({ mentions: ["@Boss1"] }),
         readModel: makeReadModel(),
+        issuer: PM_ISSUER,
       });
       const events = Array.isArray(decided) ? decided : [decided];
       expect(events[0]?.type).toBe("channel.post-created");
@@ -518,6 +552,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           createdAt: NOW,
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
@@ -546,6 +581,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           createdAt: NOW,
         },
         readModel: archived,
+        issuer: ADMIN,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
@@ -601,6 +637,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           name: "#SENIORS",
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       });
       const events = Array.isArray(decided) ? decided : [decided];
       expect(events[0]?.type).toBe("channel.meta-updated");
@@ -622,6 +659,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           createdAt: NOW,
         },
         readModel: makeReadModel(),
+        issuer: ADMIN,
       });
       const events = Array.isArray(decided) ? decided : [decided];
       expect(events[0]?.type).toBe("channel.created");

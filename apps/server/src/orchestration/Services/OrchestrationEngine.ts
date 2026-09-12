@@ -11,6 +11,7 @@
  * @module OrchestrationEngineService
  */
 import type {
+  CommandIssuer,
   OrchestrationClientOrigin,
   OrchestrationCommand,
   OrchestrationEvent,
@@ -72,7 +73,18 @@ export interface OrchestrationEngineShape {
    */
   readonly dispatch: (
     command: OrchestrationCommand,
-    options?: { readonly origin?: OrchestrationClientOrigin },
+    options?: {
+      readonly origin?: OrchestrationClientOrigin;
+      /**
+       * Who is issuing, from the caller's credential — not from the command.
+       *
+       * Every entry point that can be reached by an untrusted caller must
+       * supply this. Channel commands are refused without it; see
+       * `requireCommandIssuer`. Omitting it fails closed, so a new entry point
+       * that forgets cannot post or administer, only get a rejection.
+       */
+      readonly issuer?: CommandIssuer;
+    },
   ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
 
   /**
