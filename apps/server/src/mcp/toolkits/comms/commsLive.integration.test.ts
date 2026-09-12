@@ -751,8 +751,33 @@ describe("the comms toolkit on the live gateway", () => {
         const error = yield* call("comms_read_channel", { channel: "seniors" }, BOSS3).pipe(
           Effect.flip,
         );
-        // The same answer a non-existent channel gives, byte for byte: an agent
-        // must not be able to probe for channels it is not in.
+
+        // THE TWO ANSWERS COMPARED TO EACH OTHER, which is the only form of
+        // this assertion that holds the property. A caller able to tell "no
+        // such channel" from "exists, you are not in it" can enumerate private
+        // channel names by probing.
+        //
+        // The seam used to hold that structurally - membership was a PARAMETER
+        // of the lookup - and this layer does not: the lookup runs first and
+        // membership is a guard after it, returning `Option.none` from two
+        // distinct branches two lines apart. Three tests pinned this, each
+        // against its own hardcoded literal, so giving either branch a
+        // distinguishing field left all three green (`t3_bot-glu`).
+        //
+        // The names cannot match: each error echoes what the CALLER asked for.
+        // Substituting each request's own name is what isolates the property -
+        // nothing in the answer varies with what is STORED.
+        const missing = yield* call(
+          "comms_read_channel",
+          { channel: "no-such-channel" },
+          BOSS3,
+        ).pipe(Effect.flip);
+        const shape = (value: unknown, asked: string) =>
+          JSON.stringify(value, (_key, inner: unknown) =>
+            typeof inner === "string" ? inner.split(asked).join("<asked>") : inner,
+          );
+        expect(shape(error, "seniors")).toBe(shape(missing, "no-such-channel"));
+
         expect((error as { _tag: string })._tag).toBe("CommsChannelNotFoundError");
         expect((error as { message: string }).message).toBe(
           "No channel named 'seniors' that you are a member of.",
