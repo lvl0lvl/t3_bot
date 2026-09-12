@@ -207,12 +207,27 @@ const make = Effect.gen(function* () {
     if (boundary === -1) {
       return Option.none<number>();
     }
-    const from = cursor.slice(0, boundary);
-    const sequence = Number(cursor.slice(boundary + 1));
+    const issuedBy = cursor.slice(0, boundary);
+    const digits = cursor.slice(boundary + 1);
+    // DIGITS BEFORE `Number()`, because `Number()` is laxer than the schema
+    // that feeds this and this function is also the door a DIRECT caller uses.
+    // `Number("")` is 0, `Number("0x2")` is 2, `Number(" 3 ")` is 3,
+    // `Number("1e2")` is 100 - so `"<channel>:"` decoded to sequence 0 and the
+    // read answered it with the FIRST PAGE. An empty-looking page that is
+    // really "here is the start again" is the same class of lie this whole
+    // change exists to remove, reachable at the seam rather than through the
+    // tool.
+    if (!/^[0-9]+$/.test(digits)) {
+      return Option.none<number>();
+    }
+    const sequence = Number(digits);
     // BOTH halves, and the channel half first: a cursor for another channel is
     // the defect this exists for, and a caller that gets the right refusal for
-    // the wrong reason has learned nothing.
-    if (from !== channelId || !Number.isSafeInteger(sequence) || sequence < 0) {
+    // the wrong reason has learned nothing. Compared EXACTLY - a length or
+    // prefix comparison passes every obvious test fixture and pages the wrong
+    // channel on a seeded install, where two channel ids share a prefix and a
+    // length.
+    if (issuedBy !== channelId || !Number.isSafeInteger(sequence) || sequence < 0) {
       return Option.none<number>();
     }
     return Option.some(sequence);
@@ -225,16 +240,18 @@ const make = Effect.gen(function* () {
       // REFUSED rather than answered. Returning an empty page here is the
       // original defect wearing the fix's clothes: the caller cannot tell it
       // from the end of the channel.
-      const from =
+      const decoded =
         input.cursor === undefined
           ? Option.some(undefined)
-          : Option.map(decodeCursor(input.channelId, input.cursor), (sequence) => sequence);
-      if (Option.isNone(from)) {
+          : decodeCursor(input.channelId, input.cursor);
+      if (Option.isNone(decoded)) {
         return Effect.fail<ChannelCursorUnusable | ChannelStoreUnavailable>(
-          new ChannelCursorUnusable({ cursor: input.cursor ?? "", channelId: input.channelId }),
+          // `input.cursor` is defined on this branch: an absent cursor took the
+          // `Option.some(undefined)` path above and cannot reach here.
+          new ChannelCursorUnusable({ cursor: input.cursor!, channelId: input.channelId }),
         );
       }
-      const at = from.value;
+      const at = decoded.value;
       const channelId = ChannelId.make(input.channelId);
       // OVER-FETCH BY ONE. `nextCursor` has to say whether another post exists
       // in that direction, and asking for one more than the caller wanted is

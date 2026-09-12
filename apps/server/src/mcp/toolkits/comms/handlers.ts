@@ -143,13 +143,15 @@ const make = Effect.gen(function* () {
    * Naming each tag is what makes a later widening of the gateway's error
    * channel a compile error here rather than a silent flattening.
    */
+  // EXTENDS the store mapping rather than restating it, so the two cannot drift
+  // into disagreeing about what a store failure means.
   const readFailures = (channelName: string) =>
     ({
-      ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
-        Effect.fail(new CommsReadFailedError({ detail: error.detail })),
+      ...storeUnavailableAsRead,
       // NAMED, not folded into the read failure. "The store did not answer" and
       // "your cursor is for a different channel" call for opposite responses:
-      // retry the first, drop the cursor on the second.
+      // retry the first, drop the cursor on the second. Folding them survived
+      // the whole suite until a test asserted the tag it must NOT be.
       ChannelCursorUnusable: () =>
         Effect.fail(new CommsCursorUnusableError({ channel: channelName })),
     }) as const;
