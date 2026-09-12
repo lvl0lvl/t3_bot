@@ -439,9 +439,23 @@ describe("MentionWakeReactor", () => {
       for (let index = 0; index < 25; index += 1) {
         await post(system, { id: `post-burst-${index}`, mentions: [MENTION] });
       }
+      const head = await system.run(system.engine.latestSequence);
       await system.dispose();
 
       system = await makeSystem(databasePath);
+      // The scenario is only real if work was OUTSTANDING when the system went
+      // down. If the worker had drained everything, this test asserts nothing -
+      // the same way the crash-window test used to, and for the same reason.
+      // The cursor lagging the head is the proof, and on a machine fast enough
+      // to finish 25 wakes before dispose this fails LOUDLY rather than passing
+      // vacuously.
+      const cursorAtShutdown = await system.run(
+        system.cursors.getByProjector({ projector: MENTION_WAKE_CURSOR }),
+      );
+      expect(
+        Option.isSome(cursorAtShutdown) ? cursorAtShutdown.value.lastAppliedSequence : -1,
+      ).toBeLessThan(head);
+
       await system.startReactor();
       await system.run(
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
