@@ -1250,7 +1250,11 @@ describe("OrchestrationEngine", () => {
     } finally {
       await system.dispose();
     }
-  });
+    // An explicit, short timeout. This test does not need one to PASS — it
+    // settles in well under a second. It needs one to FAIL usefully: the
+    // regression it guards is a HANG, and the only way to observe a hang is to
+    // stop waiting. Left at the 120s default, the red takes two minutes.
+  }, 20_000);
 
   it("allows authoritative worktree bootstrap to assign a temporary branch", async () => {
     const system = await createOrchestrationSystem();
@@ -2122,5 +2126,46 @@ describe("OrchestrationEngine", () => {
     expect(withoutOrigin?.metadata.origin).toBeUndefined();
 
     await system.dispose();
+  });
+
+  it("rejects an unroutable command and keeps serving the ones behind it", async () => {
+    // The routing function returning null is only half the fix. The half that
+    // matters is here: the engine's single command-queue worker calls it in
+    // processEnvelope's synchronous prologue, OUTSIDE the Effect.exit boundary,
+    // so turning that null into a failed Deferred rather than a throw is what
+    // keeps the worker alive. A throw there settles nothing and every later
+    // command waits forever on an untimed await, with nothing surfaced to any
+    // client — a silent, permanent orchestration outage.
+    const system = await createOrchestrationSystem();
+    try {
+      await expect(
+        system.run(
+          system.engine.dispatch({
+            type: "thread.not-a-real-command",
+            commandId: CommandId.make("cmd-unroutable"),
+            threadId: ThreadId.make("unroutable-thread"),
+          } as unknown as Parameters<typeof system.engine.dispatch>[0]),
+        ),
+      ).rejects.toThrow("Unknown command type: thread.not-a-real-command");
+
+      // The assertion that proves the worker survived. Without it this test
+      // passes just as well against a dead fiber, because the first dispatch
+      // fails either way — by rejection here, by hanging there.
+      const projectId = ProjectId.make("after-unroutable-project");
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-after-unroutable"),
+          projectId,
+          title: "Still serving",
+          workspaceRoot: "/workspace/after-unroutable",
+          createdAt: now(),
+        }),
+      );
+      const readModel = await system.readModel();
+      expect(readModel.projects.map((project) => project.id)).toContain(projectId);
+    } finally {
+      await system.dispose();
+    }
   });
 });
