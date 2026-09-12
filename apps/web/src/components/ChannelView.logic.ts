@@ -135,15 +135,20 @@ export function canSendChannelPost(input: {
  *
  * THE VIEW ACCUMULATES AND THE SERVER PAGES, so something has to merge, and the
  * merge is here rather than inside a component because it is the part with a
- * wrong answer available. Paging upward prepends an older page; a live reply
- * appends a newer post; and an optimistic post is later re-read from the server
- * under the same id.
+ * wrong answer available. Paging upward prepends an older page, and a live
+ * re-read returns a newer one.
  *
- * DE-DUPLICATED BY ID, which is what makes the optimistic append safe: the post
- * the client showed immediately and the post the next read returns are ONE post,
- * and a merge that kept both would show the operator their own message twice.
- * The INCOMING copy wins, because it came from the server and the local one was
- * a prediction.
+ * DE-DUPLICATED BY ID, and the two overlaps that make it necessary are both in the
+ * code today: a refresh re-reads the page already on screen, so every post in it
+ * arrives a second time; and a page fetched upward can overlap the one below it,
+ * because the cursor names a boundary and a post can be re-read at it. A merge that
+ * kept both copies would show the same post twice. The INCOMING copy wins, because
+ * it is the one the server just sent.
+ *
+ * NOT AN OPTIMISTIC APPEND, which this used to claim as its reason. Nothing inserts a
+ * post before the server confirms it — the composer dispatches and waits — so the
+ * justification named a call site that does not exist and sent a reader looking for
+ * code nobody has written. The property is the same; the reason for it is not.
  *
  * ORDERED BY `sequence`, WHICH IS A TOTAL ORDER. It used to order by `createdAt`
  * with the post id as a tie-break, and that was a correctness bug rather than a

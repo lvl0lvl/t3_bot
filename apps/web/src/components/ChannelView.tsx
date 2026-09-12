@@ -191,6 +191,11 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // page, which is what opening a channel wants.
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [posts, setPosts] = useState<ReadonlyArray<OrchestrationChannelPost>>([]);
+  // The newest post this region has already asked about. NOT a "have I mounted"
+  // flag: what the refresh below must not do is re-read a value it has already
+  // seen, and that is equally true of the second render and of a re-render caused
+  // by something else entirely.
+  const readThrough = useRef(channel.latestPostAt);
   // THREE FACTS IN ONE VARIABLE, because they are three answers to one question
   // and the fourth combination does not exist: `undefined` is "no page has
   // arrived yet", `true` is "a page arrived and there is more above it", `false`
@@ -234,10 +239,18 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // upward is holding an older cursor, and re-reading under it would answer
   // with the same old page while the new post sat unread below them; the next
   // return to the bottom picks it up.
+  //
+  // AND ONLY ON A CHANGE. `cursor === undefined` is true on the FIRST commit too, so
+  // this fired on mount — while the atom was already fetching, because every query
+  // here goes through `Atom.swr({ revalidateOnMount: true })` and a manual refresh is
+  // forceful and always forwarded. Every channel open ran the read TWICE and pulled up
+  // to two pages over the socket, on the most frequent interaction in the feature.
   useEffect(() => {
-    if (cursor === undefined) {
-      refresh();
+    if (cursor !== undefined || readThrough.current === channel.latestPostAt) {
+      return;
     }
+    readThrough.current = channel.latestPostAt;
+    refresh();
   }, [channel.latestPostAt, cursor, refresh]);
 
   // DEPENDS ON `arrived` BY REFERENCE, which is only safe because the atom
@@ -265,6 +278,14 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   if (AsyncResult.isFailure(page) && posts.length === 0) {
     return <PostsUnavailable />;
   }
+  // A FAILURE WITH POSTS ALREADY ON SCREEN IS NOT THE SAME STATE, and it used to be
+  // reported as nothing at all: the guard above only fires while the channel has shown
+  // nothing, so a page that failed after one had landed rendered the previous screen
+  // unchanged. No error, and the pager back to "Earlier posts" as though ready —
+  // pressing it did nothing, because `arrived` is undefined over a Failure. Live
+  // arrival had stopped too, since `cursor` is no longer undefined. A channel that
+  // silently stops mid-history with a control that lies about being able to continue.
+  const pageFailed = AsyncResult.isFailure(page);
   // RETURNED INSTEAD OF THE SCROLL CONTAINER, the way `PostsUnavailable` is.
   // Found by rendering twice: inside that container the empty state cannot
   // centre, because `justify-end` is what puts posts above the composer and
@@ -294,19 +315,31 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <div className="mt-auto flex flex-col gap-3 p-4">
         {moreAbove ? (
+          // ONE CONTROL, whose action is what the reader needs next. On a failure it
+          // re-issues the SAME cursor through `refresh()` rather than advancing or
+          // resetting one: reverting to the newest page would silently undo the reader's
+          // own action and throw away their place in the history.
           <Button
             variant="ghost"
             size="sm"
             className="self-center"
             disabled={page.waiting}
             onClick={() => {
+              if (pageFailed) {
+                refresh();
+                return;
+              }
               const next = arrived?.nextCursor;
               if (next !== null && next !== undefined) {
                 setCursor(next);
               }
             }}
           >
-            {page.waiting ? "Loading earlier posts…" : "Earlier posts"}
+            {page.waiting
+              ? "Loading earlier posts…"
+              : pageFailed
+                ? "Earlier posts didn’t load. Try again"
+                : "Earlier posts"}
           </Button>
         ) : null}
         {posts.map((post) => (

@@ -1,4 +1,5 @@
 import { ChannelId, ChannelPostId, ChannelMemberHandle, EnvironmentId } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -53,6 +54,15 @@ const harness = vi.hoisted(() => ({
   /** Every request the region built, in order — the record of what it ASKED. */
   asked: [] as Array<{ channelId: string; direction: string; cursor?: string }>,
   refreshes: 0,
+  /**
+   * Channel A's `latestPostAt`, MUTABLE.
+   *
+   * The live-arrival effect fires on a CHANGE to this value, and the only fixture that
+   * distinguishes that from firing on mount is one where the value changes under a
+   * region that is already mounted. Driving it by switching channels cannot: the region
+   * is keyed on the channel id, so a switch is a remount and both implementations agree.
+   */
+  latestPostAtForA: "2026-01-01T00:00:01.000Z" as string | null,
   /** One refresh callback per atom, because the real hook is stable per atom. */
   refreshers: new WeakMap<object, () => void>(),
 }));
@@ -159,7 +169,7 @@ vi.mock("../state/entities", () => ({
       return shell(CHANNEL_EMPTY, "quiet", null);
     }
     return channelId === CHANNEL_A
-      ? shell(CHANNEL_A, "alpha", "2026-01-01T00:00:01.000Z")
+      ? shell(CHANNEL_A, "alpha", harness.latestPostAtForA)
       : shell(CHANNEL_B, "bravo", "2026-01-01T00:00:02.000Z");
   },
   useChannelSupport: () => "supported",
@@ -203,6 +213,21 @@ const answer = (
   });
 };
 
+/**
+ * A read that FAILED, holding no previous success.
+ *
+ * `AsyncResult.value` of a Failure is `Option.map(previousSuccess, ...)`, so an absent
+ * previous success is what makes `arrived` undefined — which is exactly the state in
+ * which the old pager offered to fetch a page it had no cursor for.
+ */
+const answerFailure = (channelId: ChannelId, cursor?: string) => {
+  harness.results.set(requestKey(channelId, cursor), {
+    waiting: false,
+    _tag: "Failure",
+    previousSuccess: Option.none(),
+  });
+};
+
 /** The read before it resolves: waiting, and holding no page at all. */
 const answerNothingYet = (channelId: ChannelId, cursor?: string) => {
   harness.results.set(requestKey(channelId, cursor), { waiting: true, _tag: "Initial" });
@@ -243,6 +268,7 @@ describe("ChannelPostRegion", () => {
   };
 
   const reset = () => {
+    harness.latestPostAtForA = "2026-01-01T00:00:01.000Z";
     harness.results.clear();
     harness.asked.length = 0;
     harness.refreshes = 0;
@@ -318,14 +344,66 @@ describe("ChannelPostRegion", () => {
     answer(CHANNEL_A, { posts: [post(1, "p-before", "before")], nextCursor: null });
     const { ChannelView } = await import("./ChannelView");
     const tree = await mount(CHANNEL_A);
-    const afterMount = harness.refreshes;
-    expect(afterMount).toBeGreaterThan(0);
 
-    // Switching to a channel with a different `latestPostAt` re-runs the effect.
+    // NO REFRESH ON MOUNT (`BUG-25-03`). The atom is already fetching — every query
+    // here is `Atom.swr({ revalidateOnMount: true })` — and a manual refresh is
+    // forceful and always forwarded, so this effect firing on the first commit ran the
+    // open TWICE and pulled up to two pages over the socket. This assertion is the
+    // inverse of the one it replaces, which asserted the second read as though it were
+    // the feature.
+    expect(harness.refreshes).toBe(0);
+
+    // A NEW POST ON THE SAME CHANNEL, which is the only fixture that separates "fires on
+    // a change" from "fires on mount". The old version switched channels, and the region
+    // is keyed on the channel id — so that was a remount, where both implementations
+    // refresh exactly once and neither can be told from the other.
+    harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
     await act(async () => {
-      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_B} />);
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
     });
-    expect(harness.refreshes).toBeGreaterThan(afterMount);
+    expect(harness.refreshes).toBe(1);
+
+    // AND NOT AGAIN for the same value. A re-render caused by anything else must not
+    // re-read a post the region has already asked about.
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(harness.refreshes).toBe(1);
+  });
+
+  it("says a page failed, and the control retries it", async () => {
+    // `BUG-25-02`. The failure branch is gated on `posts.length === 0`, so a page that
+    // failed AFTER one had landed rendered the previous screen unchanged: no error, and
+    // the pager back to "Earlier posts" as though ready. Pressing it did nothing —
+    // `arrived` is undefined over a Failure — and live arrival had already stopped,
+    // because `cursor` is no longer undefined. A channel that stops mid-history with a
+    // control that lies about being able to continue, and no way back without a reload.
+    reset();
+    answer(CHANNEL_A, { posts: [post(2, "p-newest", "NEWEST")], nextCursor: "channel-a:1" });
+    answerFailure(CHANNEL_A, "channel-a:1");
+    const tree = await mount(CHANNEL_A);
+    expect(buttonLabels(tree)).toContain("Earlier posts");
+
+    const pager = tree.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      pager?.props.onClick?.();
+    });
+
+    // The posts already on screen stay — the reader does not lose their place.
+    expect(bodies(tree)).toEqual(["NEWEST"]);
+    // AND THE CONTROL SAYS SO. A label reading "Earlier posts" here is the stale label
+    // this repository's taste section names, and it is also an offer it cannot honour.
+    expect(buttonLabels(tree)).toContain("Earlier posts didn’t load. Try again");
+    expect(buttonLabels(tree)).not.toContain("Earlier posts");
+
+    // Pressing it RE-ISSUES the same read rather than advancing or resetting the cursor:
+    // reverting to the newest page would silently undo what the reader asked for.
+    const before = harness.refreshes;
+    const retry = tree.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      retry?.props.onClick?.();
+    });
+    expect(harness.refreshes).toBe(before + 1);
   });
   it("does not offer the pager before any page has arrived", async () => {
     // THE FOURTH STATE, reachable on every single open. The read is `Initial`
