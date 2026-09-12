@@ -191,53 +191,36 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
     });
   }
 
-  // THE CREATES ABOVE DO NOTHING ON AN ENVIRONMENT THAT HAS ALREADY BOOTED — the receipt
-  // short-circuit stated below `channel.member.add`, doing its job. The consequence is what
-  // this command exists for: #16's correction to `instanceId` lands on a fresh database and is
-  // skipped everywhere that booted before it, so those threads keep `instanceId: 'claude'`,
-  // every mention-wake fails at the provider boundary, and `seedHierarchy` returns success.
-  // Observed on a scratch home that had booted once (`t3_bot-p4u`). A NEW id is the whole fix.
+  // THE CREATES ABOVE DO NOTHING ON AN ENVIRONMENT THAT HAS ALREADY BOOTED: the receipt
+  // short-circuit below `channel.member.add`, doing its job. So #16's correction to `instanceId`
+  // reached a fresh database and was skipped everywhere that had booted, leaving
+  // `instanceId: 'claude'`, every mention-wake failing at the provider boundary, and
+  // `seedHierarchy` returning success. A NEW id is the whole fix (`t3_bot-p4u`).
   //
-  // WHAT MAKES THIS READ SAFE IS NOT THE DETERMINISTIC ID. That id stops the repair from
-  // running twice; it does nothing about the repair overwriting a concurrent writer's value
-  // from a stale read, which is last-writer-wins data loss — the outcome the old-value guard
-  // below exists to prevent. It is safe because no other writer of `thread.modelSelection` can
-  // run in this window: every client command is behind `commandGate.enqueueCommand`, whose gate
-  // is signalled long after this phase (`serverRuntimeStartup.ts`), and no reactor writes
-  // `modelSelection` at all. A writer that is not behind that gate makes this read need
-  // re-arguing rather than re-reading.
+  // WHAT MAKES THIS READ SAFE IS NOT THE DETERMINISTIC ID — that stops a second write, not a
+  // stale overwrite. It is that no other writer of `thread.modelSelection` can run in this
+  // window: client commands are behind `commandGate.enqueueCommand`, signalled long after this
+  // phase, and no reactor writes `modelSelection`. Add a writer outside that gate and this read
+  // needs re-arguing.
   //
-  // The read is the whole command read model for three `instanceId` values, accepted rather
-  // than overlooked: two earlier startup phases already load it
-  // (`markRunningProviderSessionsForContinuation`, `reconcileProviderSessions`), so this is a
-  // third load on a path already paying two. `getThreadShellById` is the narrower read when
-  // that stops being true — `t3_bot-ofl`.
-  //
-  // THE ALTERNATIVE WAS A MIGRATION, and `persistence/Migrations/046_RepairAutomaticSettlementTimestamps.ts`
-  // is the precedent: same discipline, identifying rows by the signature of the bad write. A
-  // command wins here for the reason the header gives — it goes through the engine and is subject
-  // to the invariants — but a migration retires itself by number and this loop does not. It runs on
-  // every boot of every environment forever, and `t3_bot-0fx` carries the condition for deleting
-  // it: no database predating #16 can still be booted.
+  // Two accepted costs, both recorded: the whole read model for three values, when two earlier
+  // startup phases already load it (`t3_bot-ofl`), and a loop that runs on every boot forever
+  // where a migration would retire itself by number (`t3_bot-0fx`).
   const readModel = yield* projections.getCommandReadModel();
   for (const thread of SEEDED_THREADS) {
     const existing = readModel.threads.find((row) => row.id === thread.id);
-    // ABSENT IS NOT THE FRESH-BOOT CASE. Measured: the create above is visible to this read
-    // with no drain in between, so on a first boot `existing` is defined, carries the right
-    // instance, and the guard below is what skips it. Absent means the row is not readable yet
-    // — a projector cursor behind the event log — and then dispatching nothing is right: no
-    // receipt is written, so the next boot repairs it.
+    // ABSENT IS NOT THE FRESH-BOOT CASE — measured: the create above is visible to this read
+    // with no drain between them, so on a first boot `existing` is defined with the right
+    // instance and the guard below is what skips it. Absent means a projection that has not got
+    // the row yet, and dispatching nothing is right: no receipt, so the next boot repairs it.
     if (existing === undefined) {
       continue;
     }
-    // THE OLD VALUE, NOT "ANYTHING UNRESOLVABLE". An operator who has re-pointed a thread
-    // owns that choice even if this build cannot resolve it either — a seeder that overwrote
-    // it would be worse than the bug. So this fires only on the exact id that shipped.
-    //
-    // A DELETED OR ARCHIVED THREAD IS STILL REPAIRED: the read is unfiltered and this asks only
-    // about the instance, so an undelete or unarchive lands on a repaired row rather than on the
-    // bug, and nothing wakes a deleted thread in the meantime. Whether a delete should count as
-    // stronger ownership than a re-point is `t3_bot-40z`, and it is not settled here.
+    // THE OLD VALUE, NOT "ANYTHING UNRESOLVABLE" (`t3_bot-p4u`, criterion 3). An operator who
+    // has re-pointed a thread owns that choice even if this build cannot resolve it either — a
+    // seeder that overwrote it would be worse than the bug. So this fires only on the exact id
+    // that shipped, which also means a deleted or archived thread is repaired: an undelete lands
+    // on a repaired row. Whether a delete outranks a re-point is `t3_bot-40z`.
     if (existing.modelSelection.instanceId !== SHIPPED_BAD_INSTANCE_ID) {
       continue;
     }
