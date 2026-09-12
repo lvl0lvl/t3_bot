@@ -65,6 +65,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { MentionWakeBudgetRepositoryLive } from "../../persistence/Layers/MentionWakeBudget.ts";
 import { MentionWakeBudgetRepository } from "../../persistence/Services/MentionWakeBudget.ts";
 import { ChannelPostWakeRepository } from "../../persistence/Services/ChannelPostWakes.ts";
+import { wakesForPosts } from "../channelPostWakes.ts";
 import { MentionWakeReactor, MENTION_WAKE_CURSOR } from "../Services/MentionWakeReactor.ts";
 import {
   HELD_BACKLOG_LIMIT,
@@ -487,16 +488,18 @@ const setSession = async (
     readonly label: string;
     readonly activeTurnId: TurnId | null;
     readonly updatedAt: string;
+    readonly threadId?: ThreadId;
+    readonly status?: "running" | "interrupted";
   },
 ) =>
   system.run(
     system.engine.dispatch({
       type: "thread.session.set",
       commandId: CommandId.make(`cmd-session-${input.label}`),
-      threadId: WOKEN,
+      threadId: input.threadId ?? WOKEN,
       session: {
-        threadId: WOKEN,
-        status: "running",
+        threadId: input.threadId ?? WOKEN,
+        status: input.status ?? "running",
         providerName: "codex",
         providerInstanceId: ProviderInstanceId.make("codex"),
         runtimeMode: WOKEN_RUNTIME_MODE,
@@ -2032,6 +2035,167 @@ describe("MentionWakeReactor", () => {
       const woken = await wakeMessages(system, WOKEN);
       expect(woken.filter((text) => text.includes('post "post-first"'))).toHaveLength(1);
       expect(woken.filter((text) => text.includes('post "post-second"'))).toHaveLength(1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("reports one post's wake of TWO threads as two wakes, each with its own outcome", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+
+      // THE FIXTURE THE ARRAY WAS ARGUED FOR AND NEVER GIVEN. `wakes` is an
+      // array because one post can wake two threads whose turns end
+      // differently; a sweep found that dropping every wake after the first
+      // red nothing, because no test had a second one to drop.
+      await post(system, {
+        id: "post-both",
+        mentions: [MENTION, BYSTANDER_MENTION],
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      const WOKEN_TURN = TurnId.make("turn-woken");
+      const BYSTANDER_TURN = TurnId.make("turn-bystander");
+      await setSession(system, {
+        label: "woken-start",
+        activeTurnId: WOKEN_TURN,
+        updatedAt: "2026-01-01T00:00:30.000Z",
+      });
+      await setSession(system, {
+        label: "bystander-start",
+        threadId: BYSTANDER,
+        activeTurnId: BYSTANDER_TURN,
+        updatedAt: "2026-01-01T00:00:31.000Z",
+      });
+      // ONE ENDS BADLY AND ONE DOES NOT, so a single outcome over both threads
+      // would have to invent a precedence — and the assertion below can tell
+      // "two wakes" from "one wake, twice".
+      await setSession(system, {
+        label: "bystander-interrupted",
+        threadId: BYSTANDER,
+        activeTurnId: null,
+        status: "interrupted",
+        updatedAt: "2026-01-01T00:01:00.000Z",
+      });
+
+      const wakes = await system.run(
+        wakesForPosts({ channelId: CHANNEL_ID, postIds: ["post-both"] }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.succeed(ChannelPostWakeRepository, system.wakes),
+              Layer.succeed(ProjectionTurnRepository, system.turns),
+            ),
+          ),
+        ),
+      );
+      expect(
+        [...(wakes.get("post-both") ?? [])].sort((a, b) => a.threadId.localeCompare(b.threadId)),
+      ).toEqual([
+        { threadId: BYSTANDER, turnId: BYSTANDER_TURN, outcome: "cancelled" },
+        { threadId: WOKEN, turnId: WOKEN_TURN, outcome: "running" },
+      ]);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("says `unknown` for a wake whose turn row is gone, and only for that", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await post(system, {
+        id: "post-reverted",
+        mentions: [MENTION],
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      const TURN = TurnId.make("turn-to-lose");
+      await setSession(system, {
+        label: "start",
+        activeTurnId: TURN,
+        updatedAt: "2026-01-01T00:00:30.000Z",
+      });
+
+      // THE ONE WAY A TURN ROW GOES AWAY THAT A TEST CAN DRIVE. `unknown` was
+      // argued rare because `projection_turns` has two DELETEs — the pending
+      // placeholder's, and a whole-thread delete from `thread.created` and
+      // `thread.reverted` — and then never produced: a sweep found that
+      // mapping a missing row to "completed" red nothing. This deletes the
+      // rows the way `thread.created` does, through the repository, which is
+      // the same statement the projector runs.
+      await system.run(system.turns.deleteByThreadId({ threadId: WOKEN }));
+
+      const wakes = await system.run(
+        wakesForPosts({ channelId: CHANNEL_ID, postIds: ["post-reverted"] }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.succeed(ChannelPostWakeRepository, system.wakes),
+              Layer.succeed(ProjectionTurnRepository, system.turns),
+            ),
+          ),
+        ),
+      );
+      // THE LINK SURVIVES THE TURN ROW — that is the point of a separate table —
+      // and says so, rather than reporting the post as answered.
+      expect(wakes.get("post-reverted")).toEqual([
+        { threadId: WOKEN, turnId: TURN, outcome: "unknown" },
+      ]);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("reads a turn's state by thread AND turn, not by turn id alone", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      // THE SAME TURN ID ON TWO THREADS. Turn ids are UUIDs in practice and
+      // this cannot happen in practice — which is exactly why the batch read's
+      // `WHERE turn_id IN (...)` over-fetches by turn id alone and filters the
+      // thread half on the way out, and why nothing tested the filter: no
+      // fixture had a collision to filter. The repository's key is the pair,
+      // so the pair is constructible here even though the runtime never makes
+      // one.
+      const SHARED = TurnId.make("turn-shared");
+      await setSession(system, {
+        label: "woken",
+        activeTurnId: SHARED,
+        updatedAt: "2026-01-01T00:00:30.000Z",
+      });
+      await setSession(system, {
+        label: "bystander",
+        threadId: BYSTANDER,
+        activeTurnId: SHARED,
+        updatedAt: "2026-01-01T00:00:31.000Z",
+      });
+      await setSession(system, {
+        label: "bystander-done",
+        threadId: BYSTANDER,
+        activeTurnId: null,
+        status: "interrupted",
+        updatedAt: "2026-01-01T00:01:00.000Z",
+      });
+
+      // Asked about WOKEN's turn only; BYSTANDER's row shares the turn id and
+      // must not come back — it is in the other state, so a filter that ignored
+      // the thread half would answer "interrupted" for a turn that is running.
+      const states = await system.run(
+        system.turns.listStatesByTurnIds([{ threadId: WOKEN, turnId: SHARED }]),
+      );
+      expect(states).toEqual([{ threadId: WOKEN, turnId: SHARED, state: "running" }]);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
