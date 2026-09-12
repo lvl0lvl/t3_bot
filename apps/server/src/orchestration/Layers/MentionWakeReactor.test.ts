@@ -30,7 +30,11 @@ import { describe, expect, it } from "vite-plus/test";
 import { makeSqlitePersistenceLive } from "../../persistence/Layers/Sqlite.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
-import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
+import {
+  ProjectionStateRepository,
+  type ProjectionStateRepositoryShape,
+} from "../../persistence/Services/ProjectionState.ts";
+import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { ServerConfig } from "../../config.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -69,8 +73,28 @@ const CHANNEL_ID = ChannelId.make("channel-seniors");
 const MENTION = ChannelMemberHandle.make("woken");
 const NOW = "2026-01-01T00:00:00.000Z";
 
-const makeLayer = (databasePath: string) =>
+/**
+ * A cursor repository whose READ fails and whose WRITE succeeds.
+ *
+ * The write has to succeed, and that is the whole design of this fixture. Make
+ * it die and the test passes for the wrong reason: a reactor that wrongly
+ * treats the read failure as absence goes on to seed at the head, dies on THAT,
+ * and still refuses to start — so the assertion is satisfied by the write
+ * rather than by the distinction it exists to pin. Verified: with a dying
+ * write, the "treat a read failure as absence" mutant survives.
+ */
+const unreadableCursors = Layer.succeed(ProjectionStateRepository, {
+  getByProjector: () =>
+    Effect.fail(new PersistenceSqlError({ operation: "test", cause: "cursor unreadable" })),
+  upsert: () => Effect.void,
+  upsertMany: () => Effect.die("unused"),
+  listAll: () => Effect.die("unused"),
+  minLastAppliedSequence: () => Effect.die("unused"),
+} satisfies ProjectionStateRepositoryShape);
+
+const makeLayer = (databasePath: string, cursorOverride?: Layer.Layer<ProjectionStateRepository>) =>
   MentionWakeReactorLive.pipe(
+    cursorOverride === undefined ? (self) => self : Layer.provide(cursorOverride),
     Layer.provideMerge(OrchestrationEngineLive),
     Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
     Layer.provideMerge(OrchestrationProjectionPipelineLive),
@@ -88,8 +112,11 @@ const makeLayer = (databasePath: string) =>
  * A system that can be stopped and started again against the same database,
  * because every criterion here is about what survives a restart.
  */
-const makeSystem = async (databasePath: string) => {
-  const runtime = ManagedRuntime.make(makeLayer(databasePath));
+const makeSystem = async (
+  databasePath: string,
+  cursorOverride?: Layer.Layer<ProjectionStateRepository>,
+) => {
+  const runtime = ManagedRuntime.make(makeLayer(databasePath, cursorOverride));
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
   const reactor = await runtime.runPromise(Effect.service(MentionWakeReactor));
   const cursors = await runtime.runPromise(Effect.service(ProjectionStateRepository));
@@ -343,6 +370,22 @@ describe("MentionWakeReactor", () => {
       // (postId, threadId), so the engine's receipt check absorbs it - which is
       // the whole reason the cursor is allowed to lag the dispatch at all.
       expect(await wakeMessages(system)).toHaveLength(1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("refuses to start when the cursor cannot be read", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath, unreadableCursors);
+    try {
+      // Absence and failure are one line apart and only one of them may seed at
+      // the head. Treating a read failure as "never run" would silently skip
+      // every event between the real cursor and now, and the reactor would look
+      // perfectly healthy afterwards - the row exists, the log is quiet, and
+      // the mentions in that window are simply gone.
+      await expect(system.startReactor()).rejects.toThrow();
     } finally {
       await system.dispose();
       await removeDirectory(directory);
