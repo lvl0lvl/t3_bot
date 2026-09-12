@@ -264,6 +264,18 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
     }),
   );
 
+  /**
+   * One id, two kinds, two handles — the `t3_bot-46h` collision.
+   *
+   * SHARED BY THE TWO REF TESTS ON PURPOSE: the pair only proves anything if
+   * both removals come off the SAME roster, so that the id cannot be what
+   * separates their events.
+   */
+  const COLLIDING_ROSTER = [
+    { handle: "walt", memberKind: "human" as const, memberId: "thread-pm" },
+    { handle: "twin", memberKind: "thread" as const, memberId: "thread-pm" },
+  ];
+
   it.effect("puts the removed member's ref on the event, with its KIND", () =>
     Effect.gen(function* () {
       // THE DECIDER IS THE ONLY PLACE THIS REF CAN COME FROM. Once
@@ -279,11 +291,18 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // green. Measured, not assumed.
       //
       // A COLLIDING FIXTURE, because `memberId` alone cannot carry the answer:
-      // the thread member and the human member below share one id and differ
-      // only in kind, so an event that dropped `memberKind` would name a member
-      // the socket cannot tell from the operator. That is `t3_bot-46h`, and it
-      // is the same collision the mention-wake reactor keeps its own kind check
-      // for.
+      // the two members below share ONE id and differ only in kind, so an event
+      // that dropped `memberKind` would name a member the socket cannot tell
+      // from the other. That is `t3_bot-46h`, and it is the same collision the
+      // mention-wake reactor keeps its own kind check for.
+      //
+      // The fixture said that and did not do it until a review lane measured
+      // it: `human-walt` beside `thread-pm` differs in BOTH fields, which is
+      // the exact shape `t3_bot-46h` was filed about. It collides now. The
+      // roster is reachable by ordering — a human member added while no thread
+      // of that id exists, then the thread — and `makeReadModel` builds the
+      // read model directly in any case, which is why the pair is expressible
+      // here and refused at an `add` command.
       const decided = yield* decideOrchestrationCommand({
         command: {
           type: "channel.member.remove",
@@ -291,10 +310,7 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
           channelId: CHANNEL,
           handle: ChannelMemberHandle.make("twin"),
         },
-        readModel: makeReadModel([
-          { handle: "walt", memberKind: "human", memberId: "human-walt" },
-          { handle: "twin", memberKind: "thread", memberId: "thread-pm" },
-        ]),
+        readModel: makeReadModel(COLLIDING_ROSTER),
         issuer: ADMIN,
       });
 
@@ -303,12 +319,51 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       if (event?.type === "channel.member-removed") {
         // BOTH FIELDS. Asserting the id alone passes against an event that
         // hardcodes the wrong kind, which is the whole distinction the socket
-        // gate turns on.
+        // gate turns on — and on THIS roster the id alone does not even name a
+        // member, since both members hold it.
         expect(event.payload.removedMember?.memberKind).toBe("thread");
         expect(event.payload.removedMember?.memberId).toBe("thread-pm");
         // And the handle stays: it is the projector's key, unique within a
         // channel in a way `memberId` is not, and what the client renders.
         expect(event.payload.handle).toBe("twin");
+      }
+    }),
+  );
+
+  it.effect("puts the removed member's ref on the event when the member is a HUMAN", () =>
+    Effect.gen(function* () {
+      // THE OTHER KIND, and without it `memberKind` is not pinned at all. A
+      // review lane measured the gap: a decider that ignored the row and wrote
+      // the CONSTANT `"thread"` survived all 220 tests, because the only
+      // removal asserted anywhere removed a thread, so the asserted value and
+      // the constant coincided. CLAUDE.md: mutate each guard in both
+      // directions — this is the admit side of the same field.
+      //
+      // WHAT IT COSTS WHEN IT IS WRONG is not cosmetic. The socket compares the
+      // event's ref against the connection's own; a constant kind makes the
+      // operator's own removal read as `{thread, ...}` against a `{human, ...}`
+      // connection, so the gate concludes "someone else" and SUPPRESSES — the
+      // operator is never told to drop a channel it is no longer in, on the
+      // ordinary single-removal path.
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.remove",
+          commandId: CommandId.make("cmd-remove-ref-human"),
+          channelId: CHANNEL,
+          handle: ChannelMemberHandle.make("walt"),
+        },
+        readModel: makeReadModel(COLLIDING_ROSTER),
+        issuer: ADMIN,
+      });
+
+      const event = Array.isArray(decided) ? decided[0] : decided;
+      expect(event?.type).toBe("channel.member-removed");
+      if (event?.type === "channel.member-removed") {
+        expect(event.payload.removedMember?.memberKind).toBe("human");
+        // The SAME id as the thread member removed by the test above. The kind
+        // is the only thing that separates the two events.
+        expect(event.payload.removedMember?.memberId).toBe("thread-pm");
+        expect(event.payload.handle).toBe("walt");
       }
     }),
   );

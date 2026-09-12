@@ -1845,11 +1845,22 @@ export const ChannelMemberAddedPayload = Schema.Struct({
  * websocket has to decide "was that me" from the EVENT.
  *
  * THE HANDLE STAYS AND REMAINS THE PROJECTOR'S KEY. `requireChannelHandlesUnique`
- * makes a handle unique WITHIN a channel; `memberId` is NOT unique — a thread
- * member and a human member can share one (`t3_bot-46h`), and that collision is
- * reachable through the aggregate today. Re-keying the projector on the ref
- * would be a regression dressed as a cleanup. The client also renders the
- * handle.
+ * makes a handle unique WITHIN a channel; `memberId` is NOT unique. Nothing
+ * checks it at all, so two SAME-kind members can hold one id under two handles;
+ * and a thread member and a human member can share one (`t3_bot-46h`) BY
+ * ORDERING, which is worth writing out because the obvious reading is that the
+ * aggregate refuses it:
+ *
+ *   `requireChannelMemberShape` refuses a human member whose id names a thread,
+ *   but it looks the id up in the roster AT ADD TIME and never re-validates an
+ *   existing one. `thread.create` takes a caller-supplied `threadId`. So: add
+ *   the human member with id X while no thread X exists (admitted), create
+ *   thread X (admitted), add a thread member for X (admitted). One roster, two
+ *   kinds, one id, no invariant broken.
+ *
+ * A pre-invariant event replayed through the projector gets there too. Re-keying
+ * the projector on the ref would be a regression dressed as a cleanup. The
+ * client also renders the handle.
  *
  * THE REF IS OPTIONAL, AND ABSENT MEANS "WRITTEN BEFORE THIS LANDED". Events
  * already in the log carry no ref and are replayed through here forever. The

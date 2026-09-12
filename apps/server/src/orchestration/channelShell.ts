@@ -25,11 +25,13 @@ import {
  *
  * THAT IS TRUE OF THIS PAYLOAD AND NOT OF THE REMOVAL EVENT, and the difference
  * is worth stating here because this docstring is where a reader looks for the
- * rule. `channel-removed` carries a bare `channelId`, and the stream emits it
- * for a channel the connection is NOT a member of — so a change to any channel
- * on the server tells every connected client that a channel with that id
- * exists. See `channelShellFor` in `ws.ts`, which now decides it from the
- * removal's member ref and says what it still cannot decide.
+ * rule. `channel-removed` carries a bare `channelId` — an id and nothing else,
+ * which is why WHO IS TOLD is the whole question. A non-member is now told
+ * nothing unless a removal in that batch names it; before `t3_bot-7br` every
+ * change to any channel on the server told every connected client that a
+ * channel with that id exists. See `channelShellFor` in `ws.ts`, which decides
+ * it from the removal's member ref and states the one branch it still cannot
+ * decide.
  */
 export function toChannelShell(row: ProjectionChannelWithActivity): OrchestrationChannelShell {
   return {

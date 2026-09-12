@@ -823,6 +823,21 @@ const makeWsRpcLayer = (
        * is GONE from the projection, so "were you the one removed" and "were you
        * never in it" read identically from the row. That conflation is the whole
        * of `t3_bot-7br`. The event is the only thing that still knows.
+       *
+       * WHAT THE STRIPPING IS FOR, so the exception has a stated boundary. The
+       * value built here is what `liveBudget.retain` holds per connection
+       * (search `retain({ kind: "event"`), and `LiveStreamBudget` bounds that
+       * buffer by the SERIALIZED SIZE of exactly these objects — 8 MiB or 1000
+       * items per subscription, after which the socket is told to resume by
+       * sequence. Carrying payload here spends that budget. Two short ids on
+       * the one event type that needs them is affordable; a message body would
+       * not be.
+       *
+       * THE TEST FOR A SECOND EXCEPTION: carry a payload field forward only
+       * when APPLYING the event destroys what the refetch would need. Anything
+       * the row still answers must be refetched. A second field that fails that
+       * test means the shell event has quietly become a wire contract, and the
+       * coalescer below is written against it not being one.
        */
       const toShellEvent = (event: OrchestrationEvent) => ({
         type: event.type,
@@ -856,6 +871,21 @@ const makeWsRpcLayer = (
           event.type === "channel.member-removed" && event.payload.removedMember === undefined,
       });
       type ShellEvent = ReturnType<typeof toShellEvent>;
+
+      /**
+       * The removed member's identity as it survives a decoded payload.
+       *
+       * NOT the nominal `ChannelMemberRef`, which is unconstructible outside
+       * its module on purpose and so cannot come off a row — that argument is
+       * kept at `ChannelMemberRefPayload`. It is named HERE because the shape
+       * was written out twice in two signatures, and
+       * `packages/contracts/src/channelMemberRef.ts` exists to end exactly that:
+       * "two spellings of one identity is the drift this file exists to end".
+       */
+      type RemovedMemberRef = {
+        readonly memberKind: "thread" | "human";
+        readonly memberId: string;
+      };
 
       const toShellStreamEvent = (
         event: ShellEvent,
@@ -994,12 +1024,18 @@ const makeWsRpcLayer = (
        * Refetch a channel and emit an upsert if this connection's member is in
        * it, or `channel-removed` otherwise.
        *
-       * THE `none` CASE COVERS TWO DIFFERENT THINGS ON PURPOSE: the channel is
-       * gone, and the member is no longer in it. Both mean the same thing to a
-       * client whose view is "the channels I am in", so neither needs an event
-       * of its own — and getting a removal out of a coalesced burst is the same
-       * argument the thread version makes one function up. A `channel-removed`
-       * the client does not have is a harmless no-op.
+       * THE `none` CASE COVERS TWO DIFFERENT THINGS: the channel is gone, and
+       * the member is no longer in it. To a client whose view is "the channels
+       * I am in" the two are one instruction — drop it — so neither needs an
+       * event of its own, and getting a removal out of a coalesced burst is the
+       * same argument the thread version makes one function up.
+       *
+       * WHAT IS NO LONGER TRUE, since it was written here and believed: that a
+       * `channel-removed` the client does not have is a harmless no-op. It is
+       * harmless to the client and it is a disclosure to the operator behind
+       * it — the id of a channel it is not in, for every change to any channel
+       * on the server. That is `t3_bot-7br`, and `channelShellFor` below is
+       * where it is now decided.
        *
        * MEMBERSHIP IS DECIDED HERE rather than in the repository, because this
        * is the layer that knows who is connected. The projection's by-id reads
@@ -1019,10 +1055,7 @@ const makeWsRpcLayer = (
       const channelUpsertOrRemove = (
         aggregateId: string,
         sequence: number,
-        removedRefs: ReadonlyArray<{
-          readonly memberKind: "thread" | "human";
-          readonly memberId: string;
-        }>,
+        removedRefs: ReadonlyArray<RemovedMemberRef>,
         unattributedRemoval: boolean,
       ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
         Effect.gen(function* () {
@@ -1089,17 +1122,46 @@ const makeWsRpcLayer = (
        *
        * STILL OPEN, and stated rather than implied: the channel-gone branch
        * below cannot be gated this way — there is no row and no removed member
-       * to compare — so it emits a bare id to everyone. Channels are archived
-       * rather than deleted, so the only way there today is a projection read
-       * that failed every retry.
+       * to compare — so it emits a bare id to everyone. The way there is a
+       * channel with NO ROW in the projection: an event whose channel was never
+       * projected, or a row removed out from under the stream. It is NOT a
+       * failed refetch, which is the thing it looks like: `retryShellProjectionRead`
+       * turns a failure into an OUTER `Option.none`, and the `Option.flatMap`
+       * below short-circuits on that, so `onNone` — the INNER option — is never
+       * reached. A review lane caught that claim here; the correct half of it is
+       * 190 lines up, where the retry says treating an error as a missing row
+       * would remove a still-active aggregate.
        */
+      /**
+       * Whether a removal in this batch obliges us to speak to a NON-member.
+       *
+       * TRUE MEANS EMIT, and it is stated positively because the gate it
+       * replaces was a double negative inside a ternary — and the property that
+       * gate failed to hold, one member's removal masking another's, was not
+       * visible while reading it.
+       *
+       * `unattributedRemoval` is a removal this event could not attribute: a
+       * historical row written before the ref existed. Suppressing on "I cannot
+       * tell" is how a removed operator is never told to drop the channel, so
+       * it emits. A matching ref is this connection's own removal. Everything
+       * else — a post, a rename, someone else's removal — leaves a non-member
+       * with nothing to drop, and gets silence.
+       */
+      const removalObligesThisConnection = (
+        removedRefs: ReadonlyArray<RemovedMemberRef>,
+        unattributedRemoval: boolean,
+      ): boolean =>
+        unattributedRemoval ||
+        removedRefs.some(
+          (ref) =>
+            ref.memberKind === connectionMember.memberKind &&
+            ref.memberId === connectionMember.memberId,
+        );
+
       const channelShellFor = (
         channelId: ChannelId,
         sequence: number,
-        removedRefs: ReadonlyArray<{
-          readonly memberKind: "thread" | "human";
-          readonly memberId: string;
-        }>,
+        removedRefs: ReadonlyArray<RemovedMemberRef>,
         unattributedRemoval: boolean,
       ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
         retryShellProjectionRead(
@@ -1113,10 +1175,14 @@ const makeWsRpcLayer = (
                 // THE CHANNEL IS GONE, and this branch CANNOT be gated the way
                 // the non-member one below is: there is no row and no removed
                 // member to compare, so a bare `channelId` still reaches every
-                // connection. Channels are archived rather than deleted in this
-                // system, so the only way here today is a projection read that
-                // failed every retry — but "unreachable today" is a claim that
-                // decays, and this is the one path `t3_bot-7br` does not close.
+                // connection. The route is a channel with no projection row —
+                // never projected, or removed out from under the stream — and
+                // NOT a failed refetch, which cannot arrive here at all (the
+                // retry's `Option.none` is the outer one and `Option.flatMap`
+                // short-circuits on it). Channels are archived rather than
+                // deleted, so nothing reaches it today; "unreachable today" is
+                // a claim that decays, and this is the one path
+                // `t3_bot-7br` does not close.
                 onNone: () =>
                   Option.some<OrchestrationShellStreamEvent>({
                     kind: "channel-removed" as const,
@@ -1155,25 +1221,16 @@ const makeWsRpcLayer = (
                       // to speak, because only a removal can mean "you held this
                       // and must stop".
                       //
-                      // WHEN A REMOVAL DID HAPPEN, the fail-open stands and it is
-                      // the lesson of the two fixes this one replaces: emit
-                      // unless the ref PROVES it was someone else. An absent ref
-                      // means the event predates the field, and suppressing on
-                      // "I don't know" loses a real removal — an operator removed
-                      // while disconnected would never be told to drop the
-                      // channel.
-                      !unattributedRemoval &&
-                        !removedRefs.some(
-                          (ref) =>
-                            ref.memberKind === connectionMember.memberKind &&
-                            ref.memberId === connectionMember.memberId,
-                        )
-                      ? Option.none<OrchestrationShellStreamEvent>()
-                      : Option.some<OrchestrationShellStreamEvent>({
+                      // WHEN A REMOVAL DID HAPPEN, the predicate decides, and
+                      // its docstring carries the fail-open argument rather
+                      // than a second copy of it here.
+                      removalObligesThisConnection(removedRefs, unattributedRemoval)
+                      ? Option.some<OrchestrationShellStreamEvent>({
                           kind: "channel-removed" as const,
                           sequence,
                           channelId,
-                        }),
+                        })
+                      : Option.none<OrchestrationShellStreamEvent>(),
               }),
             ),
           ),

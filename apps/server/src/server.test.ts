@@ -8925,6 +8925,138 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
+  it.effect("reports a removal it cannot attribute, because a stored event carries no ref", () =>
+    Effect.gen(function* () {
+      // THE FAIL-OPEN, AND NOTHING PINNED IT. `removedMember` landed with
+      // `t3_bot-7br`; every `channel.member-removed` already in the log carries
+      // no ref and replays through here forever. The design turns on that case
+      // EMITTING — suppressing on "I cannot tell whose removal this was" is how
+      // an operator removed while disconnected is never told to drop the
+      // channel, and it is the failure that killed the two fixes tried before
+      // this one.
+      //
+      // A review lane measured that no test ADDED by this PR held it: the
+      // property was resting on two older tests that are about something else
+      // and emit for a different reason (their events are not removals at all,
+      // so they never reach this branch). This test feeds the actual shape —
+      // a removal event with the field absent — which is the only input that
+      // distinguishes "unattributed" from "no removal".
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const historicalRemoval = {
+        ...foreignRemovalEvent,
+        eventId: EventId.make("event-channel-member-removed-historical"),
+        payload: {
+          channelId: ChannelId.make("channel-project"),
+          handle: ChannelMemberHandle.make("walt"),
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      } as unknown as OrchestrationEvent;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            // Not a member: the same row every suppression test uses. The only
+            // difference is that the event cannot say who left.
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [{ handle: "pm", memberKind: "thread", memberId: "thread-pm" }],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, historicalRemoval);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      const removals = items.filter((item) => item.kind === "channel-removed");
+      assert.equal(removals.length, 1);
+      assert.equal(
+        removals[0]?.kind === "channel-removed" ? removals[0].channelId : null,
+        "channel-project",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("reports a channel that has no projection row, to every connection", () =>
+    Effect.gen(function* () {
+      // THE ONE BRANCH THE GATE CANNOT COVER, pinned so the docstring that says
+      // so cannot quietly stop being true. With no row there is no roster to
+      // compare and no removed member to name, so a bare `channelId` goes to
+      // everyone — including a connection that was never in the channel. The
+      // event here is an ORDINARY POST, not a removal: nothing about this path
+      // involves a ref.
+      //
+      // Behaviour unchanged by `t3_bot-7br`. It is a pin on a documented claim,
+      // and it was not idle: making the branch silent left the whole file green.
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            // The channel has no row at all. NOT a failed read — that path ends
+            // in the OUTER `Option.none` and never reaches this branch.
+            getChannelWithActivityById: () => Effect.succeedNone,
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, channelPostEvent);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      const removals = items.filter((item) => item.kind === "channel-removed");
+      assert.equal(removals.length, 1);
+      assert.equal(
+        removals[0]?.kind === "channel-removed" ? removals[0].channelId : null,
+        "channel-project",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
   it.effect("still reports its OWN removal on a resume with no snapshot", () =>
     Effect.gen(function* () {
       // THE OTHER DIRECTION, and the one that killed the two fixes tried before
@@ -9004,9 +9136,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   it.effect("a THREAD member carrying the operator's id is not the operator", () =>
     Effect.gen(function* () {
       // THE FIXTURE COMES FROM THE PROPERTY, not from a plausible-looking row.
-      // The two tests above differ in BOTH fields — human/human-walt against
-      // thread/thread-pm — so a membership test that compared memberId alone and
-      // ignored memberKind passed both. Named rather than counted: mutating
+      // The two membership tests this one was written against — `a post reaches
+      // the shell stream as a channel upsert carrying latestPostAt` and `says
+      // nothing about a post in a channel this connection is not in` — differ in
+      // BOTH fields, human/human-walt against thread/thread-pm, so a membership
+      // test that compared memberId alone and ignored memberKind passed both.
+      // Named rather than pointed at: this sentence said "the two tests above"
+      // until a later PR inserted two tests above it and made it false. Named rather than counted: mutating
       // `rowHasMember` to compare `memberId` alone reds THIS test and only this
       // one. An absolute pass count decays as the file grows — the earlier
       // version of this comment said "all 185 green" and the count has moved
