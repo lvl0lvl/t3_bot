@@ -20,9 +20,12 @@ import * as McpHttpServer from "./McpHttpServer.ts";
 import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
 import { makeSqlitePersistenceLive } from "../persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
-import { ChannelGatewayUnavailable } from "./toolkits/comms/channelGateway.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import * as McpSessionRegistry from "./McpSessionRegistry.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as DeviceService from "../device/DeviceService.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
@@ -61,6 +64,14 @@ const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
 // the services are never exercised - they are here because the registration
 // cannot be constructed without them, which is the compiler saying the wiring
 // is real.
+//
+// `ChannelGatewayUnavailable` used to be provided here and is not any more: the
+// registration supplies `ChannelGatewayLive` itself, so the layer built without
+// it and the provide was answering a question nobody asked. Its capability
+// assertion still holds for the reason it always did - the refusal happens
+// before any gateway call - but a dead provide dressed as the proof of that was
+// telling the reader the tools run on an unavailable gateway, which is the
+// opposite of what runs.
 const CommsTestLayer = McpHttpServer.CommsToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provide(OrchestrationLayerLive),
@@ -812,5 +823,50 @@ it.effect(
       expect(denied.content).toEqual([
         { type: "text", text: "MCP credential does not grant the comms capability." },
       ]);
-    }).pipe(Effect.provide(CommsTestLayer.pipe(Layer.provide(ChannelGatewayUnavailable)))),
+    }).pipe(Effect.provide(CommsTestLayer)),
+);
+
+/**
+ * The SERVER's own merged layer, not one registration built in isolation.
+ *
+ * Every other harness in this file constructs a single
+ * `*ToolkitRegistrationLive` by hand, which proves the registration works and
+ * says nothing about whether the server includes it.
+ */
+const MergedLayerTestLayer = McpHttpServer.layer.pipe(
+  Layer.provide(HttpRouter.layer),
+  Layer.provide(Layer.mock(DeviceService.DeviceService)({})),
+  Layer.provide(
+    McpSessionRegistry.layer.pipe(
+      Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+    ),
+  ),
+  Layer.provide(PreviewAutomationBroker.layer),
+  Layer.provide(OrchestrationLayerLive),
+  Layer.provide(makeSqlitePersistenceLive(":memory:")),
+  Layer.provide(RepositoryIdentityResolver.layer),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-merged-test-" })),
+  Layer.provideMerge(NodeServices.layer),
+);
+
+it.effect(
+  "offers the comms tools from the server's merged layer, not only from their own registration",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* McpServer.McpServer;
+        const names = server.tools.map(({ tool }) => tool.name);
+        // THE REGISTRATION LINE, not the registration layer. `t3_bot-0uq` ends
+        // "a test that passes with the registration line removed is
+        // tautological", and every other comms test here builds
+        // CommsToolkitRegistrationLive directly - so it passes whether or not
+        // that layer is in `McpHttpServer.layer`. Delete
+        // `CommsToolkitRegistrationLive,` from the merge and this is the only
+        // thing in the repository that reds.
+        for (const name of ["comms_post", "comms_reply", "comms_read_channel"]) {
+          expect(names).toContain(name);
+        }
+      }),
+    ).pipe(Effect.provide(MergedLayerTestLayer), Effect.provide(NodeHttpServer.layerTest)),
+  30_000,
 );
