@@ -260,8 +260,12 @@ describe("test-count-gate", () => {
     // Read as zero tests, a head that does not compile prints "coverage went
     // DOWN" and lists every test in that file as lost, sending the author to
     // hunt for deletions that never happened.
-    expect(() => toSuite(headReportWithBrokenFile, REPO_ROOT)).toThrow(CannotMeasure);
-    expect(() => toSuite(headReportWithBrokenFile, REPO_ROOT)).toThrow(/failed to load/);
+    expect(() =>
+      toSuite(headReportWithBrokenFile, REPO_ROOT, "@t3tools/web in the head tree"),
+    ).toThrow(CannotMeasure);
+    expect(() =>
+      toSuite(headReportWithBrokenFile, REPO_ROOT, "@t3tools/web in the head tree"),
+    ).toThrow(/failed to load/);
   });
 
   it("refuses to measure when a test file failed to LOAD in the base revision", () => {
@@ -271,8 +275,12 @@ describe("test-count-gate", () => {
     // revisions, so one guard covers both — this test exists because the two
     // failures are not the same failure, and a future refactor that split the
     // parse per revision must red here.
-    expect(() => toSuite(baseReportWithBrokenFile, REPO_ROOT)).toThrow(CannotMeasure);
-    expect(() => toSuite(baseReportWithBrokenFile, REPO_ROOT)).toThrow(/failed to load/);
+    expect(() =>
+      toSuite(baseReportWithBrokenFile, REPO_ROOT, "@t3tools/web in the base tree"),
+    ).toThrow(CannotMeasure);
+    expect(() =>
+      toSuite(baseReportWithBrokenFile, REPO_ROOT, "@t3tools/web in the base tree"),
+    ).toThrow(/failed to load/);
   });
 
   it("refuses to measure when a workspace that has tests reported none", () => {
