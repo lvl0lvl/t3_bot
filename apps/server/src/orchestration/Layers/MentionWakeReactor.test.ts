@@ -582,6 +582,50 @@ describe("MentionWakeReactor", () => {
     }
   }, 30_000);
 
+  it("wakes the OTHER agent when one agent posts, which is the whole feature", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      // The admit side of the author exclusion, and it is the product rather
+      // than an edge: PM mentions a senior, a senior mentions a peer. Every
+      // other post in this file is authored by a HUMAN, so the exclusion was
+      // only ever exercised in the direction where it refuses - and widening it
+      // to "wake nobody when a thread posts" broke no test at all.
+      await system.run(
+        system.engine.dispatch(
+          {
+            type: "channel.post.create",
+            commandId: CommandId.make("cmd-post-peer"),
+            channelId: CHANNEL_ID,
+            postId: ChannelPostId.make("post-peer"),
+            body: "over to you",
+            mentions: [BYSTANDER_MENTION],
+            parentPostId: null,
+            createdAt: NOW,
+          },
+          { issuer: AS_WOKEN },
+        ),
+      );
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      const woken = await wakeMessages(system, BYSTANDER);
+      expect(woken).toHaveLength(1);
+      // Authored BY the thread, which is what makes this the admit side rather
+      // than a second copy of the routing test: the header names the agent, not
+      // a human.
+      expect(woken[0]).toContain("@woken mentioned you");
+      // And the author still is not woken by their own post.
+      expect(await wakeMessages(system, WOKEN)).toHaveLength(0);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
   it("never wakes the author, even when the post mentions them", async () => {
     const { directory, databasePath } = await makeDatabasePath();
     const system = await makeSystem(databasePath);
