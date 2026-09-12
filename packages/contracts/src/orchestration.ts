@@ -996,6 +996,23 @@ export const OrchestrationShellStreamEvent = Schema.Union([
     sequence: NonNegativeInt,
     threadId: ThreadId,
   }),
+  /**
+   * A channel the client's member is in, changed. Refetch it.
+   *
+   * THERE IS NO SEPARATE "A POST LANDED" EVENT, and that is a consequence of
+   * how this stream is delivered rather than a gap. Shell events are coalesced
+   * by aggregate over a short window and only the LATEST survives per
+   * `(aggregateKind, aggregateId)` — the semantics being "this aggregate
+   * changed, refetch it". A per-post event would be coalesced by the same rule,
+   * so three posts in one window would deliver one event naming one post id and
+   * silently drop the other two. Exempting it from coalescing instead would put
+   * unbounded per-post traffic on a stream every connected client holds.
+   *
+   * A post already moves `latestPostAt` on the shell, so this event carries the
+   * fact that a post landed, in the field the sidebar orders by. A client with
+   * the channel open compares `latestPostAt` against what it holds and refetches
+   * the newest page.
+   */
   Schema.Struct({
     kind: Schema.Literal("channel-upserted"),
     sequence: NonNegativeInt,
@@ -1005,24 +1022,6 @@ export const OrchestrationShellStreamEvent = Schema.Union([
     kind: Schema.Literal("channel-removed"),
     sequence: NonNegativeInt,
     channelId: ChannelId,
-  }),
-  /**
-   * A post landed. Deliberately carries no body.
-   *
-   * It is an invalidation signal, not the post: the body comes from the paged
-   * read, which is then the only path post content travels. Two paths for the
-   * same content is where the two disagree, and this stream reaches every
-   * connected client while a channel's posts reach only the one reading it.
-   *
-   * `postId` is here so a client can tell its own post's echo from someone
-   * else's arrival without diffing a page.
-   */
-  Schema.Struct({
-    kind: Schema.Literal("channel-post-appended"),
-    sequence: NonNegativeInt,
-    channelId: ChannelId,
-    postId: ChannelPostId,
-    createdAt: IsoDateTime,
   }),
 ]);
 export type OrchestrationShellStreamEvent = typeof OrchestrationShellStreamEvent.Type;
