@@ -81,6 +81,7 @@ const WOKEN = ThreadId.make("thread-woken");
 const BYSTANDER = ThreadId.make("thread-bystander");
 const CHANNEL_ID = ChannelId.make("channel-seniors");
 const MENTION = ChannelMemberHandle.make("woken");
+const BYSTANDER_MENTION = ChannelMemberHandle.make("bystander");
 
 /**
  * The woken thread's modes, chosen because they are NOT the defaults.
@@ -159,6 +160,24 @@ interface Overrides {
   readonly cursors?: Layer.Layer<ProjectionStateRepository>;
   readonly channels?: Layer.Layer<ProjectionChannelRepository, never, ProjectionChannelRepository>;
 }
+
+/**
+ * The real channel repository, reporting one channel as MISSING.
+ *
+ * Not a failure - an absence, which is the different thing the reactor has to
+ * tell apart. A read that fails holds the cursor; a channel that is not there
+ * has nothing to wait for, and holding for it would stop every later post.
+ */
+const channelMissing = Layer.effect(
+  ProjectionChannelRepository,
+  Effect.gen(function* () {
+    const real = yield* ProjectionChannelRepository;
+    return {
+      ...real,
+      getChannelById: () => Effect.succeedNone,
+    } satisfies ProjectionChannelRepositoryShape;
+  }),
+);
 
 const makeLayer = (databasePath: string, overrides: Overrides = {}) =>
   MentionWakeReactorLive.pipe(
@@ -1012,6 +1031,94 @@ describe("MentionWakeReactor", () => {
         "the reactor stopped handling posts after it caught up: nothing delivered this one",
       ).toBe(true);
       expect(await wakeMessages(system)).toHaveLength(1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("skips a member whose thread is gone, and wakes the rest of them", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      // Membership is a channel's record of who belongs, not a foreign key: a
+      // thread can be deleted and stay on the roster. Found by making the
+      // guard inert and watching every test stay green - the comment claimed
+      // this behaviour and nothing measured it.
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("cmd-delete-woken"),
+          threadId: WOKEN,
+        }),
+      );
+      await system.startReactor();
+      const beforeThePost = await system.run(system.engine.latestSequence);
+      await post(system, { id: "post-ghost", mentions: [MENTION, BYSTANDER_MENTION] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // The live member is woken. Without the skip the dispatch fails on the
+      // deleted thread, and since a failed wake HOLDS the cursor, one dead
+      // member would stop every later post in the channel - not just its own.
+      expect(await wakeMessages(system, BYSTANDER)).toHaveLength(1);
+
+      // Asserted on the TURN REQUEST, not on the thread's messages. A deleted
+      // thread has no detail row, so wakeMessages() returns [] for it whether
+      // or not a turn was started - an assertion satisfied by absence, which
+      // is not a weaker assertion but a different one. The event log still
+      // holds what was dispatched.
+      const requested = await system.run(
+        system.events.readFromSequence(0, Number.MAX_SAFE_INTEGER).pipe(
+          Stream.filter((event) => event.type === "thread.turn-start-requested"),
+          Stream.runCollect,
+          Effect.orDie,
+        ),
+      );
+      expect(
+        requested.map((event) =>
+          event.type === "thread.turn-start-requested" ? event.payload.threadId : "",
+        ),
+      ).toEqual([BYSTANDER]);
+
+      const cursor = await system.run(
+        system.cursors.getByProjector({ projector: MENTION_WAKE_CURSOR }),
+      );
+      expect(Option.isSome(cursor) ? cursor.value.lastAppliedSequence : -1).toBeGreaterThan(
+        beforeThePost,
+      );
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("does not hold the cursor for a channel that is not there", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath, { channels: channelMissing });
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      const beforeThePost = await system.run(system.engine.latestSequence);
+      await post(system, { id: "post-orphan", mentions: [MENTION] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // Nobody to wake, and nothing to wait for. An ABSENT channel is not a
+      // failed read: holding the cursor for it would stop the reactor for
+      // good, since the next start finds the same absence. The distinction is
+      // the whole reason the None branch exists rather than being left to the
+      // failure path.
+      expect(await noWakes(system)).toHaveLength(0);
+      const cursor = await system.run(
+        system.cursors.getByProjector({ projector: MENTION_WAKE_CURSOR }),
+      );
+      expect(Option.isSome(cursor) ? cursor.value.lastAppliedSequence : -1).toBeGreaterThan(
+        beforeThePost,
+      );
     } finally {
       await system.dispose();
       await removeDirectory(directory);

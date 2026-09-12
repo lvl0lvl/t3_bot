@@ -141,6 +141,15 @@ const make = Effect.gen(function* () {
       // Skipping it here rather than letting the dispatch fail is what keeps
       // one dead member from holding the cursor against every later post.
       //
+      // DELETION IS A TOMBSTONE, NOT A REMOVAL. `thread.deleted` sets
+      // `deletedAt` on the projection row and leaves it there, so the None
+      // branch alone never fires for a deleted thread and the wake goes
+      // through: a real turn, started on a thread the operator deleted, and
+      // invisible - the detail query the UI reads filters it out. Found by
+      // making the guard inert and watching nothing fail. An ARCHIVED thread
+      // is deliberately still woken: archiving is reversible and the mention
+      // is real, where a tombstone is not.
+      //
       // MODES: `thread.turn.start` requires runtimeMode and interactionMode and
       // the decider reads NEITHER - it takes both from the thread it is
       // starting (decider.ts, case "thread.turn.start"). So these are inert
@@ -150,7 +159,7 @@ const make = Effect.gen(function* () {
       // from outside the thread. Verified rather than assumed - passing the
       // defaults here changes nothing observable.
       const thread = yield* threads.getById({ threadId });
-      if (Option.isNone(thread)) {
+      if (Option.isNone(thread) || thread.value.deletedAt !== null) {
         continue;
       }
       // PER WAKE, not per post. From the platform's crypto rather than
