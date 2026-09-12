@@ -48,8 +48,14 @@ it("exposes the shared canonicaliser itself, not a copy of it", () => {
  * With one implementation these pass trivially — the test above is what has
  * teeth. They are here so that when someone reintroduces a copy, the failure
  * above tells them THAT and these tell them WHICH INPUTS moved, by code point,
- * without their having to rediscover the set. Every row below is an input where
- * the two implementations actually disagreed on 2026-09-12.
+ * without their having to rediscover the set.
+ *
+ * The NFC, whitespace and CJK rows are inputs where the two implementations
+ * actually disagreed on 2026-09-12. The sigil rows are not, and are here for a
+ * different reason given where they sit: they are what the "#" -> "@"
+ * derivation exercises, and without them that mapping renames a character no
+ * row contains. "#ops" in particular was never a disagreement under any pair of
+ * implementations that existed - every version stripped a single leading "#".
  */
 const SKEW_ROWS: ReadonlyArray<readonly [input: string, canonical: string]> = [
   // The sigil rows, which are what the "#" -> "@" derivation below actually

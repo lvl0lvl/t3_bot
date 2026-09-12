@@ -22,12 +22,19 @@
  *      one mention key.
  *   4. A non-member and a non-existent channel are one answer, byte for byte.
  *
- * WHAT IT NO LONGER SEES, which is worth knowing before trusting it. Its
- * membership is canonical now, so a toolkit that emitted the LOOKUP KEY instead
- * of the member's stored handle would emit the same bytes and every test here
- * would stay green. Verified by mutation. The rule survives only where the two
- * differ — a row stored before the aggregate canonicalised — and that lives in
- * handlers.test.ts, where six tests red on it.
+ * WHAT IT SEES AGAIN, and the correction is worth keeping because this file's
+ * subject is comments that drifted. An earlier version of this header said the
+ * emit-the-lookup-key rule could no longer be seen here — that every test in
+ * this file would stay green on that mutant, because canonical membership makes
+ * the key and the stored bytes the same bytes. That was measured and true when
+ * it was written, and the same change that fixed the fake falsified it: the fake
+ * runs the decider's whole post path now, and one test here deliberately uses a
+ * membership that is NOT canonical.
+ *
+ * Measured again rather than reasoned: emitting the lookup key reds ONE test
+ * here and SEVEN in handlers.test.ts. A comment carrying a count has to be
+ * re-run when the file grows, which is the argument for carrying the count
+ * anyway — it is the kind of claim that announces its own staleness.
  */
 import { ChannelId, EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
