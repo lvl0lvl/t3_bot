@@ -28,8 +28,8 @@ import {
   ClientWebDeployment,
   CommandId,
   type DiscoveredLocalServerList,
-  ChannelCursorRejectedError,
-  ChannelPostsUnreadableError,
+  OrchestrationChannelCursorRejectedError,
+  OrchestrationChannelPostsUnreadableError,
   OrchestrationReadChannelPostsError,
   EventId,
   operatorCommandIssuer,
@@ -1834,10 +1834,12 @@ const makeWsRpcLayer = (
               // and one told "bad cursor" would discard a cursor that was fine.
               Effect.catchTags({
                 ChannelPostsUnreadable: (cause) =>
-                  Effect.fail(new ChannelPostsUnreadableError({ channelId: cause.channelId })),
+                  Effect.fail(
+                    new OrchestrationChannelPostsUnreadableError({ channelId: cause.channelId }),
+                  ),
                 ChannelCursorRejected: (cause) =>
                   Effect.fail(
-                    new ChannelCursorRejectedError({
+                    new OrchestrationChannelCursorRejectedError({
                       channelId: cause.channelId,
                       cursor: cause.cursor,
                     }),

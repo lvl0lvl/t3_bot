@@ -80,8 +80,8 @@ import {
 } from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
-  ChannelCursorRejectedError,
-  ChannelPostsUnreadableError,
+  OrchestrationChannelCursorRejectedError,
+  OrchestrationChannelPostsUnreadableError,
   OrchestrationReadChannelPostsError,
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
@@ -1204,8 +1204,8 @@ const WsOrchestrationReadChannelPostsRpc = Rpc.make(ORCHESTRATION_WS_METHODS.rea
   payload: OrchestrationRpcSchemas.readChannelPosts.input,
   success: OrchestrationRpcSchemas.readChannelPosts.output,
   error: Schema.Union([
-    ChannelPostsUnreadableError,
-    ChannelCursorRejectedError,
+    OrchestrationChannelPostsUnreadableError,
+    OrchestrationChannelCursorRejectedError,
     OrchestrationReadChannelPostsError,
     EnvironmentAuthorizationError,
   ]),

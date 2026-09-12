@@ -1106,8 +1106,8 @@ export type OrchestrationChannelPostPageRequest = typeof OrchestrationChannelPos
  * back — the same disclosure `listChannelsForMember` keeps inside its query
  * rather than leaving to a caller's discretion.
  */
-export class ChannelPostsUnreadableError extends Schema.TaggedError<ChannelPostsUnreadableError>()(
-  "ChannelPostsUnreadableError",
+export class OrchestrationChannelPostsUnreadableError extends Schema.TaggedError<OrchestrationChannelPostsUnreadableError>()(
+  "OrchestrationChannelPostsUnreadableError",
   { channelId: ChannelId },
 ) {}
 
@@ -1120,8 +1120,8 @@ export class ChannelPostsUnreadableError extends Schema.TaggedError<ChannelPosts
  * channel reported a second channel holding unread posts as read, and nothing
  * in the reply said otherwise.
  */
-export class ChannelCursorRejectedError extends Schema.TaggedError<ChannelCursorRejectedError>()(
-  "ChannelCursorRejectedError",
+export class OrchestrationChannelCursorRejectedError extends Schema.TaggedError<OrchestrationChannelCursorRejectedError>()(
+  "OrchestrationChannelCursorRejectedError",
   { channelId: ChannelId, cursor: Schema.String },
 ) {}
 
@@ -2838,8 +2838,8 @@ export class OrchestrationSearchThreadsError extends Schema.TaggedError<Orchestr
 /**
  * The post store could not answer.
  *
- * DISTINCT FROM THE TWO REFUSALS. `ChannelPostsUnreadableError` and
- * `ChannelCursorRejectedError` are answers — the caller asked for something it
+ * DISTINCT FROM THE TWO REFUSALS. `OrchestrationChannelPostsUnreadableError` and
+ * `OrchestrationChannelCursorRejectedError` are answers — the caller asked for something it
  * may not have, or handed back a cursor from elsewhere. This one means the
  * server does not know, and a caller must not retry it as though the page were
  * empty.

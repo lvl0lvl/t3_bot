@@ -149,6 +149,11 @@ function ChannelHeader({ channel }: { readonly channel: EnvironmentChannelShell 
  * not a target: this is the number that fills a tall pane once with room to
  * scroll, so opening a channel is one request rather than two.
  *
+ * NOT THE AGENT TOOL'S DEFAULT, which is also 50 (`DEFAULT_READ_LIMIT` in the comms
+ * toolkit). That one is how much history an agent reads without asking; this is what
+ * fills a tall pane once. They are not shared on purpose — coupling them would let a
+ * change to this layout silently change what every agent reads.
+ *
  * A FIXTURE THAT MEANS TO EXERCISE PAGING NEEDS MORE POSTS THAN THIS. A channel
  * holding exactly this many is answered with one full page and `nextCursor:
  * null`, so `moreAbove` is false and the pager never renders — a render pass

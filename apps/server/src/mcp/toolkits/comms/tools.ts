@@ -1,4 +1,4 @@
-import { McpCapabilityUnavailableError } from "@t3tools/contracts";
+import { CHANNEL_POST_PAGE_LIMIT_MAX, McpCapabilityUnavailableError } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
@@ -20,7 +20,26 @@ const AUTHOR_IS_YOU =
 
 export const MAX_MENTIONS = 32;
 export const MAX_POST_BODY_CHARS = 16_000;
-export const MAX_READ_LIMIT = 200;
+/**
+ * THE SAME CEILING AS THE CLIENT DOORS', not a second spelling of 200.
+ *
+ * `comms_read_posts` reaches `ProjectionChannelRepository.listPostsBackward` — the
+ * same read the socket RPC and its HTTP twin make — so three doors bound one query.
+ * This was its own `200`, which made `CHANNEL_POST_PAGE_LIMIT_MAX`'s claim to be
+ * "the one place the ceiling lives" false about the read it governs, and invited the
+ * drift it warns about: raise the ceiling, change one constant, leave this door.
+ */
+export const MAX_READ_LIMIT = CHANNEL_POST_PAGE_LIMIT_MAX;
+
+/**
+ * What an agent gets when it does not ask, which is NOT the browser's page size.
+ *
+ * `CHANNEL_POST_PAGE_SIZE` in `ChannelView.tsx` is also 50 and is deliberately not
+ * shared with this: that one is "what fills a tall pane once with room to scroll",
+ * this one is "how much history an agent should read without saying so". They agree
+ * today by coincidence, and coupling them would let a change to the browser's layout
+ * silently change what every agent reads.
+ */
 export const DEFAULT_READ_LIMIT = 50;
 
 /**

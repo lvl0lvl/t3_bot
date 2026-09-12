@@ -532,9 +532,13 @@ const EnvironmentChannelPostsParams = Schema.Struct({
  * which is why `limit` cannot simply reuse `ChannelPostPageLimit`.
  *
  * The BOUND is shared even though the decoder cannot be:
- * `CHANNEL_POST_PAGE_LIMIT_MAX` is the one place the ceiling lives, so the two
- * doors cannot come to disagree about it. Two spellings of one number is the
- * drift this repository keeps finding.
+ * `CHANNEL_POST_PAGE_LIMIT_MAX` is the one place the ceiling lives, so no door can
+ * come to disagree with another about it. THREE doors bound this one read — this
+ * one, the socket RPC, and `comms_read_posts`, which reaches the same repository
+ * method — and the toolkit's `MAX_READ_LIMIT` used to be its own `200`, so this
+ * sentence was false about the read it governs while reading as a guarantee. Two
+ * spellings of one number is the drift this repository keeps finding, and a comment
+ * overstating its own scope invites it.
  *
  * `direction` is required rather than defaulted. A default would make the
  * most consequential field of the request invisible at the call site, and

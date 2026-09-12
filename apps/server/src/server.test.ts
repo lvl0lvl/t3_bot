@@ -9791,8 +9791,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       // THE TAG, because "it failed" is satisfied by every one of the four mappings.
-      // `ChannelPostsUnreadableError` here would tell the caller the channel is gone.
-      assert.equal(failure._tag, "ChannelCursorRejectedError");
+      // `OrchestrationChannelPostsUnreadableError` here would tell the caller the channel is gone.
+      assert.equal(failure._tag, "OrchestrationChannelCursorRejectedError");
       // And it carries the cursor it refused, which is what lets a client discard the
       // right one rather than all of them.
       assert.equal((failure as { readonly cursor?: string }).cursor, "channel-somewhere-else:2");
