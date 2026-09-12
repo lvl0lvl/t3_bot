@@ -476,6 +476,46 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (config: SweepConfi
   const swept: Array<SweptMutation> = [];
   for (const mutation of config.mutations) {
     const file = path.join(root, mutation.file);
+
+    // CONTAINED, AND RESTORABLE, both checked BEFORE anything is written — because
+    // after the write the only copy of the previous contents may be gone.
+    //
+    // `path.join` does not contain: a `..` in `mutation.file` walks out of the
+    // sweep tree, which made refusal 3 ("it mutates only a tree it created") a
+    // property of the config's good behaviour rather than of the writes.
+    //
+    // And `git status --porcelain` says NOTHING about gitignored files, so the
+    // dirty-tree refusal cannot see one. Restoration is `git checkout -- <file>`,
+    // which needs a tracked path, so an untracked target is overwritten and then
+    // unrestorable. Probed: a gitignored file went from IRREPLACEABLE = 1 to = 2
+    // permanently, and the run exited 1 telling the operator only that a pathspec
+    // did not match.
+    const resolved = path.resolve(file);
+    const inside = path.resolve(root);
+    if (resolved !== inside && !resolved.startsWith(inside + path.sep)) {
+      swept.push({
+        mutation,
+        verdict: { _tag: "not-run", reason: `${mutation.file} resolves outside the swept tree` },
+      });
+      yield* Console.log(
+        `${mutation.id}: NOT RUN — ${mutation.file} resolves outside the swept tree`,
+      );
+      continue;
+    }
+    const tracked = yield* capture(["git", "ls-files", "--error-unmatch", mutation.file], root);
+    if (tracked.exitCode !== 0) {
+      swept.push({
+        mutation,
+        verdict: {
+          _tag: "not-run",
+          reason: `git does not track ${mutation.file}, so it could not be restored`,
+        },
+      });
+      yield* Console.log(
+        `${mutation.id}: NOT RUN — git does not track ${mutation.file}, so it could not be restored`,
+      );
+      continue;
+    }
     // A STALE PATH IS THE SAME CLASS AS A STALE ANCHOR, so it gets the same
     // answer. It used to abort the whole sweep with an untagged PlatformError and
     // discard every measurement already paid for, while a missing anchor degraded
@@ -509,13 +549,28 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (config: SweepConfi
         mustSucceed(["git", "checkout", "--", mutation.file], root).pipe(Effect.orDie),
       ),
     );
+    // FEWER TESTS THAN THE BASELINE IS NO MEASUREMENT, and `total === 0` alone was
+    // not enough. When a mutation breaks the file it mutates, vitest reports every
+    // file that imports it as `status: "failed"` with an EMPTY assertion list —
+    // which contributes 0 to both counts. So `total` came back non-zero but
+    // smaller, this guard stayed quiet, `judge` found no newly-failing NAME, and
+    // the row printed **SURVIVED** under "Nothing in this suite depends on those
+    // lines." The tests that would have killed it never ran.
+    //
+    // That is the tool's central failure mode — an unrun experiment presented as a
+    // finding — and one dropped brace in a multi-line `replace` reaches it.
     const verdict =
       result.total === 0
         ? ({
             _tag: "not-run",
             reason: "the mutated suite reported no tests, so it did not run",
           } as const)
-        : judge(baseline, result);
+        : result.total < baseline.total
+          ? ({
+              _tag: "not-run",
+              reason: `the mutated suite ran ${result.total} tests against the baseline's ${baseline.total}, so something did not collect`,
+            } as const)
+          : judge(baseline, result);
     swept.push({ mutation, verdict });
     yield* Console.log(
       `${mutation.id}: ${
