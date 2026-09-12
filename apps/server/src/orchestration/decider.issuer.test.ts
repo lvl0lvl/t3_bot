@@ -284,8 +284,14 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
 
   it.effect("accepts a human and a system issuer on administration", () =>
     Effect.gen(function* () {
-      // The mirror of the test above. Without it, a guard that refused EVERY
-      // issuer would pass that one and lock the feature out entirely.
+      // The mirror of the test above, and the ONLY thing measuring this guard's
+      // admit side: widening requireIssuerCanAdminister to human-only reds this
+      // test and nothing else in 608. Deleting it leaves the refusal side green
+      // while channel administration silently stops working for reactors.
+      //
+      // Every mutation sweep until now made guards INERT, which only ever tests
+      // what a guard EXCLUDES; a guard that excludes too much survives that
+      // untouched. This is the other axis.
       for (const issuer of [HUMAN, SYSTEM]) {
         const decided = yield* decideOrchestrationCommand({
           command: channelProbe("channel.member.add") as never,
@@ -523,8 +529,10 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
 
   it.effect("accepts a human member whose id is not any thread's", () =>
     Effect.gen(function* () {
-      // The mirror. A guard that refused every human member would pass the three
-      // tests above and lock humans out of channels entirely.
+      // The mirror, and the ONLY thing measuring this guard's admit side:
+      // widening requireChannelMemberShape to refuse every human member reds
+      // this test and nothing else in 608. Deleting it leaves the three refusal
+      // tests above green while humans can no longer join a channel.
       const decided = yield* decideOrchestrationCommand({
         command: {
           type: "channel.member.add",
