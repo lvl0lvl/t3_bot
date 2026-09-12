@@ -68,6 +68,31 @@ export const WAKE_BUDGET_PER_CHANNEL = 20;
 export const WAKE_BUDGET_WINDOW_MINUTES = 10;
 
 /**
+ * How long a spent-wake row OUTLIVES the window it is counted in.
+ *
+ * NOT THE SAME NUMBER AS THE WINDOW, and the gap is load-bearing rather than
+ * slack. The spend is keyed by `(channel, post)` so a replay cannot charge the
+ * same post twice — but `INSERT OR IGNORE` can only ignore a row that still
+ * EXISTS, so deleting rows at the window's edge left that key protecting the
+ * one case where a replay was harmless and nothing at all outside it.
+ *
+ * A REVIEW LANE PROVED THE CONSEQUENCE. This reactor holds its cursor when a
+ * wake fails, by design, and replays the range on restart. One held post, 15
+ * later wakes, ten minutes, a restart: sixteen rows landed in a window whose
+ * correct count was one, and the channel latched after four more legitimate
+ * posts instead of nineteen — which is the exact sentence the key's own
+ * docstring uses to say what it prevents.
+ *
+ * TWENTY-FOUR HOURS because the bound has to cover the replay rather than the
+ * window, and the replay's own bound is `HELD_BACKLOG_LIMIT` EVENTS, not
+ * minutes. A day covers any restart a held cursor realistically survives. What
+ * it does not cover is a cursor held longer than that, and the honest
+ * consequence is stated rather than hidden: those posts would be charged a
+ * second time, on a server that has been failing to wake anyone for a day.
+ */
+export const WAKE_BUDGET_RETENTION_HOURS = 24;
+
+/**
  * One wake per (channel, post, thread), derived rather than generated.
  *
  * The channel is part of the key because a post id is only unique WITHIN a
@@ -378,6 +403,9 @@ const make = Effect.gen(function* () {
       windowStart: DateTime.formatIso(
         DateTime.subtract(now, { minutes: WAKE_BUDGET_WINDOW_MINUTES }),
       ),
+      retentionStart: DateTime.formatIso(
+        DateTime.subtract(now, { hours: WAKE_BUDGET_RETENTION_HOURS }),
+      ),
     };
   });
 
@@ -418,7 +446,7 @@ const make = Effect.gen(function* () {
     // nobody, or naming only the author, resolves to no threads and must not
     // cost a channel any of its budget - it starts no turn, so it is not part
     // of the amplification this bounds.
-    const { now, windowStart } = yield* budgetWindow;
+    const { now, windowStart, retentionStart } = yield* budgetWindow;
 
     // THE LATCH IS CHECKED BEFORE THE WINDOW, and that order is the feature
     // rather than an optimisation. A rolling window on its own REFILLS: two
@@ -432,6 +460,28 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    // THE LIVE TARGETS ARE RESOLVED BEFORE ANYTHING IS CHARGED, and that
+    // ordering is a fix rather than a preference. `targetThreads` resolves
+    // against channel MEMBERSHIP, which is not a foreign key: a member can name
+    // a thread that has since been deleted. The spend used to sit above this
+    // loop, so a post whose every mention named a dead thread started zero
+    // turns and was charged anyway — measured by a review lane at 21 such posts
+    // latching a channel that had woken nobody, which contradicts the invariant
+    // three lines down. The existing "spends nothing for a post that wakes
+    // nobody" test only covered the author-exclusion route, where `threadIds`
+    // is empty before we get here.
+    const live: Array<ThreadId> = [];
+    for (const threadId of threadIds) {
+      const thread = yield* threads.getById({ threadId });
+      if (Option.isNone(thread) || thread.value.deletedAt !== null) {
+        continue;
+      }
+      live.push(threadId);
+    }
+    if (live.length === 0) {
+      return;
+    }
+
     // Spent BEFORE the dispatch, because the budget pays for the decision to
     // wake rather than for the wake landing - and because the spend is keyed by
     // post id, so the replay this reactor's lagging cursor guarantees cannot
@@ -441,12 +491,13 @@ const make = Effect.gen(function* () {
       postId: event.payload.postId,
       wokenAt: now,
       windowStart,
+      retentionStart,
     });
     if (spent > WAKE_BUDGET_PER_CHANNEL) {
       yield* refuse(event, channelName, now);
       return;
     }
-    for (const threadId of threadIds) {
+    for (const threadId of live) {
       // Two reasons, and only one of them is the modes.
       //
       // EXISTENCE: a member can name a thread that no longer exists, because
@@ -473,6 +524,10 @@ const make = Effect.gen(function* () {
       // defaults here changes nothing observable.
       const thread = yield* threads.getById({ threadId });
       if (Option.isNone(thread) || thread.value.deletedAt !== null) {
+        // Re-read rather than carried down from the resolve above: these are
+        // two reads of a projection that another fiber can move between them,
+        // and the dispatch below must not start a turn on a thread deleted in
+        // that gap.
         continue;
       }
       // PER WAKE, not per post. From the platform's crypto rather than

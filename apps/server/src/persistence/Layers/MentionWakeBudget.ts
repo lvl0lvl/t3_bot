@@ -42,14 +42,14 @@ const makeMentionWakeBudgetRepository = Effect.gen(function* () {
   });
 
   const pruneWakeRows = SqlSchema.void({
-    Request: Schema.Struct({ windowStart: IsoDateTime }),
+    Request: Schema.Struct({ retentionStart: IsoDateTime }),
     // ACROSS ALL CHANNELS, not just the one being written. A row outside the
     // window can never change a decision, and pruning only the writer's channel
     // leaves a channel that has gone quiet holding its last twenty rows
     // forever — the table would then grow with the number of channels that have
     // ever been busy rather than with the traffic of the last ten minutes.
-    execute: ({ windowStart }) => sql`
-      DELETE FROM mention_wake_budget WHERE woken_at < ${windowStart}
+    execute: ({ retentionStart }) => sql`
+      DELETE FROM mention_wake_budget WHERE woken_at < ${retentionStart}
     `,
   });
 
@@ -111,7 +111,10 @@ const makeMentionWakeBudgetRepository = Effect.gen(function* () {
 
   const spend: MentionWakeBudgetRepositoryShape["spend"] = (input) =>
     Effect.gen(function* () {
-      yield* pruneWakeRows({ windowStart: input.windowStart });
+      // AFTER the insert and the count, and on RETENTION rather than on the
+      // window — see the service docstring. Pruning first, on the window,
+      // deleted the row `INSERT OR IGNORE` depends on and re-charged every
+      // replayed post at once.
       yield* insertWakeRow({
         channelId: input.channelId,
         postId: input.postId,
@@ -121,6 +124,7 @@ const makeMentionWakeBudgetRepository = Effect.gen(function* () {
         channelId: input.channelId,
         windowStart: input.windowStart,
       });
+      yield* pruneWakeRows({ retentionStart: input.retentionStart });
       return row.count;
     }).pipe(Effect.mapError(toPersistenceSqlError("MentionWakeBudgetRepository.spend:query")));
 

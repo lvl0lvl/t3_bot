@@ -61,6 +61,8 @@ import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import * as Logger from "effect/Logger";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { MentionWakeBudgetRepositoryLive } from "../../persistence/Layers/MentionWakeBudget.ts";
+import { MentionWakeBudgetRepository } from "../../persistence/Services/MentionWakeBudget.ts";
 import { MentionWakeReactor, MENTION_WAKE_CURSOR } from "../Services/MentionWakeReactor.ts";
 import {
   HELD_BACKLOG_LIMIT,
@@ -273,6 +275,11 @@ const makeLayer = (databasePath: string, overrides: Overrides = {}) =>
     overrides.engine === undefined ? (self) => self : Layer.provide(overrides.engine),
     overrides.cursors === undefined ? (self) => self : Layer.provide(overrides.cursors),
     overrides.channels === undefined ? (self) => self : Layer.provide(overrides.channels),
+    // A SECOND INSTANCE, deliberately. The reactor `Layer.provide`s its own copy
+    // so nothing else can reach that state in production; a test that asserts on
+    // the budget needs a handle, and both instances are stateless wrappers over
+    // the same SqlClient and therefore the same two tables.
+    Layer.provideMerge(MentionWakeBudgetRepositoryLive),
     Layer.provideMerge(OrchestrationEngineLive),
     Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
     Layer.provideMerge(OrchestrationProjectionPipelineLive),
@@ -300,6 +307,7 @@ const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
   const events = await runtime.runPromise(Effect.service(OrchestrationEventStore));
   const turns = await runtime.runPromise(Effect.service(ProjectionTurnRepository));
   const sql = await runtime.runPromise(Effect.service(SqlClient.SqlClient));
+  const budget = await runtime.runPromise(Effect.service(MentionWakeBudgetRepository));
   const scope = await runtime.runPromise(Scope.make());
   return {
     engine,
@@ -309,6 +317,7 @@ const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
     events,
     turns,
     sql,
+    budget,
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     startReactor: () =>
       runtime.runPromise(Scope.provide(reactor.start(), scope) as Effect.Effect<void>),
@@ -2305,6 +2314,95 @@ describe("MentionWakeReactor wake budget", () => {
         issuer: AS_TWIN,
       });
       expect((await wakesFrom(system, "collide")).length).toBe(WAKE_BUDGET_PER_CHANNEL + 1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("does not re-charge a replayed post whose wake has aged out of the window", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await agentPosts(system, "aged-replay", 3);
+      expect((await wakesFrom(system, "seniors")).length).toBe(3);
+
+      // AN HOUR PASSES: past the ten-minute window, well inside the day of
+      // retention. That gap is the subject. The rows leave the COUNT and must
+      // NOT leave the TABLE — the spend is keyed by post id, and
+      // `INSERT OR IGNORE` can only ignore a row that still exists.
+      //
+      // THE PROPERTY THE SIBLING TEST BELOW CANNOT REACH. That one replays
+      // inside the window against the real clock, where a second charge would
+      // be absorbed anyway — so its fixture cannot tell an idempotent spend
+      // from one that merely had no time to age. Elapsed time is the
+      // distinguishing input, and a review lane proved the difference: with the
+      // prune scoped to the window, one held post plus fifteen wakes and ten
+      // minutes produced SIXTEEN rows in a window whose correct count is one.
+      await system.run(
+        system.sql`UPDATE mention_wake_budget SET woken_at = '2029-12-31T23:00:00.000Z'`,
+      );
+
+      // Re-spending the same three posts is what a restart's replay does.
+      // `spend` is called directly because driving a real held-cursor replay
+      // ACROSS a ten-minute boundary needs a clock this runtime does not have.
+      const now = "2030-01-01T00:00:00.000Z";
+      let last = 0;
+      for (let index = 0; index < 3; index += 1) {
+        last = await system.run(
+          system.budget.spend({
+            channelId: CHANNEL_ID,
+            postId: `aged-replay-${index}`,
+            wokenAt: now,
+            windowStart: "2029-12-31T23:50:00.000Z",
+            retentionStart: "2029-12-31T00:00:00.000Z",
+          }),
+        );
+      }
+
+      // NONE of the three counts, because each was already charged. Before the
+      // fix this read 3 — the replay re-charging a channel for wakes it had
+      // already paid for, which is the sentence the spend's own docstring uses.
+      expect(last).toBe(0);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 60_000);
+
+  it("charges nothing for a post whose every mention names a deleted thread", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("cmd-delete-woken"),
+          threadId: WOKEN,
+        }),
+      );
+      await system.startReactor();
+
+      // A MEMBER CAN NAME A DEAD THREAD, because membership is a channel's
+      // record of who belongs and not a foreign key. These posts resolve to a
+      // member, start ZERO turns, and must therefore cost nothing — the
+      // invariant the spend site states. It was false: the spend sat above the
+      // loop that skips a deleted thread, so a review lane latched a channel
+      // with 21 posts that had woken nobody.
+      //
+      // The sibling test ("spends nothing for a post that wakes nobody") cannot
+      // see this: its route is the author exclusion, which empties `threadIds`
+      // before the spend is reached at all.
+      await agentPosts(system, "deadmention", WAKE_BUDGET_PER_CHANNEL + 5);
+      expect((await wakesFrom(system, "seniors")).length).toBe(0);
+
+      // Nothing charged, so nothing latched: the bystander is alive and a
+      // mention of it still wakes.
+      await agentPosts(system, "alive", 1, { mention: BYSTANDER_MENTION, issuer: AS_WOKEN });
+      expect((await wakeMessages(system, BYSTANDER)).length).toBe(1);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
