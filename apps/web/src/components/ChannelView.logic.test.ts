@@ -5,6 +5,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 
 import {
   canSendChannelPost,
+  mergeChannelPosts,
   resolveChannelComposerState,
   resolveChannelViewState,
   resolveSendOutcome,
@@ -118,5 +119,73 @@ describe("canSendChannelPost", () => {
     // Otherwise a second Enter mints a second post id and posts twice — the
     // aggregate does not refuse a duplicate post, so both would commit.
     expect(canSendChannelPost({ body: "ship it", sending: true })).toBe(false);
+  });
+});
+
+describe("mergeChannelPosts", () => {
+  const post = (id: string, createdAt: string, body = id) => ({ id, createdAt, body });
+
+  it("keeps one copy of a post the server re-sent, and prefers the server's", () => {
+    // THE OPTIMISTIC POST, RE-READ. The client appends its own post immediately
+    // and the next page returns the same id from the server. Two copies would
+    // show the operator their own message twice, and the body differs here so
+    // the assertion can say WHICH copy survived — with identical bodies this
+    // fixture could not tell "incoming wins" from "existing wins".
+    const merged = mergeChannelPosts({
+      existing: [post("p1", "2026-01-01T00:00:01.000Z", "optimistic")],
+      incoming: [post("p1", "2026-01-01T00:00:01.000Z", "from the server")],
+    });
+    expect(merged).toEqual([
+      { id: "p1", createdAt: "2026-01-01T00:00:01.000Z", body: "from the server" },
+    ]);
+  });
+
+  it("puts an older page BEFORE what the view already had", () => {
+    // Paging upward. A concatenation in the other order would render history
+    // after the present, which reads as a data bug rather than a merge bug.
+    const merged = mergeChannelPosts({
+      existing: [post("p3", "2026-01-01T00:00:03.000Z")],
+      incoming: [post("p1", "2026-01-01T00:00:01.000Z"), post("p2", "2026-01-01T00:00:02.000Z")],
+    });
+    expect(merged.map((entry) => entry.id)).toEqual(["p1", "p2", "p3"]);
+  });
+
+  it("puts a live reply AFTER what the view already had", () => {
+    // The mirror, and it needs its own fixture: an implementation that always
+    // prepended the incoming page would pass the test above and put every new
+    // reply at the top.
+    const merged = mergeChannelPosts({
+      existing: [post("p1", "2026-01-01T00:00:01.000Z")],
+      incoming: [post("p2", "2026-01-01T00:00:02.000Z")],
+    });
+    expect(merged.map((entry) => entry.id)).toEqual(["p1", "p2"]);
+  });
+
+  it("orders two posts sharing a timestamp by id rather than by arrival", () => {
+    // THE INPUT THAT DISTINGUISHES A STABLE ORDER FROM AN ACCIDENTAL ONE. Posts
+    // land in the same millisecond — `createdAt` is a command field, so two
+    // agents replying at once is enough — and a comparator that returned 0 here
+    // would leave the order to whichever page arrived first, so the same history
+    // would render differently after a reload.
+    const forwards = mergeChannelPosts({
+      existing: [post("pb", "2026-01-01T00:00:01.000Z")],
+      incoming: [post("pa", "2026-01-01T00:00:01.000Z")],
+    });
+    const backwards = mergeChannelPosts({
+      existing: [post("pa", "2026-01-01T00:00:01.000Z")],
+      incoming: [post("pb", "2026-01-01T00:00:01.000Z")],
+    });
+    expect(forwards.map((entry) => entry.id)).toEqual(["pa", "pb"]);
+    expect(backwards.map((entry) => entry.id)).toEqual(["pa", "pb"]);
+  });
+
+  it("returns the existing posts unchanged when a page comes back empty", () => {
+    // The start of history answers with no posts. Losing what the view already
+    // had would blank the channel at the moment the reader scrolled to its top.
+    const merged = mergeChannelPosts({
+      existing: [post("p1", "2026-01-01T00:00:01.000Z")],
+      incoming: [],
+    });
+    expect(merged.map((entry) => entry.id)).toEqual(["p1"]);
   });
 });

@@ -129,3 +129,43 @@ export function canSendChannelPost(input: {
 }): boolean {
   return input.body.trim().length > 0 && !input.sending;
 }
+
+/**
+ * A channel's posts as the view holds them: ascending, no duplicates.
+ *
+ * THE VIEW ACCUMULATES AND THE SERVER PAGES, so something has to merge, and the
+ * merge is here rather than inside a component because it is the part with a
+ * wrong answer available. Paging upward prepends an older page; a live reply
+ * appends a newer post; and an optimistic post is later re-read from the server
+ * under the same id.
+ *
+ * DE-DUPLICATED BY ID, which is what makes the optimistic append safe: the post
+ * the client showed immediately and the post the next read returns are ONE post,
+ * and a merge that kept both would show the operator their own message twice.
+ * The INCOMING copy wins, because it came from the server and the local one was
+ * a prediction.
+ *
+ * ORDERED BY `createdAt`, NOT BY SEQUENCE, because there is no sequence on the
+ * wire — it is the cursor's other half and a client holding both halves could
+ * build a cursor for any channel. The id is the tie-break, so two posts sharing
+ * a timestamp still have one stable order instead of an order that depends on
+ * which page happened to arrive first.
+ */
+export function mergeChannelPosts<
+  A extends { readonly id: string; readonly createdAt: string },
+>(input: { readonly existing: ReadonlyArray<A>; readonly incoming: ReadonlyArray<A> }): Array<A> {
+  const byId = new Map<string, A>();
+  for (const post of input.existing) {
+    byId.set(post.id, post);
+  }
+  for (const post of input.incoming) {
+    byId.set(post.id, post);
+  }
+  return [...byId.values()].sort((left, right) =>
+    left.createdAt === right.createdAt
+      ? left.id.localeCompare(right.id)
+      : left.createdAt < right.createdAt
+        ? -1
+        : 1,
+  );
+}
