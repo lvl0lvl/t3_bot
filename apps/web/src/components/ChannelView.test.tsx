@@ -297,7 +297,10 @@ describe("ChannelPostRegion", () => {
 
   it("offers the pager only when the server said there is more", async () => {
     reset();
-    answer(CHANNEL_A, { posts: [post(2, "p-newest", "newest")], nextCursor: "channel-a:1" });
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-newest", "newest")],
+      nextCursor: "channel-a:backward:1",
+    });
     const withMore = await mount(CHANNEL_A);
     expect(buttonLabels(withMore)).toContain("Earlier posts");
 
@@ -379,8 +382,16 @@ describe("ChannelPostRegion", () => {
     // because `cursor` is no longer undefined. A channel that stops mid-history with a
     // control that lies about being able to continue, and no way back without a reload.
     reset();
-    answer(CHANNEL_A, { posts: [post(2, "p-newest", "NEWEST")], nextCursor: "channel-a:1" });
-    answerFailure(CHANNEL_A, "channel-a:1");
+    // OPAQUE TO THE CLIENT, which hands it back verbatim and never decodes it —
+    // so these are not defanged the way the server's fixtures were. They carry a
+    // direction because the server issues one since `t3_bot-2oh`, and a fixture
+    // that could not have come off the wire teaches the next reader the wrong
+    // shape.
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-newest", "NEWEST")],
+      nextCursor: "channel-a:backward:1",
+    });
+    answerFailure(CHANNEL_A, "channel-a:backward:1");
     const tree = await mount(CHANNEL_A);
     expect(buttonLabels(tree)).toContain("Earlier posts");
 
@@ -438,7 +449,7 @@ describe("ChannelPostRegion", () => {
 
     answer(CHANNEL_A, {
       posts: [post(1, "p-one", "one"), post(2, "p-two", "two")],
-      nextCursor: "channel-a:1",
+      nextCursor: "channel-a:backward:1",
     });
     await act(async () => {
       tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);

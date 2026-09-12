@@ -9711,10 +9711,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: { projectionChannels: postsByMember({ asked: [], paged }) },
       });
 
+      // THE CURSOR CARRIES ITS DIRECTION, and this is the one fixture in this
+      // file that went red rather than quiet when `t3_bot-2oh` added the segment:
+      // the door refused the read this test exists to make, so the assertion
+      // below saw 400 where it wanted 200. Fork CI found it; the local run did
+      // not, because it was scoped to the comms toolkit and the codec.
       const response = yield* fetchEffect(
         yield* getHttpServerUrl(
           "/api/orchestration/channels/channel-project/posts" +
-            "?direction=forward&limit=2&cursor=channel-project:1",
+            "?direction=forward&limit=2&cursor=channel-project:forward:1",
         ),
         { headers: { cookie: yield* getAuthenticatedSessionCookieHeader() } },
       );
@@ -9745,10 +9750,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: { projectionChannels: postsByMember({ asked: [], paged }) },
       });
 
+      // THREE SEGMENTS, so the refusal under test is the PROVENANCE one this
+      // test is named for. Two-segment, the decoder refuses it at the segment
+      // boundary instead — same status, same reason code, same green test,
+      // measuring the wrong clause. Nobody edits a test for that to happen;
+      // adding a required segment to a format moves every existing fixture past
+      // the guard it was written for (`t3_bot-2oh`).
       const response = yield* fetchEffect(
         yield* getHttpServerUrl(
           "/api/orchestration/channels/channel-project/posts" +
-            "?direction=backward&limit=2&cursor=channel-somewhere-else:2",
+            "?direction=backward&limit=2&cursor=channel-somewhere-else:backward:2",
         ),
         { headers: { cookie: yield* getAuthenticatedSessionCookieHeader() } },
       );
@@ -9785,7 +9796,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             channelId: ChannelId.make("channel-project"),
             direction: "backward",
             limit: 2,
-            cursor: "channel-somewhere-else:2",
+            // Three segments, for the reason the HTTP door's twin gives: a
+            // two-segment value is refused at the segment boundary and this
+            // test would go on passing while measuring the wrong clause.
+            cursor: "channel-somewhere-else:backward:2",
           }).pipe(Effect.flip),
         ),
       );
@@ -9795,7 +9809,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(failure._tag, "OrchestrationChannelCursorRejectedError");
       // And it carries the cursor it refused, which is what lets a client discard the
       // right one rather than all of them.
-      assert.equal((failure as { readonly cursor?: string }).cursor, "channel-somewhere-else:2");
+      assert.equal(
+        (failure as { readonly cursor?: string }).cursor,
+        "channel-somewhere-else:backward:2",
+      );
       assert.lengthOf(paged, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
