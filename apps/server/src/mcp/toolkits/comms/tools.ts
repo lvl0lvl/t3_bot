@@ -107,7 +107,28 @@ export class CommsMembershipLostError extends Schema.TaggedError<CommsMembership
 }
 
 /**
- * The cursor did not come from this channel, so the read was refused.
+ * WHICH of the three ways the cursor is unusable, because the agent is told.
+ *
+ * A `Record` over the union rather than a switch: a fourth refusal added to
+ * `ChannelCursorRefusal` is then a compile error here, which is the only thing
+ * that stops the next reason inheriting a sentence written for another one.
+ *
+ * The recovery below is the same whichever it was, and the distinction is not
+ * there to give the agent a choice - it is there so the sentence is TRUE. A
+ * false explanation attached to correct advice is worse than no explanation:
+ * the agent believes the explanation, and the next thing it does is act on it
+ * somewhere the advice does not reach.
+ */
+const cursorRefusalCause: Record<ChannelGateway.ChannelCursorRefusal, (channel: string) => string> =
+  {
+    channel: (channel) => `That cursor was not issued by '${channel}'.`,
+    direction: (channel) =>
+      `That cursor came from reading '${channel}' in the other direction, so it points the other way.`,
+    malformed: (channel) => `That cursor is not one '${channel}' can use.`,
+  };
+
+/**
+ * The cursor cannot be used for this read, so the read was refused.
  *
  * TOLD, rather than answered with an empty page. A cursor is a global sequence
  * underneath, so one earned in another channel used to match no row here and
@@ -115,13 +136,20 @@ export class CommsMembershipLostError extends Schema.TaggedError<CommsMembership
  * caught up, and it stops. The message says what to do instead, because the
  * agent cannot repair the cursor and should not try - and it says "the
  * beginning" rather than "the newest", because this tool reads oldest-first.
+ *
+ * ONE SENTENCE FOR THREE CAUSES WAS A FALSE ONE. The gateway refuses a cursor
+ * from another channel, a cursor from the other direction of THIS channel, and
+ * a cursor that is not the right shape; this error named the first of those for
+ * all three. An agent holding a cursor `seniors` had issued was told `seniors`
+ * had not issued it (`t3_bot-2oh`). The recovery clause is unchanged and shared,
+ * which is why nothing went red and nobody noticed.
  */
 export class CommsCursorUnusableError extends Schema.TaggedError<CommsCursorUnusableError>()(
   "CommsCursorUnusableError",
-  { channel: Schema.String },
+  { channel: Schema.String, reason: ChannelGateway.ChannelCursorRefusal },
 ) {
   override get message() {
-    return `That cursor was not issued by '${this.channel}'. Read the channel again without a cursor to start from the beginning, then follow nextCursor. Nothing was lost.`;
+    return `${cursorRefusalCause[this.reason](this.channel)} Read the channel again without a cursor to start from the beginning, then follow nextCursor. Nothing was lost.`;
   }
 }
 
@@ -202,12 +230,15 @@ export type ChannelPost = typeof ChannelPost.Type;
 /**
  * A cursor is the `nextCursor` of an earlier read, handed back verbatim.
  *
- * Opaque to the agent, and `${channelId}:${sequence}` underneath. The channel
- * half is what makes a cursor from ANOTHER channel detectable: the sequence is
- * global, so a bare one matched no row here and the read answered with an empty
- * page - which is byte for byte "you are caught up" (`t3_bot-e60`).
+ * Opaque to the agent, and `${channelId}:${direction}:${sequence}` underneath.
+ * The channel half is what makes a cursor from ANOTHER channel detectable: the
+ * sequence is global, so a bare one matched no row here and the read answered
+ * with an empty page - which is byte for byte "you are caught up"
+ * (`t3_bot-e60`). The direction half is the same detection on the other axis:
+ * a cursor points AFTER its page going forward and BEFORE it going backward
+ * (`t3_bot-2oh`).
  *
- * TWO BOUNDS, EACH LOAD-BEARING.
+ * THREE BOUNDS, EACH LOAD-BEARING.
  *
  * The channel half repeats `OPAQUE_ID_PATTERN` from
  * `packages/contracts/src/baseSchemas.ts` rather than accepting anything up to
@@ -225,8 +256,42 @@ export type ChannelPost = typeof ChannelPost.Type;
  * every other check; the gateway now REFUSES such a cursor rather than
  * defecting on it, so widening this costs a typed refusal rather than a crash -
  * but it still means handing an agent a cursor the server can never honour.
+ *
+ * THE DIRECTION HALF IS A CLOSED SET OF TWO WORDS, spelled out rather than
+ * abbreviated: the value is opaque to the agent but not to whoever reads a log
+ * or a failing assertion, and `f`/`b` costs six characters to save nothing. It
+ * is `t3_bot-2oh`: a cursor points AFTER its page going forward and BEFORE it
+ * going backward, so the same number means opposite things and the read has to
+ * be told which it was handed.
+ *
+ * THE DIRECTION SEGMENT IS OPTIONAL HERE AND REQUIRED IN THE DECODER, which
+ * looks like the two-spellings mistake and is the opposite of it: the decoder
+ * decides what is HONOURED and this decides which door a refusal comes out of.
+ * A cursor issued before `t3_bot-2oh` has two segments, and matching the encoder
+ * exactly meant the schema refused it — measured through the live toolkit:
+ *
+ *   AiError: Toolkit.comms_read_channel.handle: Invalid parameters for tool
+ *   'comms_read_channel': Expected a string matching the RegExp
+ *   ^[A-Za-z0-9_-]{1,64}:(?:forward|backward):[0-9]{1,15}$ at ["cursor"]
+ *
+ * A regex where the recovery should be, outside the `CommsToolError` union this
+ * tool declares, and with nothing saying the posts are still there. Admitted
+ * here, the same value reaches `decodeChannelCursor`, is refused as "malformed",
+ * and the agent is told to re-read without a cursor and that nothing was lost.
+ *
+ * It is NOT a compatibility shim that keeps working: the sequence is never
+ * honoured, in either spelling. It is a window in which the most likely wrong
+ * value — one this server issued last week and an agent is still carrying — gets
+ * the answer written for wrong cursors instead of the one written for malformed
+ * tool arguments.
  */
-const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:[0-9]{1,15}$/;
+/**
+ * EXPORTED FOR THE TESTS, which asserted a hand-copied duplicate of this regex
+ * until the format changed under it and the copy went on passing for the shape
+ * it used to be. A test that pins "the shape the tool accepts" has to read the
+ * shape the tool accepts.
+ */
+export const CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,64}:(?:(?:forward|backward):)?[0-9]{1,15}$/;
 
 export const ReadChannelResult = Schema.Struct({
   channel: Schema.String,
@@ -248,7 +313,7 @@ export const ReadChannelResult = Schema.Struct({
   nextCursor: Schema.NullOr(
     Schema.String.annotate({
       description:
-        "Pass as cursor to read the posts after this page, IN THIS CHANNEL ONLY — a cursor used on a different channel is refused, not answered. Null when there are no newer posts.",
+        "Pass as cursor to read the posts after this page, IN THIS CHANNEL ONLY — a cursor used on a different channel, or on a read in the other direction, is refused rather than answered. Null when there are no newer posts.",
     }),
   ),
 });
@@ -318,9 +383,14 @@ const ReadChannelTool = Tool.make("comms_read_channel", {
       // wire shape of "you are caught up" - while "  ", "-1" and "1.5" rewind
       // to the oldest page. A post id is the likely wrong value, since posts
       // and cursors are both bare strings in the result.
+      //
+      // A TWO-SEGMENT CURSOR GETS THROUGH ON PURPOSE, and is then refused by the
+      // gateway rather than by this check. `CURSOR_PATTERN` has the measurement:
+      // the schema's refusal is a regex dump outside the tool's declared error
+      // union, and the gateway's is a sentence with a recovery in it.
       Schema.String.check(Schema.isPattern(CURSOR_PATTERN)).annotate({
         description:
-          "nextCursor from a previous read OF THIS CHANNEL, to get the posts after that page. Omit for the oldest posts. Pass it back exactly as given; a cursor from another channel is refused rather than answered.",
+          "nextCursor from a previous read OF THIS CHANNEL, to get the posts after that page. Omit for the oldest posts. Pass it back exactly as given; a cursor from another channel, or from a read in the other direction, is refused rather than answered.",
       }),
     ),
   }),

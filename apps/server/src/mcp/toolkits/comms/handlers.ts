@@ -159,11 +159,16 @@ const make = Effect.gen(function* () {
     ({
       ...storeUnavailableAsRead,
       // NAMED, not folded into the read failure. "The store did not answer" and
-      // "your cursor is for a different channel" call for opposite responses:
-      // retry the first, drop the cursor on the second. Folding them survived
-      // the whole suite until a test asserted the tag it must NOT be.
-      ChannelCursorUnusable: () =>
-        Effect.fail(new CommsCursorUnusableError({ channel: channelName })),
+      // "your cursor cannot be used here" call for opposite responses: retry the
+      // first, drop the cursor on the second. Folding them survived the whole
+      // suite until a test asserted the tag it must NOT be.
+      //
+      // AND THE REASON TRAVELS WITH IT. The gateway refuses for three different
+      // causes and this layer used to discard which, leaving one sentence to
+      // cover all of them — so an agent whose cursor was for the other direction
+      // of THIS channel was told the channel had not issued it (`t3_bot-2oh`).
+      ChannelCursorUnusable: (error: ChannelGateway.ChannelCursorUnusable) =>
+        Effect.fail(new CommsCursorUnusableError({ channel: channelName, reason: error.reason })),
     }) as const;
 
   const storeUnavailableAsWrite = {

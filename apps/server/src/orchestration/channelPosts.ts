@@ -37,9 +37,12 @@ import {
   type ChannelMemberRef,
   type ProjectionChannelPost,
 } from "../persistence/Services/ProjectionChannels.ts";
+import * as Result from "effect/Result";
+
 import {
   channelPostOverFetch,
   decodeChannelCursor,
+  type ChannelPostDirection,
   resolveChannelPostPage,
 } from "./channelCursor.ts";
 
@@ -114,7 +117,7 @@ export function readChannelPostPage(input: {
       return yield* new ChannelPostsUnreadable({ channelId });
     }
 
-    const at = yield* resolveCursor(channelId, cursor);
+    const at = yield* resolveCursor(channelId, direction, cursor);
 
     const overFetch = channelPostOverFetch(limit);
     const rows =
@@ -145,13 +148,23 @@ export function readChannelPostPage(input: {
 
 const resolveCursor = (
   channelId: ChannelId,
+  // THE DIRECTION IS PART OF THE CURSOR'S IDENTITY, so it has to reach the
+  // decoder: a cursor points AFTER its page going forward and BEFORE it going
+  // backward, and one used in the other direction is refused rather than
+  // answered with a page (`t3_bot-2oh`).
+  direction: ChannelPostDirection,
   cursor: string | undefined,
 ): Effect.Effect<Option.Option<number>, ChannelCursorRejected> => {
   if (cursor === undefined) {
     return Effect.succeed(Option.none<number>());
   }
-  const decoded = decodeChannelCursor(channelId, cursor);
-  return Option.isNone(decoded)
+  const decoded = decodeChannelCursor(channelId, direction, cursor);
+  // THE REASON IS DROPPED HERE, and only here. `ChannelCursorRejected` crosses the
+  // wire as `OrchestrationChannelCursorRejectedError`, so carrying the reason means
+  // widening a contract, the ws mapping and whatever the clients render — a change
+  // to the browser's error, not to this cursor. The comms toolkit, whose refusal is
+  // a SENTENCE an agent has to act on, does carry it (`CommsCursorUnusableError`).
+  return Result.isFailure(decoded)
     ? Effect.fail(new ChannelCursorRejected({ channelId, cursor }))
-    : Effect.succeed(decoded);
+    : Effect.succeed(Option.some(decoded.success));
 };

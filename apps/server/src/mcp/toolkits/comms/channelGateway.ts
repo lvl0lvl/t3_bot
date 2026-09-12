@@ -34,6 +34,14 @@ import * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+// THE REFUSAL VOCABULARY COMES FROM THE CODEC, which is the only thing that can
+// tell the three causes apart, and is re-exported here because this file is where
+// the toolkit reads the gateway's error vocabulary. Spelling the three words again
+// would be the second spelling of one rule this repo has been burned by four times.
+import { ChannelCursorRefusal } from "../../../orchestration/channelCursor.ts";
+
+export { ChannelCursorRefusal };
+
 /** The store backing the channel projection could not answer. */
 export class ChannelStoreUnavailable extends Schema.TaggedError<ChannelStoreUnavailable>()(
   "ChannelStoreUnavailable",
@@ -67,7 +75,7 @@ export class ChannelMembershipRevoked extends Schema.TaggedError<ChannelMembersh
 ) {}
 
 /**
- * The cursor was not issued by this channel.
+ * The cursor cannot be used for this read, and `reason` says which of the three.
  *
  * A TYPED REFUSAL rather than an empty page, and that is the whole point. The
  * cursor used to be the bare global event sequence, so one earned in another
@@ -76,12 +84,19 @@ export class ChannelMembershipRevoked extends Schema.TaggedError<ChannelMembersh
  * like on the wire. The caller cannot tell those apart and stops reading
  * (`t3_bot-e60`).
  *
+ * THREE CAUSES, NAMED. The channel did not issue it, the other DIRECTION of this
+ * channel issued it, or it is not the shape a cursor has. One error with one
+ * sentence for all three told an agent its cursor came from another channel when
+ * this channel had issued it (`t3_bot-2oh`); the recovery is the same in every
+ * case, which is exactly why the false clause survived.
+ *
  * Carries what the caller SENT, not what was expected: the expected value is
- * this channel's own state and echoing it tells a prober something.
+ * this channel's own state and echoing it tells a prober something. `reason` is
+ * safe by the same test - it names which of this caller's own inputs was wrong.
  */
 export class ChannelCursorUnusable extends Schema.TaggedError<ChannelCursorUnusable>()(
   "ChannelCursorUnusable",
-  { cursor: Schema.String, channelId: Schema.String },
+  { cursor: Schema.String, channelId: Schema.String, reason: ChannelCursorRefusal },
 ) {}
 
 /**
@@ -232,15 +247,22 @@ export interface ChannelPage {
    * Null means there is nothing further IN THAT DIRECTION — the newest post
    * going forward, the beginning of history going backward.
    *
-   * IT DOES NOT RECORD THE DIRECTION THAT ISSUED IT, and that is the same lie
-   * this cursor's channel half was introduced to end, one axis over: a forward
-   * cursor read backward answers with the oldest page and `nextCursor: null`,
-   * which is byte for byte "you are caught up" while everything after it is
-   * unread. Measured, not reasoned about - the numbers are on `t3_bot-2oh`,
-   * which carries encoding the direction into the value so the mismatch becomes
-   * a refusal. Until then, keep a cursor with the direction you obtained it
-   * from. Unreachable from production today only because the sole caller
-   * hardcodes forward.
+   * IT RECORDS THE DIRECTION THAT ISSUED IT, and a cursor used in the other
+   * one is REFUSED (`t3_bot-2oh`). It did not, and that was the same lie the
+   * channel half was introduced to end, one axis over — a forward cursor read
+   * backward answered with the oldest page and `nextCursor: null`, byte for
+   * byte "you are caught up", while everything after it was unread. Measured on
+   * the live gateway over six posts rather than reasoned about:
+   *
+   *   forward page1                     = [p1,p2]  cursor=<channel>:forward:6
+   *   that forward cursor, read BACKWARD = [p1]      cursor=null
+   *   backward page1                    = [p5,p6]  cursor=<channel>:backward:9
+   *   that backward cursor, read FORWARD = [p6]      cursor=null
+   *
+   * Four unread posts behind the first `null` and four behind the second. It
+   * was never reachable from production — the only caller hardcodes forward —
+   * and it would have become reachable the day a second caller chose, which is
+   * a UI opening a channel on its newest page.
    */
   readonly nextCursor: string | null;
 }
@@ -293,11 +315,28 @@ export interface ReadPostsInput {
    * page with `nextCursor: null`: byte for byte the answer for "you are caught
    * up". Three unread posts behind a successful reply, undetectable by the
    * caller, on the feature whose whole purpose is catching up (`t3_bot-e60`).
+   *
+   * AND SO IS ONE FROM THE OTHER DIRECTION, for the same reason on the other
+   * axis (`t3_bot-2oh`), and one whose shape is not a cursor at all — including
+   * one issued before the direction segment existed. `ChannelCursorUnusable`
+   * carries which of the three it was, because the toolkit turns that into a
+   * sentence an agent acts on and one sentence for three causes was false for
+   * two of them.
    */
   readonly cursor: string | undefined;
   /**
    * "forward" is oldest-first from the cursor — an agent tailing a channel.
    * "backward" is the newest page and then upward — a UI opening one.
+   *
+   * PART OF THE CURSOR'S IDENTITY, not just of this call. A cursor points AFTER
+   * its page going forward and BEFORE it going backward, so the same number
+   * means opposite things; `direction` is encoded into every `nextCursor` and
+   * compared on the way back in. WHAT BREAKS: a caller that stores a cursor and
+   * later reads with the other direction — a UI whose user flips the order, a
+   * client resuming from a persisted cursor after its default changed — gets
+   * `ChannelCursorUnusable` rather than a page. That is the point; before it,
+   * the read answered with an early page and `nextCursor: null` over four
+   * unread posts (`t3_bot-2oh`).
    */
   readonly direction: ReadDirection;
 }
@@ -344,11 +383,13 @@ export interface ChannelGatewayShape {
    *   "backward" - the newest page, then upward; `nextCursor` points BEFORE the
    *                first post returned, and is null at the START of history.
    *
-   * `cursor` is opaque, belongs to THIS channel, and one from another is
-   * refused with `ChannelCursorUnusable` rather than answered with an empty
-   * page - the empty page is indistinguishable from "you are caught up", which
-   * is the defect this contract exists to prevent. `limit` is a maximum, not an
-   * exact count.
+   * `cursor` is opaque and belongs to THIS channel AND THIS DIRECTION. Three
+   * things make one unusable - another channel issued it, the other direction
+   * issued it, or it is not the shape a cursor has - and all three are refused
+   * with `ChannelCursorUnusable`, whose `reason` says which, rather than
+   * answered with an empty page. The empty page is indistinguishable from "you
+   * are caught up", which is the defect this contract exists to prevent.
+   * `limit` is a maximum, not an exact count.
    */
   readonly readPosts: (
     input: ReadPostsInput,

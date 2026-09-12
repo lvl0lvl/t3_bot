@@ -10,7 +10,7 @@ import type { Tool } from "effect/unstable/ai";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ChannelGateway from "./channelGateway.ts";
 import { CommsToolkitHandlersLive, canonicalChannelName, resolveMentions } from "./handlers.ts";
-import { CommsToolkit } from "./tools.ts";
+import { CommsToolkit, CURSOR_PATTERN } from "./tools.ts";
 
 const THREAD_ID = ThreadId.make("thread-boss3");
 const OTHER_THREAD_ID = ThreadId.make("thread-boss1");
@@ -76,19 +76,34 @@ interface HarnessOptions {
 }
 
 /**
- * A cursor's two halves, or `[cursor, null]` when the sequence half is not one.
+ * A cursor's THREE parts, or nulls where a part is not one.
  *
  * Deliberately as strict as the live layer's `decodeCursor` about the digits:
  * `Number("")` is 0 and `Number("0x2")` is 2, so a fake that used `Number`
  * directly would answer a page for a cursor the real gateway refuses - which is
  * the divergence this whole fake is written to avoid.
+ *
+ * THE DIRECTION IS THE THIRD PART (`t3_bot-2oh`). A cursor points AFTER its
+ * page going forward and BEFORE it going backward, so the live layer refuses
+ * one used in the other direction; a fake that still parsed two parts would
+ * answer a page for exactly that cursor, which is the divergence above with a
+ * different field in it.
  */
-const splitCursor = (cursor: string | undefined): readonly [string | null, number | null] => {
-  if (cursor === undefined) return [null, null];
+const splitCursor = (
+  cursor: string | undefined,
+): readonly [string | null, string | null, number | null] => {
+  if (cursor === undefined) return [null, null, null];
   const boundary = cursor.indexOf(":");
-  if (boundary === -1) return [cursor, null];
-  const digits = cursor.slice(boundary + 1);
-  return [cursor.slice(0, boundary), /^[0-9]+$/.test(digits) ? Number(digits) : null];
+  if (boundary === -1) return [cursor, null, null];
+  const rest = cursor.slice(boundary + 1);
+  const directionBoundary = rest.indexOf(":");
+  if (directionBoundary === -1) return [cursor.slice(0, boundary), null, null];
+  const digits = rest.slice(directionBoundary + 1);
+  return [
+    cursor.slice(0, boundary),
+    rest.slice(0, directionBoundary),
+    /^[0-9]+$/.test(digits) ? Number(digits) : null,
+  ];
 };
 
 const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: HarnessOptions = {}) {
@@ -184,12 +199,28 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
             // `t3_bot-e60` fixed in the live layer, still live in the fake that
             // 43 tests run against. The refusal branch the handlers gained for
             // it was unreachable in this file.
-            const [issuedBy, digits] = splitCursor(input.cursor);
-            if (input.cursor !== undefined && (issuedBy !== input.channelId || digits === null)) {
+            const [issuedBy, issuedFor, digits] = splitCursor(input.cursor);
+            // AND THE REASON, IN THE LIVE DECODER'S ORDER. The handler turns this
+            // word into the sentence the agent reads, so a fake that refuses
+            // correctly while blaming the wrong cause reproduces `t3_bot-2oh`
+            // instead of guarding against it: shape first, then the channel, then
+            // the direction — a cursor wrong on both axes is the other channel's.
+            const refusal =
+              input.cursor === undefined
+                ? undefined
+                : digits === null
+                  ? "malformed"
+                  : issuedBy !== input.channelId
+                    ? "channel"
+                    : issuedFor !== input.direction
+                      ? "direction"
+                      : undefined;
+            if (input.cursor !== undefined && refusal !== undefined) {
               return Effect.fail(
                 new ChannelGateway.ChannelCursorUnusable({
                   cursor: input.cursor,
                   channelId: input.channelId,
+                  reason: refusal,
                 }),
               );
             }
@@ -207,7 +238,7 @@ const makeHarness = Effect.fn("makeCommsToolkitHarness")(function* (options: Har
             const exhausted = backward ? boundary <= 0 : boundary >= allPosts.length;
             return Effect.succeed({
               posts: page,
-              nextCursor: exhausted ? null : `${input.channelId}:${boundary}`,
+              nextCursor: exhausted ? null : `${input.channelId}:${input.direction}:${boundary}`,
             } satisfies ChannelGateway.ChannelPage);
           }),
         ),
@@ -708,7 +739,12 @@ describe("comms toolkit handlers", () => {
       // cursor is opaque to the agent, and asserting the exact string here
       // pinned this fake's convention rather than the contract. The proof it
       // is usable is that the next call below is made with it.
-      expect(first.nextCursor).toMatch(/^[A-Za-z0-9_-]{1,64}:[0-9]{1,15}$/);
+      //
+      // THE TOOL'S OWN PATTERN, not a copy of it. This was a hand-written
+      // duplicate, and when `t3_bot-2oh` added a direction segment the copy
+      // kept asserting the old two-part shape — a test pinning "what the tool
+      // accepts" against a regex the tool no longer uses.
+      expect(first.nextCursor).toMatch(CURSOR_PATTERN);
 
       const second = yield* harness.call("comms_read_channel", {
         channel: "seniors",
@@ -728,6 +764,45 @@ describe("comms toolkit handlers", () => {
     }),
   );
 
+  it.effect("does not blame the channel for a cursor the channel issued", () =>
+    Effect.gen(function* () {
+      const many = Array.from({ length: 5 }, (_, index) => post(`post-${index + 1}`));
+      const harness = yield* makeHarness({ posts: many });
+
+      // THE SENTENCE WAS FALSE AND NOTHING WAS RED. Three gateway refusals —
+      // another channel's cursor, the other direction's, and a malformed one —
+      // arrived here as one error carrying no reason, and the one sentence
+      // written for the first of them was served to all three. An agent holding
+      // a cursor `seniors` had issued was told `seniors` had not issued it, and
+      // the only assertions on this message were `toContain("seniors")` and
+      // `toContain("without a cursor")`, which the false sentence and the true
+      // one both satisfy (`t3_bot-2oh`).
+      //
+      // BUILT FROM THE REAL CURSOR rather than hand-spelled: flipping the
+      // direction word in a cursor this channel just issued is the one edit that
+      // leaves the channel half and the sequence exactly as the gateway wrote
+      // them, so nothing but the direction can be what is refused.
+      const first = yield* harness.call("comms_read_channel", { channel: "seniors", limit: 2 });
+      const otherDirection = first.nextCursor!.replace(":forward:", ":backward:");
+      expect(otherDirection).not.toBe(first.nextCursor);
+
+      const refused = yield* harness
+        .call("comms_read_channel", { channel: "seniors", cursor: otherDirection })
+        .pipe(Effect.flip);
+
+      expect((refused as { _tag: string })._tag).toBe("CommsCursorUnusableError");
+      const message = (refused as { message: string }).message;
+      expect(message).toContain("in the other direction");
+      // THE NEGATIVE IS THE POINT. The tag, the channel name and the recovery
+      // clause are identical either way; the false clause is the only thing that
+      // changed, so it is the only thing that can catch its return.
+      expect(message).not.toContain("was not issued by");
+      // And the recovery it depends on is still there, since a true explanation
+      // with no next step is its own failure.
+      expect(message).toContain("without a cursor");
+    }),
+  );
+
   it.effect("turns the gateway's foreign-cursor refusal into the agent-facing one", () =>
     Effect.gen(function* () {
       const many = Array.from({ length: 5 }, (_, index) => post(`post-${index + 1}`));
@@ -740,7 +815,11 @@ describe("comms toolkit handlers", () => {
       // first page, which is the very defect `t3_bot-e60` fixes in the live
       // layer. 43 tests ran against that fake. Found by a verifier, not by
       // reading the comment directly above it saying fakes must not diverge.
-      const foreign = "channel-somewhere-else:2";
+      // THREE PARTS, so the refusal under test is the one about PROVENANCE.
+      // A two-part value is admitted by the schema on purpose and refused by
+      // the decoder as "malformed" (`t3_bot-2oh`), so it would still fail here
+      // — with the wrong reason, and the assertions below read the sentence.
+      const foreign = "channel-somewhere-else:forward:2";
       const refused = yield* harness
         .call("comms_read_channel", { channel: "seniors", cursor: foreign })
         .pipe(Effect.flip);
@@ -749,6 +828,11 @@ describe("comms toolkit handlers", () => {
       // is the retryable one, and telling an agent to retry a cursor that can
       // never work is the loop this area exists to stop.
       expect((refused as { _tag: string })._tag).toBe("CommsCursorUnusableError");
+      // AND THE SENTENCE, which is the whole product here — the agent acts on
+      // prose, not on a tag. True for THIS cursor: another channel issued it.
+      expect((refused as { message: string }).message).toContain(
+        "That cursor was not issued by 'seniors'.",
+      );
       expect((refused as { _tag: string })._tag).not.toBe("CommsReadFailedError");
       // Not a page. An empty page with a null cursor is what the old coercion
       // produced and is indistinguishable from being caught up.
@@ -1102,5 +1186,82 @@ describe("comms toolkit helpers", () => {
 
   it("ignores an empty mention rather than failing the post", () => {
     expect(resolveMentions(["@", "  ", "boss1"], MEMBERS)).toEqual({ handles: ["boss1"] });
+  });
+});
+
+/**
+ * The pattern, read directly, because every other assertion on it is indirect.
+ *
+ * Everything `CURSOR_PATTERN` refuses is refused AGAIN by `decodeChannelCursor`,
+ * so replacing the whole check with `/^[\s\S]*$/` leaves every cursor test in
+ * this repository green: the tool still fails, one door further down. The guard
+ * is not about whether a bad cursor is caught, it is about WHICH error the agent
+ * is handed, and only reading the pattern itself can measure that.
+ */
+describe("CURSOR_PATTERN", () => {
+  it("admits what the encoder writes, in both directions", () => {
+    expect(CURSOR_PATTERN.test("channel-seniors:forward:12")).toBe(true);
+    expect(CURSOR_PATTERN.test("channel-seniors:backward:12")).toBe(true);
+    // Zero is a sequence; a bound of one digit is still a bound.
+    expect(CURSOR_PATTERN.test("c:forward:0")).toBe(true);
+  });
+
+  it("admits a cursor issued before the direction existed", () => {
+    // ON PURPOSE, and refused by the gateway rather than here (`t3_bot-2oh`).
+    // Matching the encoder exactly meant the schema turned a cursor this server
+    // itself issued into an `AiError` quoting this regex, outside the tool's
+    // declared error union and with no recovery in it. Admitted, the same value
+    // reaches the decoder and comes back as "read again without a cursor,
+    // nothing was lost". The sequence is never honoured either way.
+    expect(CURSOR_PATTERN.test("channel-seniors:12")).toBe(true);
+  });
+
+  it("refuses the direction word it was not given", () => {
+    // The alternation is a CLOSED set of two words. `[a-z]+` in its place reads
+    // identically on every fixture the encoder produces and admits
+    // "channel:sideways:1", which the decoder then refuses as a direction
+    // mismatch - the right refusal at the wrong door, and the tell is gone.
+    expect(CURSOR_PATTERN.test("channel-seniors:sideways:12")).toBe(false);
+    expect(CURSOR_PATTERN.test("channel-seniors:Forward:12")).toBe(false);
+    expect(CURSOR_PATTERN.test("channel-seniors:forwards:12")).toBe(false);
+  });
+
+  it("refuses a sequence that cannot survive the round trip", () => {
+    // Fifteen digits is the widest bound that cannot overflow:
+    // `Number.MAX_SAFE_INTEGER` has sixteen, and an unbounded `[0-9]+` admitted
+    // "9007199254740993" - numeric, past every other check, and a sequence the
+    // caller can never be given back.
+    expect(CURSOR_PATTERN.test(`channel-seniors:forward:${"9".repeat(15)}`)).toBe(true);
+    expect(CURSOR_PATTERN.test(`channel-seniors:forward:${"9".repeat(16)}`)).toBe(false);
+  });
+
+  it("refuses a channel half that would break the decoder's split", () => {
+    // The split assumes no ":" inside a channel id, which is what
+    // `OPAQUE_ID_PATTERN` guarantees and what this half re-spells so the
+    // assumption is checkable here. Sixty-five characters is one past that
+    // brand's own bound.
+    expect(CURSOR_PATTERN.test("has spaces:forward:1")).toBe(false);
+    expect(CURSOR_PATTERN.test("a:b:forward:1")).toBe(false);
+    expect(CURSOR_PATTERN.test(`${"a".repeat(65)}:forward:1`)).toBe(false);
+    expect(CURSOR_PATTERN.test(":forward:1")).toBe(false);
+  });
+
+  it("refuses the shapes an agent is most likely to send instead", () => {
+    // A post id and a bare sequence, which are the two wrong values the result
+    // shape makes easy: posts and cursors are both plain strings in it. The
+    // trailing newline is here because `$` in JavaScript is NOT Python's: it
+    // does not match before a final newline unless `m` is set, so a cursor
+    // copied with a line break is refused rather than quietly honoured.
+    for (const notACursor of [
+      "post-2",
+      "3",
+      "seniors:",
+      "",
+      "  ",
+      "channel:forward:",
+      "channel-a:forward:1\n",
+    ]) {
+      expect(CURSOR_PATTERN.test(notACursor)).toBe(false);
+    }
   });
 });
