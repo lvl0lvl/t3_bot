@@ -8916,7 +8916,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // WHICH MEMBER WAS ASKED. Without this the assertion above is satisfied by
       // a handler that hands the query a member it invented, as long as the stub
       // happens to answer for it.
-      assert.deepEqual(asked, [{ memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID }]);
+      // FIELD BY FIELD rather than deep-equal against a literal, because a
+      // `ChannelMemberRef` is a class now and cannot be deep-equal to a plain
+      // object by construction — which is the whole of what makes it
+      // unforgeable. Both fields are still asserted, so this is not weaker: a
+      // memberId-only check is the mutation `t3_bot-46h` exists for.
+      assert.equal(asked.length, 1);
+      assert.equal(asked[0]?.memberKind, "human");
+      assert.equal(asked[0]?.memberId, HUMAN_OPERATOR_MEMBER_ID);
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
@@ -8957,7 +8964,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ["channel-project"],
       );
       assert.equal(snapshot.channels?.[0]?.latestPostAt, "2026-01-01T00:00:01.000Z");
-      assert.deepEqual(asked, [{ memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID }]);
+      // FIELD BY FIELD rather than deep-equal against a literal, because a
+      // `ChannelMemberRef` is a class now and cannot be deep-equal to a plain
+      // object by construction — which is the whole of what makes it
+      // unforgeable. Both fields are still asserted, so this is not weaker: a
+      // memberId-only check is the mutation `t3_bot-46h` exists for.
+      assert.equal(asked.length, 1);
+      assert.equal(asked[0]?.memberKind, "human");
+      assert.equal(asked[0]?.memberId, HUMAN_OPERATOR_MEMBER_ID);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

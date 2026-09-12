@@ -16,7 +16,7 @@
  * @module channelMemberRef
  */
 import type { ThreadId } from "./baseSchemas.ts";
-import { HUMAN_OPERATOR_MEMBER_ID } from "./orchestration.ts";
+import { HUMAN_OPERATOR_MEMBER_ID, type CommandIssuer } from "./orchestration.ts";
 
 /**
  * NOT EXPORTED, and a class rather than a symbol brand.
@@ -101,3 +101,32 @@ export const refFromOperatorSession = (): ChannelMemberRef =>
  */
 export const refFromThreadCredential = (threadId: ThreadId): ChannelMemberRef =>
   new MemberRef("thread", threadId);
+
+/**
+ * The operator's identity on the WRITE path, which is a different type from its
+ * identity on the read path and must stay one.
+ *
+ * TWO SHAPES FOR ONE IDENTITY, ON PURPOSE. `CommandIssuer` is a `Schema.Struct`
+ * that the engine stamps onto a command and the decider turns into a post's
+ * `authorRef` — a value that is ENCODED AND STORED IN THE EVENT LOG.
+ * `ChannelMemberRef` is a nominal class that exists to be unconstructible. An
+ * event payload is the one place a class must not appear: it is decoded from
+ * rows written before the class existed, and a private field cannot survive
+ * that round trip.
+ *
+ * They are also not the same domain. `CommandIssuer` has a third kind,
+ * `system`, for seeds and reactors — which is deliberately NOT a channel member
+ * kind, because a reactor has no handle and cannot author a post, only
+ * administer. A ref that admitted `system` would be claiming a reactor can be
+ * a member.
+ *
+ * The old `HUMAN_OPERATOR_CHANNEL_MEMBER` constant served both jobs only
+ * because a plain object satisfies both structurally, and that coincidence is
+ * what hid the distinction. Found by the rebase gate: making the read ref
+ * nominal turned four server-seam tests red, all of them asserting the ISSUER
+ * of a dispatched command. The tests were right.
+ */
+export const operatorCommandIssuer = (): CommandIssuer => ({
+  memberKind: "human",
+  memberId: HUMAN_OPERATOR_MEMBER_ID,
+});

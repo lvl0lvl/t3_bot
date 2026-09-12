@@ -29,6 +29,7 @@ import {
   CommandId,
   type DiscoveredLocalServerList,
   EventId,
+  operatorCommandIssuer,
   refFromOperatorSession,
   type EditorId,
   type FileManagerRevealKind,
@@ -521,6 +522,18 @@ const makeWsRpcLayer = (
        * from a client is the bug, not the shape of it.
        */
       const connectionMember = refFromOperatorSession();
+      /**
+       * The same identity as `connectionMember`, in the type the WRITE path
+       * needs. Not a duplicate: an issuer is encoded onto the command and
+       * becomes a post's `authorRef` in the stored event, so it must be a plain
+       * `CommandIssuer` struct — a nominal class cannot survive being decoded
+       * back out of a row. `CommandIssuer` also admits `system`, which is not a
+       * channel member kind at all.
+       *
+       * The constant these two replaced served both jobs because a plain object
+       * satisfies both structurally, which is exactly what hid the distinction.
+       */
+      const connectionIssuer = operatorCommandIssuer();
       const threadDeletionReactor = yield* ThreadDeletionReactor;
       const analytics = yield* AnalyticsService.AnalyticsService;
       // Every command dispatched on this connection carries the connecting
@@ -549,7 +562,7 @@ const makeWsRpcLayer = (
       ) =>
         orchestrationEngine.dispatch(command, {
           ...(hasClientOrigin ? { origin: clientOrigin } : {}),
-          issuer: connectionMember,
+          issuer: connectionIssuer,
         });
       const recordClientCommandAnalytics = (command: OrchestrationCommand) => {
         switch (command.type) {
