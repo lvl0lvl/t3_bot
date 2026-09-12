@@ -56,7 +56,11 @@ export const HELD_BACKLOG_LIMIT = 500;
  * what lets the cursor be written AFTER the dispatch in its own transaction: a
  * crash between the two replays the post on restart and the replay is absorbed.
  */
-const wakeKey = (channelId: string, postId: string, threadId: ThreadId) =>
+// Exported for its own test. The end-to-end version of that test is no longer
+// writable: `t3_bot-2d2` refuses a colon in either id at the persisted schema,
+// so the collision this escaping prevents cannot be built through a command.
+// The derivation is pure, so it can still be handed the hostile pair directly.
+export const wakeKey = (channelId: string, postId: string, threadId: ThreadId) =>
   `comms-wake:${encodeURIComponent(channelId)}:${encodeURIComponent(postId)}:${threadId}`;
 
 /**
@@ -196,8 +200,10 @@ const framed = (value: string) => JSON.stringify(value.replace(FRAMING_UNSAFE, "
  * for it by rendering an emoji handle as `\ud83d\udd25` in the line that tells
  * an agent who called it would be the wrong trade.
  *
- * A conforming id is untouched by this: `t3_bot-2d2` restricts both id types to
- * `^[A-Za-z0-9_-]{1,64}$`, so once that lands this escape is pure defence.
+ * A conforming id is untouched by this. Where `ChannelPostId` carries the opaque
+ * charset — `^[A-Za-z0-9_-]{1,64}$` — nothing reaching here can trip it and this
+ * escape is pure defence, which is the state to prefer and not one to rely on: a
+ * charset is a decision someone can relax without revisiting this file.
  */
 const framedId = (value: string) =>
   // CODE UNITS, not code points, and the missing `u` flag is the whole of it.

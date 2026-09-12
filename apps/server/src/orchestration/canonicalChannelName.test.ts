@@ -149,6 +149,21 @@ const HANDLE_TABLE = CANONICAL_IDENTITY_TABLE.map(
 );
 const HANDLE_EMPTY_ROWS = HANDLE_TABLE.filter(([, canonical]) => canonical.length === 0);
 
+it("answers the same way twice, so the shared class cannot become stateful", () => {
+  // FORBIDDEN_IN_CANONICAL_IDENTITY is used with `.test`, and a regex carrying
+  // the global flag keeps `lastIndex` between calls — so `.test` alternates
+  // true, false, true on the SAME input. The gate would then admit every second
+  // invisible character, which no single-call test can see.
+  //
+  // It has no `g` today. This exists because adding one is a plausible edit (a
+  // second use site wanting `.replace` is how it happens) and the failure is
+  // silent: the suite would go half-green in a way that reads as flakiness.
+  const invisible = "boss1\u200B";
+  expect(FORBIDDEN_IN_CANONICAL_IDENTITY.test(invisible)).toBe(true);
+  expect(FORBIDDEN_IN_CANONICAL_IDENTITY.test(invisible)).toBe(true);
+  expect(FORBIDDEN_IN_CANONICAL_IDENTITY.test(invisible)).toBe(true);
+});
+
 it("applies the same rule to handles, with @ as the sigil", () => {
   // The toolkit is to fold "@Boss1" to "boss1" when resolving a mention against
   // stored membership. Folding there before handles are stored folded makes
