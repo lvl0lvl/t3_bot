@@ -48,7 +48,7 @@ function findChannelById(
   readModel: OrchestrationReadModel,
   channelId: ChannelId,
 ): OrchestrationChannel | undefined {
-  return (readModel.channels ?? []).find((channel) => channel.id === channelId);
+  return readModel.channels.find((channel) => channel.id === channelId);
 }
 
 export function requireChannel(input: {

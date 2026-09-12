@@ -6,7 +6,7 @@ import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
-import { ChannelId, ChannelMember, ChannelMemberHandle, IsoDateTime } from "@t3tools/contracts";
+import { ChannelId, ChannelMemberHandle, IsoDateTime } from "@t3tools/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
@@ -172,9 +172,7 @@ const makeProjectionChannelRepository = Effect.gen(function* () {
   });
 
   const withMembers = (row: ProjectionChannelRow) =>
-    listMemberRows(row.channelId).pipe(
-      Effect.map((members) => ({ ...row, members: members as ReadonlyArray<ChannelMember> })),
-    );
+    listMemberRows(row.channelId).pipe(Effect.map((members) => ({ ...row, members })));
 
   const replaceMembers: ProjectionChannelRepositoryShape["replaceMembers"] = ({
     channelId,
