@@ -1,23 +1,40 @@
-import { OrchestrationCommand, ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  OrchestrationCommand,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  type OrchestrationReadModel,
+} from "@t3tools/contracts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
 
+import { decideOrchestrationCommand } from "../decider.ts";
 import { __testing } from "./OrchestrationEngine.ts";
 
 const { commandToAggregateRef } = __testing;
 
 const PROJECT_ID = ProjectId.make("project-under-test");
 const THREAD_ID = ThreadId.make("thread-under-test");
+const NOW = "2026-01-01T00:00:00.000Z";
 
 /**
- * Where each command's events, command receipt, and `hasEventAfter` scope
- * belong.
+ * Where each command's command receipt belongs.
  *
- * `command satisfies never` in `commandToAggregateRef` proves only that every
- * command has SOME branch. It cannot prove a command sits in the RIGHT one: a
- * payload carrying both a `projectId` and a `threadId` type-checks in either,
- * so moving `thread.pull-request.sync` into the project group compiles clean
- * and passes the engine suite while silently attaching a thread's events to a
- * project aggregate. This table is the assertion the compiler cannot make.
+ * What `commandToAggregateRef` actually scopes is narrower than it looks, and
+ * worth stating because the obvious reading is wrong. Its only consumers are
+ * the span and metric attributes, the idempotency conflict check
+ * (OrchestrationEngine.ts:221), and the REJECTED receipt (:462). Events do not
+ * route through it — the decider stamps `aggregateKind` on every event itself —
+ * and `hasEventAfter` hardcodes `"thread"` at both call sites (:245, :261), so
+ * neither can be corrupted by a misplaced case here.
+ *
+ * `command satisfies never` in that function proves every command has SOME
+ * branch. It cannot prove a command sits in the RIGHT one: a payload carrying
+ * both a `projectId` and a `threadId` type-checks in either, so moving
+ * `thread.pull-request.sync` into the project group compiles clean and leaves
+ * the engine suite green. This table is the assertion the compiler cannot make.
  */
 const EXPECTED_AGGREGATE: Readonly<Record<string, "project" | "thread">> = {
   "project.create": "project",
@@ -62,41 +79,32 @@ const EXPECTED_AGGREGATE: Readonly<Record<string, "project" | "thread">> = {
 };
 
 /**
- * The command types the contract actually declares, read from the schema rather
- * than hand-listed. Without this the table above rots: a command added to the
- * union would simply never be tested, and the suite would stay green.
+ * The shape the command union is declared in. Annotating it structurally rather
+ * than walking the schema's internals means a restructure — including adding a
+ * bare Struct to the top-level union instead of into a sub-union — fails to
+ * compile here, pointing at one line, instead of being silently skipped by a
+ * reflective walk that cannot read it.
+ */
+type CommandGroup = {
+  readonly members: ReadonlyArray<{
+    readonly fields: { readonly type: { readonly literal: string } };
+  }>;
+};
+
+/**
+ * The command types the contract declares, read from the schema rather than
+ * hand-listed: a command added to the union must be routed deliberately or the
+ * table test below fails naming it. A hand-written list would rot silently.
  */
 const declaredCommandTypes = (): ReadonlyArray<string> => {
-  const seen: Array<string> = [];
-  const walk = (node: unknown, depth = 0): void => {
-    if (!node || typeof node !== "object" || depth > 8) return;
-    const record = node as Record<string, unknown>;
-    const types = record.types;
-    if (Array.isArray(types)) {
-      for (const member of types) walk(member, depth + 1);
-      return;
-    }
-    const properties = (record.propertySignatures ?? record.fields ?? record.properties) as unknown;
-    const entries: ReadonlyArray<Record<string, unknown>> = Array.isArray(properties)
-      ? (properties as Array<Record<string, unknown>>)
-      : Object.entries((properties ?? {}) as Record<string, unknown>).map(([name, type]) => ({
-          name,
-          type,
-        }));
-    for (const entry of entries) {
-      if ((entry.name ?? entry.key) !== "type") continue;
-      const valueNode = (entry.type ?? entry.value) as Record<string, unknown> | undefined;
-      const literal =
-        valueNode?.literal ??
-        (valueNode?.ast as Record<string, unknown> | undefined)?.literal ??
-        (valueNode?.literals as Array<unknown> | undefined)?.[0];
-      if (literal !== undefined) seen.push(String(literal));
-    }
-    if (record.from) walk(record.from, depth + 1);
-    if (record.ast) walk(record.ast, depth + 1);
-  };
-  walk((OrchestrationCommand as unknown as { readonly ast: unknown }).ast);
-  return [...new Set(seen)].sort();
+  const groups: ReadonlyArray<CommandGroup> = OrchestrationCommand.members;
+  const members = groups.flatMap((group) => group.members);
+  const types = [...new Set(members.map((member) => member.fields.type.literal))];
+  // Every leaf must have yielded a readable literal. A member the accessor
+  // cannot read would otherwise be skipped in silence, and a command that is
+  // never enumerated is never routing-checked.
+  expect(members.every((member) => typeof member.fields.type.literal === "string")).toBe(true);
+  return types.sort();
 };
 
 /**
@@ -105,17 +113,75 @@ const declaredCommandTypes = (): ReadonlyArray<string> => {
  * make the wrong branch *succeed* at producing the wrong answer.
  */
 const probe = (type: string): OrchestrationCommand =>
-  ({ type, projectId: PROJECT_ID, threadId: THREAD_ID }) as unknown as OrchestrationCommand;
+  ({
+    type,
+    commandId: CommandId.make(`cmd-${type}`),
+    projectId: PROJECT_ID,
+    threadId: THREAD_ID,
+  }) as unknown as OrchestrationCommand;
 
-it("routes every declared command to the aggregate that owns it", () => {
+const readModel = (): OrchestrationReadModel => ({
+  snapshotSequence: 0,
+  projects: [
+    {
+      id: PROJECT_ID,
+      title: "Project",
+      workspaceRoot: "/workspace/project",
+      defaultModelSelection: null,
+      scripts: [],
+      repositoryIdentity: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      deletedAt: null,
+      threadEnvMode: null,
+      faviconPath: null,
+      projectIcon: null,
+      autoPull: null,
+    },
+  ] as unknown as OrchestrationReadModel["projects"],
+  threads: [
+    {
+      id: THREAD_ID,
+      projectId: PROJECT_ID,
+      title: "Thread",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      pullRequests: [],
+      branch: null,
+      worktreePath: null,
+      latestTurn: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      unsettledAt: null,
+      activeOrderKey: null,
+      snoozedUntil: null,
+      snoozedAt: null,
+      pinnedAt: null,
+      pinOrderKey: null,
+      deletedAt: null,
+      messages: [],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+      session: null,
+    },
+  ] as unknown as OrchestrationReadModel["threads"],
+  updatedAt: NOW,
+});
+
+it("routes every declared command to the aggregate that owns its receipt", () => {
   for (const type of declaredCommandTypes()) {
     const expected = EXPECTED_AGGREGATE[type];
     expect(expected, `${type} is not in the expected-routing table — add it`).toBeDefined();
     const ref = commandToAggregateRef(probe(type));
     expect(ref, `${type} has no branch in commandToAggregateRef`).not.toBeNull();
     expect(ref?.aggregateKind, `${type} routed to the wrong aggregate kind`).toBe(expected);
-    // The id matters as much as the kind: a misrouted command stamps a real
-    // aggregate, just the wrong one, and that is what corrupts receipt scope.
+    // The id matters as much as the kind: a misroute stamps a real aggregate,
+    // just the wrong one, and that is what corrupts the receipt.
     expect(ref?.aggregateId, `${type} routed to the wrong aggregate id`).toBe(
       expected === "project" ? PROJECT_ID : THREAD_ID,
     );
@@ -128,15 +194,76 @@ it("has no table entry for a command the contract no longer declares", () => {
   expect(stale, "these table entries name commands that no longer exist").toEqual([]);
 });
 
-it("reads a non-empty command union, so a broken probe cannot vacuously pass", () => {
-  // Without this, a schema-shape change that made the walker return nothing
-  // would turn both tests above into no-ops that still report green.
-  expect(declaredCommandTypes().length).toBeGreaterThan(30);
-});
-
 it("returns null rather than throwing for a command with no branch", () => {
   // The engine runs this on its single command-queue worker fiber: a throw
   // there kills the fiber and hangs every later command on an unsettled
   // Deferred, so an unroutable command must be rejectable, not fatal.
   expect(commandToAggregateRef(probe("thread.does-not-exist"))).toBeNull();
+});
+
+it.layer(NodeServices.layer)("router and decider agree", (it) => {
+  /**
+   * The invariant that actually protects the command receipt.
+   *
+   * There are TWO independent command-to-aggregate mappings: this router's 39
+   * cases, and the ~51 `aggregateKind` literals the decider stamps on events.
+   * The ACCEPTED receipt is written from the decider's event
+   * (OrchestrationEngine.ts:366) while the idempotency conflict check compares
+   * the ROUTER's answer (:221). If the two disagree, a legitimate replay of a
+   * commandId raises a conflict against a command that already succeeded.
+   *
+   * Nothing else detects that: the compiler cannot, `satisfies never` cannot,
+   * and asserting the router against a hand-written table cannot either.
+   */
+  it.effect("every event a command produces carries the aggregate the router computed", () =>
+    Effect.gen(function* () {
+      let decided = 0;
+      const disagreements: Array<string> = [];
+
+      for (const type of declaredCommandTypes()) {
+        const command = probe(type);
+        const ref = commandToAggregateRef(command);
+        if (ref === null) continue;
+
+        const planned = yield* decideOrchestrationCommand({
+          command,
+          readModel: readModel(),
+          // `exit`, not `result`: a probe payload that omits a command's own
+          // fields makes some decider cases DEFECT rather than reject, and a
+          // defect is not a typed failure. Either way the command simply did
+          // not produce events to compare, and the rejected-receipt path is
+          // covered by the table test above.
+        }).pipe(Effect.exit);
+
+        if (planned._tag !== "Success") continue;
+
+        const events = Array.isArray(planned.value) ? planned.value : [planned.value];
+        if (events.length === 0) continue;
+        decided += 1;
+
+        for (const event of events) {
+          if (event === undefined || typeof event !== "object" || !("aggregateKind" in event)) {
+            disagreements.push(`${type}: decider returned an entry with no aggregateKind`);
+            continue;
+          }
+          if (event.aggregateKind !== ref.aggregateKind || event.aggregateId !== ref.aggregateId) {
+            disagreements.push(
+              `${type}: router said ${ref.aggregateKind}/${ref.aggregateId}, ` +
+                `decider stamped ${event.aggregateKind}/${event.aggregateId} on ${event.type}`,
+            );
+          }
+        }
+      }
+
+      expect(disagreements, "router and decider disagree about who owns these commands").toEqual(
+        [],
+      );
+      // Without this the assertion above is vacuous: if every probe were
+      // rejected, `disagreements` would be empty because nothing was compared.
+      expect(
+        decided,
+        "too few commands produced events; the agreement above compared almost nothing",
+      ).toBeGreaterThan(15);
+    }),
+  );
 });
