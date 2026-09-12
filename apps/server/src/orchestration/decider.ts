@@ -2214,7 +2214,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       yield* requireChannelNotArchived({ command, channel });
       // Canonical on both sides, or "@Boss1" fails to remove the member it names.
       const handle = yield* requireCanonicalChannelHandle({ command, handle: command.handle });
-      if (!channel.members.some((member) => member.handle === handle)) {
+      // `find` rather than `some`, because the row is the only place the ref can
+      // come from: after this event is applied the member is gone from the
+      // projection, so nothing downstream can look it up. Costs nothing here —
+      // the lookup was already happening.
+      const removed = channel.members.find((member) => member.handle === handle);
+      if (removed === undefined) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Handle '${handle}' is not a member of channel '${command.channelId}'.`,
@@ -2232,6 +2237,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           channelId: command.channelId,
           handle,
+          removedMember: { memberKind: removed.memberKind, memberId: removed.memberId },
           updatedAt: occurredAt,
         },
       };

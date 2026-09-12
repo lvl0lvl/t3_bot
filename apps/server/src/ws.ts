@@ -822,19 +822,78 @@ const makeWsRpcLayer = (
             });
       };
 
-      // Shell updates refetch the aggregate. Message and tool bodies are not needed.
-      const toShellEvent = ({
-        type,
-        aggregateKind,
-        aggregateId,
-        sequence,
-      }: OrchestrationEvent) => ({
-        type,
-        aggregateKind,
-        aggregateId,
-        sequence,
+      /**
+       * Shell updates refetch the aggregate. Message and tool bodies are not
+       * needed.
+       *
+       * ONE PAYLOAD FIELD IS AN EXCEPTION, and it is here because the refetch
+       * cannot answer it: after `channel.member-removed` is applied, the member
+       * is GONE from the projection, so "were you the one removed" and "were you
+       * never in it" read identically from the row. That conflation is the whole
+       * of `t3_bot-7br`. The event is the only thing that still knows.
+       *
+       * WHAT THE STRIPPING IS FOR, so the exception has a stated boundary. The
+       * value built here is what `liveBudget.retain` holds per connection
+       * (search `retain({ kind: "event"`), and `LiveStreamBudget` bounds that
+       * buffer by the SERIALIZED SIZE of exactly these objects — 8 MiB or 1000
+       * items per subscription, after which the socket is told to resume by
+       * sequence. Carrying payload here spends that budget. Two short ids on
+       * the one event type that needs them is affordable; a message body would
+       * not be.
+       *
+       * THE TEST FOR A SECOND EXCEPTION: carry a payload field forward only
+       * when APPLYING the event destroys what the refetch would need. Anything
+       * the row still answers must be refetched. A second field that fails that
+       * test means the shell event has quietly become a wire contract, and the
+       * coalescer below is written against it not being one.
+       */
+      const toShellEvent = (event: OrchestrationEvent) => ({
+        type: event.type,
+        aggregateKind: event.aggregateKind,
+        aggregateId: event.aggregateId,
+        sequence: event.sequence,
+        // A LIST, NOT A FIELD, and that is the difference between this working
+        // and the version a review lane broke. Coalescing keeps ONE event per
+        // aggregate, so a single `removedMember` is whichever removal happened
+        // to be last — and if this connection's own removal is followed by
+        // anyone else's in the same window, the survivor carries the OTHER
+        // member's ref, the gate reads "provably someone else", and the client
+        // is never told to drop a channel it is no longer in. That is the
+        // reverse-state loss this whole design exists to avoid, reintroduced by
+        // the fix for the disclosure.
+        //
+        // `unattributedRemoval` is separate because a historical event carries
+        // no ref at all: "a removal happened and I cannot say whose" is a third
+        // state, and it must EMIT rather than be mistaken for "no removal".
+        //
+        // ONE `!== undefined`, because the payload nests the ref in a single
+        // optional struct. It was two independent optionals and therefore two
+        // checks here, which is the maintenance cost a lane predicted every
+        // consumer would inherit — and this was the only consumer, inheriting it
+        // on day one.
+        removedRefs:
+          event.type === "channel.member-removed" && event.payload.removedMember !== undefined
+            ? [event.payload.removedMember]
+            : [],
+        unattributedRemoval:
+          event.type === "channel.member-removed" && event.payload.removedMember === undefined,
       });
       type ShellEvent = ReturnType<typeof toShellEvent>;
+
+      /**
+       * The removed member's identity as it survives a decoded payload.
+       *
+       * NOT the nominal `ChannelMemberRef`, which is unconstructible outside
+       * its module on purpose and so cannot come off a row — that argument is
+       * kept at `ChannelMemberRefPayload`. It is named HERE because the shape
+       * was written out twice in two signatures, and
+       * `packages/contracts/src/channelMemberRef.ts` exists to end exactly that:
+       * "two spellings of one identity is the drift this file exists to end".
+       */
+      type RemovedMemberRef = {
+        readonly memberKind: "thread" | "human";
+        readonly memberId: string;
+      };
 
       const toShellStreamEvent = (
         event: ShellEvent,
@@ -864,7 +923,12 @@ const makeWsRpcLayer = (
             return threadUpsertOrRemove(ThreadId.make(event.aggregateId), event.sequence);
           default:
             if (event.aggregateKind === "channel") {
-              return channelUpsertOrRemove(event.aggregateId, event.sequence);
+              return channelUpsertOrRemove(
+                event.aggregateId,
+                event.sequence,
+                event.removedRefs,
+                event.unattributedRemoval,
+              );
             }
             if (event.aggregateKind !== "thread") {
               return Effect.succeed(Option.none());
@@ -968,12 +1032,18 @@ const makeWsRpcLayer = (
        * Refetch a channel and emit an upsert if this connection's member is in
        * it, or `channel-removed` otherwise.
        *
-       * THE `none` CASE COVERS TWO DIFFERENT THINGS ON PURPOSE: the channel is
-       * gone, and the member is no longer in it. Both mean the same thing to a
-       * client whose view is "the channels I am in", so neither needs an event
-       * of its own — and getting a removal out of a coalesced burst is the same
-       * argument the thread version makes one function up. A `channel-removed`
-       * the client does not have is a harmless no-op.
+       * THE `none` CASE COVERS TWO DIFFERENT THINGS: the channel is gone, and
+       * the member is no longer in it. To a client whose view is "the channels
+       * I am in" the two are one instruction — drop it — so neither needs an
+       * event of its own, and getting a removal out of a coalesced burst is the
+       * same argument the thread version makes one function up.
+       *
+       * WHAT IS NO LONGER TRUE, since it was written here and believed: that a
+       * `channel-removed` the client does not have is a harmless no-op. It is
+       * harmless to the client and it is a disclosure to the operator behind
+       * it — the id of a channel it is not in, for every change to any channel
+       * on the server. That is `t3_bot-7br`, and `channelShellFor` below is
+       * where it is now decided.
        *
        * MEMBERSHIP IS DECIDED HERE rather than in the repository, because this
        * is the layer that knows who is connected. The projection's by-id reads
@@ -993,6 +1063,8 @@ const makeWsRpcLayer = (
       const channelUpsertOrRemove = (
         aggregateId: string,
         sequence: number,
+        removedRefs: ReadonlyArray<RemovedMemberRef>,
+        unattributedRemoval: boolean,
       ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
         Effect.gen(function* () {
           // DECODED, NOT `.make`. `ChannelId.make` THROWS on a refused id, and
@@ -1011,46 +1083,94 @@ const makeWsRpcLayer = (
             });
             return Option.none<OrchestrationShellStreamEvent>();
           }
-          return yield* channelShellFor(decoded.value, sequence);
+          return yield* channelShellFor(decoded.value, sequence, removedRefs, unattributedRemoval);
         });
 
       /**
-       * A CHANNEL ID REACHES THE CLIENT HERE EVEN WHEN IT IS NOT A MEMBER, and
-       * that is a known gap rather than the intent. Both removal branches emit a
-       * bare `channelId`: one when the channel is gone, one when this connection
-       * is not in it. So every change to any channel on the server tells every
-       * connected client that a channel with that id exists — which is not what
-       * `OrchestrationShellSnapshot.channels` promises, and the snapshot door
-       * does honour that promise by filtering in SQL.
+       * The channel's shell for this connection, or a removal, or nothing.
        *
-       * IT DISCLOSES NOTHING TODAY: there is one operator, every connection is
-       * `HUMAN_OPERATOR_CHANNEL_MEMBER`, and that operator owns the database the
-       * ids come from. It becomes channel enumeration across accounts on the day
-       * that constant is replaced by a real session — which its own docstring
-       * says is coming.
+       * WHAT A NON-MEMBER IS TOLD, which is the whole subject of this function
+       * and was the defect `t3_bot-7br` was filed for. Both removal branches
+       * used to emit a bare `channelId`, so every change to any channel told
+       * every connected client that a channel with that id exists — while the
+       * snapshot door honours the same promise by filtering in SQL. Only one
+       * connection exists today and it owns the database, so nothing leaked;
+       * it became enumeration across accounts the day that constant was a real
+       * session.
        *
-       * NEITHER AVAILABLE FIX WORKS, which is why this is written down instead
-       * of repaired:
+       * THE RULE NOW: a non-member is told NOTHING unless a removal in this
+       * batch says otherwise. It has nothing to drop for a post or a meta
+       * update — it was never told the channel exists — so there is no state to
+       * correct and no reason to speak. Only a removal can oblige us to.
        *
-       * - A per-connection set of delivered ids breaks the RESUME path. A client
-       *   reconnecting with `afterSequence` receives events and no snapshot, so
-       *   the set is empty and a removal for a channel it really holds would be
-       *   suppressed. An operator removed from a channel while disconnected
-       *   would never be told to drop it — the reverse state, lost, which is a
-       *   worse defect than the one being fixed.
-       * - Reading the event rather than the row cannot decide it either.
-       *   `ChannelMemberRemovedPayload` carries `channelId`, `handle` and
-       *   `updatedAt`, not the `{memberKind, memberId}` this connection is keyed
-       *   on, and the row no longer holds the member who left. Nothing at this
-       *   seam can tell "you were just removed" from "you were never in it".
+       * The first version of this fix gated on the removed member's ref alone,
+       * and that closed ONE event type out of seven: every other channel event
+       * arrives with no ref, fell through, and emitted exactly as before. A
+       * security lane drove all six. The default has to be silence, not
+       * emission.
        *
-       * Closing it needs the member ref ON the removal event, which is a
-       * contract and decider change. Tracked as a blocking dependency of the
-       * accounts work.
+       * TWO INPUTS, AND THEY ARE NOT ONE FIELD. `removedRefs` is every removal
+       * in the coalescing batch for this aggregate, and `unattributedRemoval`
+       * says a removal happened whose ref the event did not carry. Coalescing
+       * keeps only the LAST event per aggregate, so a single ref is whichever
+       * removal happened to be last — and one member's removal masking another's
+       * is how this connection stops being told to drop a channel it is no
+       * longer in. That is the reverse state, lost, which is worse than the
+       * disclosure and is what the two earlier attempts at this both did:
+       *
+       * - A per-connection set of delivered ids breaks the RESUME path: a client
+       *   reconnecting with `afterSequence` has an empty set, so a removal for a
+       *   channel it really holds is suppressed.
+       * - Keeping one ref through coalescing breaks the same way for a different
+       *   reason. Hence the list.
+       *
+       * An absent ref therefore EMITS, and that fail-open is scoped to removals:
+       * a historical event predating the field cannot be attributed, and
+       * suppressing on "I do not know" is the failure above.
+       *
+       * STILL OPEN, and stated rather than implied: the channel-gone branch
+       * below cannot be gated this way — there is no row and no removed member
+       * to compare — so it emits a bare id to everyone. The way there is a
+       * channel with NO ROW in the projection: an event whose channel was never
+       * projected, or a row removed out from under the stream. It is NOT a
+       * failed refetch, which is the thing it looks like: `retryShellProjectionRead`
+       * turns a failure into an OUTER `Option.none`, and the `Option.flatMap`
+       * below short-circuits on that, so `onNone` — the INNER option — is never
+       * reached. A review lane caught that claim here; the correct half of it is
+       * 190 lines up, where the retry says treating an error as a missing row
+       * would remove a still-active aggregate.
        */
+      /**
+       * Whether a removal in this batch obliges us to speak to a NON-member.
+       *
+       * TRUE MEANS EMIT, and it is stated positively because the gate it
+       * replaces was a double negative inside a ternary — and the property that
+       * gate failed to hold, one member's removal masking another's, was not
+       * visible while reading it.
+       *
+       * `unattributedRemoval` is a removal this event could not attribute: a
+       * historical row written before the ref existed. Suppressing on "I cannot
+       * tell" is how a removed operator is never told to drop the channel, so
+       * it emits. A matching ref is this connection's own removal. Everything
+       * else — a post, a rename, someone else's removal — leaves a non-member
+       * with nothing to drop, and gets silence.
+       */
+      const removalObligesThisConnection = (
+        removedRefs: ReadonlyArray<RemovedMemberRef>,
+        unattributedRemoval: boolean,
+      ): boolean =>
+        unattributedRemoval ||
+        removedRefs.some(
+          (ref) =>
+            ref.memberKind === connectionMember.memberKind &&
+            ref.memberId === connectionMember.memberId,
+        );
+
       const channelShellFor = (
         channelId: ChannelId,
         sequence: number,
+        removedRefs: ReadonlyArray<RemovedMemberRef>,
+        unattributedRemoval: boolean,
       ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
         retryShellProjectionRead(
           "channel",
@@ -1060,6 +1180,17 @@ const makeWsRpcLayer = (
           Effect.map(
             Option.flatMap((channel) =>
               Option.match(channel, {
+                // THE CHANNEL IS GONE, and this branch CANNOT be gated the way
+                // the non-member one below is: there is no row and no removed
+                // member to compare, so a bare `channelId` still reaches every
+                // connection. The route is a channel with no projection row —
+                // never projected, or removed out from under the stream — and
+                // NOT a failed refetch, which cannot arrive here at all (the
+                // retry's `Option.none` is the outer one and `Option.flatMap`
+                // short-circuits on it). Channels are archived rather than
+                // deleted, so nothing reaches it today; "unreachable today" is
+                // a claim that decays, and this is the one path
+                // `t3_bot-7br` does not close.
                 onNone: () =>
                   Option.some<OrchestrationShellStreamEvent>({
                     kind: "channel-removed" as const,
@@ -1067,22 +1198,47 @@ const makeWsRpcLayer = (
                     channelId,
                   }),
                 onSome: (row) =>
-                  Option.some<OrchestrationShellStreamEvent>(
-                    // `toChannelShell` is the SAME conversion the snapshot uses.
-                    // Two copies of it is how one of them comes to drop
-                    // `latestPostAt` — which would overwrite the snapshot's real
-                    // value on every live update, reorder the sidebar to the
-                    // bottom, and show "No posts yet" over a channel that had
-                    // just received a post, with the post event deleted on the
-                    // grounds that this field carries the fact.
-                    rowHasMember(row, connectionMember)
-                      ? {
-                          kind: "channel-upserted" as const,
+                  // `toChannelShell` is the SAME conversion the snapshot uses.
+                  // Two copies of it is how one of them comes to drop
+                  // `latestPostAt` — which would overwrite the snapshot's real
+                  // value on every live update, reorder the sidebar to the
+                  // bottom, and show "No posts yet" over a channel that had
+                  // just received a post, with the post event deleted on the
+                  // grounds that this field carries the fact.
+                  rowHasMember(row, connectionMember)
+                    ? Option.some<OrchestrationShellStreamEvent>({
+                        kind: "channel-upserted" as const,
+                        sequence,
+                        channel: toChannelShell(row),
+                      })
+                    : // NOT A MEMBER, AND SILENT UNLESS A REMOVAL SAYS OTHERWISE.
+                      //
+                      // The default is `none`, and getting that backwards is how
+                      // the first version of this fix closed one path out of
+                      // seven. `removedMember` rides only on
+                      // `channel.member-removed`, so gating on it alone left
+                      // every OTHER channel event — a post, a member added, a
+                      // meta update, created, archived, unarchived — still
+                      // emitting a bare `channelId` to a connection that is not
+                      // a member. That is the original defect, and a security
+                      // lane measured all six still doing it.
+                      //
+                      // A NON-MEMBER HAS NOTHING TO DROP for those events: it was
+                      // never told the channel exists, so there is no state to
+                      // correct and nothing to send. Only a REMOVAL can oblige us
+                      // to speak, because only a removal can mean "you held this
+                      // and must stop".
+                      //
+                      // WHEN A REMOVAL DID HAPPEN, the predicate decides, and
+                      // its docstring carries the fail-open argument rather
+                      // than a second copy of it here.
+                      removalObligesThisConnection(removedRefs, unattributedRemoval)
+                      ? Option.some<OrchestrationShellStreamEvent>({
+                          kind: "channel-removed" as const,
                           sequence,
-                          channel: toChannelShell(row),
-                        }
-                      : { kind: "channel-removed" as const, sequence, channelId },
-                  ),
+                          channelId,
+                        })
+                      : Option.none<OrchestrationShellStreamEvent>(),
               }),
             ),
           ),
@@ -1110,7 +1266,23 @@ const makeWsRpcLayer = (
           }
           const latestByAggregate = new Map<string, ShellEvent>();
           for (const event of events) {
-            latestByAggregate.set(`${event.aggregateKind}:${event.aggregateId}`, event);
+            const key = `${event.aggregateKind}:${event.aggregateId}`;
+            const prior = latestByAggregate.get(key);
+            // THE LATEST EVENT WINS, EXCEPT FOR THE FACT OF A REMOVAL, which is
+            // carried forward. Coalescing keeps one event per aggregate, so a
+            // `channel.member-removed` followed in the same window by a post or
+            // a meta update would otherwise be dropped — and with it the only
+            // signal telling a client it must stop showing that channel. The
+            // refetch cannot recover it: by then the member is gone from the
+            // row, which is the whole difficulty this PR is about.
+            latestByAggregate.set(key, {
+              ...event,
+              // UNION, never replace. The surviving event decides which row to
+              // refetch; the removals decide who was told. Keeping only the
+              // last ref is what let one member's removal mask another's.
+              removedRefs: [...(prior?.removedRefs ?? []), ...event.removedRefs],
+              unattributedRemoval: event.unattributedRemoval || prior?.unattributedRemoval === true,
+            });
           }
           const survivors = Array.from(latestByAggregate.values()).sort(
             (left, right) => left.sequence - right.sequence,

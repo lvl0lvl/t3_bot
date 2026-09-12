@@ -1840,9 +1840,88 @@ export const ChannelMemberAddedPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+/**
+ * WHO LEFT, and it carries the member ref as well as the handle because the
+ * websocket has to decide "was that me" from the EVENT.
+ *
+ * THE HANDLE STAYS AND REMAINS THE PROJECTOR'S KEY. `requireChannelHandlesUnique`
+ * makes a handle unique WITHIN a channel; `memberId` is NOT unique. Nothing
+ * checks it at all, so two SAME-kind members can hold one id under two handles;
+ * and a thread member and a human member can share one (`t3_bot-46h`) BY
+ * ORDERING, which is worth writing out because the obvious reading is that the
+ * aggregate refuses it:
+ *
+ *   `requireChannelMemberShape` refuses a human member whose id names a thread,
+ *   but it looks the id up in the roster AT ADD TIME and never re-validates an
+ *   existing one. `thread.create` takes a caller-supplied `threadId`. So: add
+ *   the human member with id X while no thread X exists (admitted), create
+ *   thread X (admitted), add a thread member for X (admitted). One roster, two
+ *   kinds, one id, no invariant broken.
+ *
+ * A pre-invariant event replayed through the projector gets there too. Re-keying
+ * the projector on the ref would be a regression dressed as a cleanup. The
+ * client also renders the handle.
+ *
+ * THE REF IS OPTIONAL, AND ABSENT MEANS "WRITTEN BEFORE THIS LANDED". Events
+ * already in the log carry no ref and are replayed through here forever. The
+ * alternative considered and rejected was looking the handle up in the roster at
+ * projection time: by then the member is gone from the row, which is the whole
+ * difficulty (`t3_bot-7br`). A versioned event was also rejected — it would cost
+ * every consumer a second case forever to distinguish states differing in one
+ * field the projector never reads.
+ *
+ * "FOREVER" IS A COST THAT WAS DECLINED, NOT A LAW. This repo backfills event
+ * payloads in migrations — `011_OrchestrationThreadCreatedRuntimeMode` adds an
+ * optional field to a stored payload and then fills the historical rows so it
+ * need not stay optional, and five migrations rewrite `orchestration_events`.
+ * This field is harder than that one: it has no constant default, so a backfill
+ * would have to replay `channel.created` / `member-added` / `member-removed` in
+ * order and resolve the handle against the roster as of each sequence. Nobody
+ * has paid for that. Said plainly so the next reader does not conclude the
+ * option does not exist.
+ *
+ * A NESTED STRUCT, WHICH IS THIS FILE'S OWN CONVENTION for a ref on a payload:
+ * `ChannelPostCreatedPayload` nests `authorRef: ChannelAuthorRef` and
+ * `ChannelMemberAddedPayload` nests `member: ChannelMember`. An earlier version
+ * of this field was two flat optionals, defended as "flat fields, not the
+ * nominal class" — a false dichotomy a lane caught, because the option actually
+ * available was neither of those. The argument against the nominal class is
+ * sound and is kept at `ChannelMemberRefPayload`; it simply was not an argument
+ * for flattening.
+ */
+/**
+ * Who a channel event is about, in the shape a stored payload can hold.
+ *
+ * THE SAME TWO FIELDS AS `ChannelAuthorRef`, and deliberately a second name
+ * rather than a reuse: that one says "who wrote this post" and its docstring
+ * says so, and a removal has no author. One struct serving both roles would
+ * make one of the two docstrings false, which is the defect this file has spent
+ * the day removing.
+ *
+ * NOT the nominal `ChannelMemberRef` from `channelMemberRef.ts`, which is the
+ * same IDENTITY and cannot live here: it is a class with a private field, has no
+ * Schema, and cannot be decoded out of a row. That type is unconstructible on
+ * purpose; a payload is decoded from bytes, so it is the one place the nominal
+ * form must not appear.
+ */
+export const ChannelMemberRefPayload = Schema.Struct({
+  memberKind: Schema.Literals(["thread", "human"]),
+  memberId: TrimmedNonEmptyString,
+});
+export type ChannelMemberRefPayload = typeof ChannelMemberRefPayload.Type;
+
 export const ChannelMemberRemovedPayload = Schema.Struct({
   channelId: ChannelId,
   handle: ChannelMemberHandle,
+  /**
+   * ONE OPTIONAL OVER A STRUCT, not two independent optionals over its fields.
+   * Two optionals admit four states where the domain has two, and both
+   * half-states DECODE — a lane drove them through this very schema and through
+   * the event union. A kind with no id identifies nobody, and every consumer
+   * would inherit a two-part `!== undefined` check to rule out a state the type
+   * should never have allowed.
+   */
+  removedMember: Schema.optional(ChannelMemberRefPayload),
   updatedAt: IsoDateTime,
 });
 

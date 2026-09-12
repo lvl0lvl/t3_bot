@@ -8688,7 +8688,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
-  it.effect("a post in a channel this connection is not in reports a removal", () =>
+  it.effect("says nothing about a post in a channel this connection is not in", () =>
     Effect.gen(function* () {
       // The admitting test above passes for a stream that ignores membership
       // entirely, so this is the half that makes the filter load-bearing. A
@@ -8731,22 +8731,478 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.subscribeShell]({
             requestCompletionMarker: true,
-          }).pipe(Stream.take(3), Stream.runCollect),
+          }).pipe(Stream.take(2), Stream.runCollect),
         ),
       ).pipe(Effect.timeout("2 seconds"));
 
       assert.equal(items[0]?.kind, "snapshot");
-      assert.equal(items[1]?.kind, "channel-removed");
-      assert.deepEqual(items[2], { kind: "synchronized" });
+      // Snapshot, then the completion marker, and NOTHING in between. The
+      // marker is what makes this a real negative rather than an item that had
+      // not arrived yet: the stream reached its end.
+      assert.deepEqual(items[1], { kind: "synchronized" });
+      // NO UPSERT is the load-bearing half — drop the membership filter and the
+      // channel's shell, with its name and its activity, arrives here.
+      assert.equal(items.filter((item) => item.kind === "channel-upserted").length, 0);
+      // AND NO BARE ID, which is the disclosure itself. This test used to
+      // ASSERT that id arriving; that assertion was the defect `t3_bot-7br`
+      // exists to close. The property it protects — the filter is load-bearing
+      // — is unchanged; silence is simply the right answer for a non-member who
+      // has nothing to drop.
+      assert.equal(items.filter((item) => item.kind === "channel-removed").length, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  /**
+   * A removal of SOMEONE ELSE, from a channel this connection is not in.
+   *
+   * THE FIXTURE IS A COLLIDING PAIR, and that is the whole of why it is written
+   * this way: the removed member is a THREAD whose memberId is the operator's
+   * own. It differs from the connection member in `memberKind` ALONE. Against a
+   * roster where the two differ in both fields — which is every other fixture in
+   * this repo — a comparison that ignored `memberKind` would pass, and
+   * `t3_bot-46h` is the bead that exists because that mutation has survived full
+   * suites four times.
+   */
+  const foreignRemovalEvent = {
+    sequence: 2,
+    eventId: EventId.make("event-channel-member-removed-foreign"),
+    aggregateKind: "channel",
+    aggregateId: ChannelId.make("channel-project"),
+    occurredAt: "2026-01-01T00:00:01.000Z",
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "channel.member-removed",
+    payload: {
+      channelId: ChannelId.make("channel-project"),
+      handle: ChannelMemberHandle.make("pm"),
+      removedMember: { memberKind: "thread", memberId: HUMAN_OPERATOR_MEMBER_ID },
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    },
+  } as unknown as OrchestrationEvent;
+
+  it.effect("says nothing when someone else is removed from a channel it is not in", () =>
+    Effect.gen(function* () {
+      // THE DEFECT `t3_bot-7br` NAMES. Both removal branches used to emit a bare
+      // `channelId`, so every change to any channel on the server told every
+      // connected client that a channel with that id exists — while the snapshot
+      // door filters membership in SQL. Nothing is disclosed today, because
+      // there is one operator who owns the database; it becomes channel
+      // enumeration across accounts the day that constant is a real session.
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            // The row still exists and the connection is NOT in it — the
+            // "never in it" case, which must stay silent.
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [{ handle: "pm", memberKind: "thread", memberId: "thread-pm" }],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, foreignRemovalEvent);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      // The snapshot, then the completion marker, and NOTHING between them.
+      // Asserting the marker rather than a count is what makes this a real
+      // negative: the stream reached its end, so the absence is a decision the
+      // server made rather than an item that had not arrived yet.
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.deepEqual(items[1], { kind: "synchronized" });
+      assert.equal(items.filter((item) => item.kind === "channel-removed").length, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("says nothing when another HUMAN is removed from a channel it is not in", () =>
+    Effect.gen(function* () {
+      // THE OTHER HALF OF THE GUARD. The colliding fixture above proves the KIND
+      // half: a thread carrying the operator's memberId must not read as the
+      // operator. This proves the ID half, and without it `memberId` is not
+      // pinned at all — a review lane measured that comparing `memberKind`
+      // ALONE passed every test this PR had added, because every fixture
+      // differed from the connection member in kind or matched in both.
+      //
+      // Same kind, different id: a human `bob` removed from a channel the
+      // operator is not in. Under that mutant the operator is told this channel
+      // exists, which is the disclosure `t3_bot-7br` closes — and it bites the
+      // day there is more than one human, which is the day the bead is filed
+      // for.
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const otherHumanRemoval = {
+        ...foreignRemovalEvent,
+        eventId: EventId.make("event-channel-member-removed-other-human"),
+        payload: {
+          ...(foreignRemovalEvent as unknown as { payload: Record<string, unknown> }).payload,
+          handle: ChannelMemberHandle.make("bob"),
+          removedMember: { memberKind: "human", memberId: "human-bob" },
+        },
+      } as unknown as OrchestrationEvent;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [{ handle: "pm", memberKind: "thread", memberId: "thread-pm" }],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, otherHumanRemoval);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.deepEqual(items[1], { kind: "synchronized" });
+      assert.equal(items.filter((item) => item.kind === "channel-removed").length, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("keeps a removal that a later event in the same batch would coalesce away", () =>
+    Effect.gen(function* () {
+      // COALESCING KEEPS ONE EVENT PER AGGREGATE PER WINDOW, the latest. So a
+      // removal followed closely by a post in the same channel loses to the
+      // post — and with it the only signal telling this client to stop showing
+      // a channel it is no longer in. The refetch cannot recover it: by then the
+      // member is gone from the row, which is the whole difficulty this PR is
+      // about.
+      //
+      // The fact of a removal is therefore carried forward through coalescing
+      // even when the event that carried it does not survive. Without that, this
+      // connection is silently left holding a channel it cannot read.
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const ownRemoval = {
+        ...foreignRemovalEvent,
+        eventId: EventId.make("event-channel-member-removed-coalesced"),
+        payload: {
+          ...(foreignRemovalEvent as unknown as { payload: Record<string, unknown> }).payload,
+          handle: ChannelMemberHandle.make("walt"),
+          removedMember: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+        },
+      } as unknown as OrchestrationEvent;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            // The roster no longer holds the operator, which is what a real
+            // removal leaves behind.
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [{ handle: "pm", memberKind: "thread", memberId: "thread-pm" }],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                // Both inside one coalescing window, removal FIRST so the post
+                // is the survivor — the ordering that loses the removal.
+                yield* PubSub.publish(liveEvents, ownRemoval);
+                yield* PubSub.publish(liveEvents, channelPostEvent);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      const removals = items.filter((item) => item.kind === "channel-removed");
+      assert.equal(removals.length, 1);
+      assert.equal(
+        removals[0]?.kind === "channel-removed" ? removals[0].channelId : null,
+        "channel-project",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("reports a removal it cannot attribute, because a stored event carries no ref", () =>
+    Effect.gen(function* () {
+      // THE FAIL-OPEN, AND NOTHING PINNED IT. `removedMember` landed with
+      // `t3_bot-7br`; every `channel.member-removed` already in the log carries
+      // no ref and replays through here forever. The design turns on that case
+      // EMITTING — suppressing on "I cannot tell whose removal this was" is how
+      // an operator removed while disconnected is never told to drop the
+      // channel, and it is the failure that killed the two fixes tried before
+      // this one.
+      //
+      // A review lane measured that no test ADDED by this PR held it: the
+      // property was resting on two older tests that are about something else
+      // and emit for a different reason (their events are not removals at all,
+      // so they never reach this branch). This test feeds the actual shape —
+      // a removal event with the field absent — which is the only input that
+      // distinguishes "unattributed" from "no removal".
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const historicalRemoval = {
+        ...foreignRemovalEvent,
+        eventId: EventId.make("event-channel-member-removed-historical"),
+        payload: {
+          channelId: ChannelId.make("channel-project"),
+          handle: ChannelMemberHandle.make("walt"),
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      } as unknown as OrchestrationEvent;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            // Not a member: the same row every suppression test uses. The only
+            // difference is that the event cannot say who left.
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [{ handle: "pm", memberKind: "thread", memberId: "thread-pm" }],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, historicalRemoval);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      const removals = items.filter((item) => item.kind === "channel-removed");
+      assert.equal(removals.length, 1);
+      assert.equal(
+        removals[0]?.kind === "channel-removed" ? removals[0].channelId : null,
+        "channel-project",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("reports a channel that has no projection row, to every connection", () =>
+    Effect.gen(function* () {
+      // THE ONE BRANCH THE GATE CANNOT COVER, pinned so the docstring that says
+      // so cannot quietly stop being true. With no row there is no roster to
+      // compare and no removed member to name, so a bare `channelId` goes to
+      // everyone — including a connection that was never in the channel. The
+      // event here is an ORDINARY POST, not a removal: nothing about this path
+      // involves a ref.
+      //
+      // Behaviour unchanged by `t3_bot-7br`. It is a pin on a documented claim,
+      // and it was not idle: making the branch silent left the whole file green.
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            // The channel has no row at all. NOT a failed read — that path ends
+            // in the OUTER `Option.none` and never reaches this branch.
+            getChannelWithActivityById: () => Effect.succeedNone,
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, channelPostEvent);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      const removals = items.filter((item) => item.kind === "channel-removed");
+      assert.equal(removals.length, 1);
+      assert.equal(
+        removals[0]?.kind === "channel-removed" ? removals[0].channelId : null,
+        "channel-project",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("still reports its OWN removal on a resume with no snapshot", () =>
+    Effect.gen(function* () {
+      // THE OTHER DIRECTION, and the one that killed the two fixes tried before
+      // this. A client reconnecting with `afterSequence` receives its missed
+      // events through the CATCH-UP REPLAY rather than through the live stream,
+      // and the channels it holds come from a snapshot it cached BEFORE the
+      // disconnect. So any per-connection set of "channels I have already told
+      // you about" is useless here — this connection is new, its set starts
+      // empty, and a removal for a channel the client really does hold would be
+      // suppressed by it. An operator removed while disconnected would never be
+      // told to drop that channel: the reverse state lost, which is a worse
+      // defect than the disclosure being fixed.
+      //
+      // The ref on the EVENT carries no such state. It is compared against the
+      // connection member at the moment of the decision, on a resumed
+      // connection exactly as on a fresh one — which is the property that makes
+      // this the fix and the other two not.
+      const ownRemoval = {
+        ...foreignRemovalEvent,
+        eventId: EventId.make("event-channel-member-removed-own"),
+        payload: {
+          ...(foreignRemovalEvent as unknown as { payload: Record<string, unknown> }).payload,
+          handle: ChannelMemberHandle.make("walt"),
+          // The connection member EXACTLY: human, and the operator's id. The
+          // foreign event above differs from this one in `memberKind` alone.
+          removedMember: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+        },
+      } as unknown as OrchestrationEvent;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            // The resume branch only replays when the gap is valid; otherwise it
+            // falls back to a snapshot and this test would pass for the wrong
+            // reason, or rather fail for one. Head 2 against `afterSequence: 1`
+            // is a one-event gap: the removal, and nothing else.
+            latestSequence: Effect.succeed(2),
+            readEvents: () => Stream.make(ownRemoval),
+          },
+          projectionChannels: {
+            // The channel still exists and the operator is no longer in its
+            // roster, which is what a real removal leaves behind.
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [{ handle: "pm", memberKind: "thread", memberId: "thread-pm" }],
+                }),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            afterSequence: 1,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      // BY PRESENCE, not by position. What this pins is that the removal
+      // REACHES a resumed connection; which item it arrives as is this
+      // harness's business, and asserting an index would make the test fail for
+      // a reason that is not the property.
+      const removals = items.filter((item) => item.kind === "channel-removed");
+      assert.equal(removals.length, 1);
+      assert.equal(
+        removals[0]?.kind === "channel-removed" ? removals[0].channelId : null,
+        "channel-project",
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
   it.effect("a THREAD member carrying the operator's id is not the operator", () =>
     Effect.gen(function* () {
       // THE FIXTURE COMES FROM THE PROPERTY, not from a plausible-looking row.
-      // The two tests above differ in BOTH fields — human/human-walt against
-      // thread/thread-pm — so a membership test that compared memberId alone and
-      // ignored memberKind passed both. Named rather than counted: mutating
+      // The two membership tests this one was written against — `a post reaches
+      // the shell stream as a channel upsert carrying latestPostAt` and `says
+      // nothing about a post in a channel this connection is not in` — differ in
+      // BOTH fields, human/human-walt against thread/thread-pm, so a membership
+      // test that compared memberId alone and ignored memberKind passed both.
+      // Named rather than pointed at: this sentence said "the two tests above"
+      // until a later PR inserted two tests above it and made it false. Named rather than counted: mutating
       // `rowHasMember` to compare `memberId` alone reds THIS test and only this
       // one. An absolute pass count decays as the file grows — the earlier
       // version of this comment said "all 185 green" and the count has moved
@@ -8802,13 +9258,20 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.subscribeShell]({
             requestCompletionMarker: true,
-          }).pipe(Stream.take(3), Stream.runCollect),
+          }).pipe(Stream.take(2), Stream.runCollect),
         ),
       ).pipe(Effect.timeout("2 seconds"));
 
       assert.equal(items[0]?.kind, "snapshot");
-      assert.equal(items[1]?.kind, "channel-removed");
-      assert.deepEqual(items[2], { kind: "synchronized" });
+      // Snapshot, then the marker. The impostor is a THREAD whose memberId is
+      // the operator's own, differing in `memberKind` ALONE: compare memberId
+      // without kind and this roster "contains" the operator, so the channel's
+      // shell arrives here. That impersonation is what this asserts against and
+      // it is untouched by `t3_bot-7br` — only the absence of a
+      // `channel-removed` is new, because a non-member with nothing to drop is
+      // now told nothing at all.
+      assert.deepEqual(items[1], { kind: "synchronized" });
+      assert.equal(items.filter((item) => item.kind === "channel-upserted").length, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
