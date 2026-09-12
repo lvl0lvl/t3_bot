@@ -23,11 +23,44 @@ const SYSTEM: CommandIssuer = { memberKind: "system", memberId: "checkpoint-reac
 const MEMBER_THREAD: CommandIssuer = { memberKind: "thread", memberId: "thread-boss1" };
 const OUTSIDER_THREAD: CommandIssuer = { memberKind: "thread", memberId: "thread-stranger" };
 
+/**
+ * The threads a channel's members name.
+ *
+ * A `thread` member must resolve to a live thread, so a fixture whose members
+ * name threads that do not exist is not a realistic read model — every channel
+ * test had one until the shape invariant landed and refused them all. Minimal by
+ * design: the invariant reads `id` and `deletedAt`, and the cast is what lets the
+ * fixture say so instead of carrying thirty irrelevant fields.
+ */
+function threadsNamed(
+  ids: ReadonlyArray<string>,
+  options: { readonly deleted?: ReadonlyArray<string> } = {},
+): OrchestrationReadModel["threads"] {
+  return ids.map((id) => ({
+    id,
+    deletedAt: options.deleted?.includes(id) === true ? NOW : null,
+  })) as unknown as OrchestrationReadModel["threads"];
+}
+
+const CHANNEL_THREAD_IDS = [
+  "thread-boss1",
+  "thread-pm",
+  "thread-boss3",
+  "thread-a",
+  "thread-b",
+  "thread-other",
+  "thread-stranger",
+  "thread-nobody",
+  "thread-x",
+  "thread-emoji",
+  "thread-impostor",
+];
+
 function readModel(): OrchestrationReadModel {
   return {
     snapshotSequence: 0,
     projects: [],
-    threads: [],
+    threads: threadsNamed(CHANNEL_THREAD_IDS),
     channels: [
       {
         id: CHANNEL,
@@ -379,6 +412,131 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       });
       const events = Array.isArray(decided) ? decided : [decided];
       expect(events[0]?.type).toBe("channel.unarchived");
+    }),
+  );
+
+  it.effect("refuses a human member carrying a real thread's id", () =>
+    Effect.gen(function* () {
+      // The impersonation route. memberKind decides what a member IS — a thread
+      // that can be woken, or a human who cannot — and nothing checked that the
+      // id matched the claim. A human member carrying a real thread's id sits in
+      // the roster beside the thread it names, and anything resolving a member to
+      // a thread by id reaches the real one.
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add-impostor"),
+          channelId: CHANNEL,
+          member: {
+            handle: "walt",
+            memberKind: "human",
+            memberId: "thread-boss1",
+          },
+        } as never,
+        readModel: readModel(),
+        issuer: HUMAN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is a thread id");
+      }
+    }),
+  );
+
+  it.effect("refuses an impostor member on the CREATE path too", () =>
+    Effect.gen(function* () {
+      // Two call sites, and only member.add was covered: deleting the check from
+      // channel.create passed all 604 tests. A guard wired twice and tested once
+      // is a guard on one path.
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-impostor"),
+          channelId: ChannelId.make("channel-impostor"),
+          name: "juniors",
+          members: [{ handle: "walt", memberKind: "human", memberId: "thread-boss1" }],
+          createdAt: NOW,
+        } as never,
+        readModel: readModel(),
+        issuer: HUMAN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is a thread id");
+      }
+    }),
+  );
+
+  it.effect("refuses a thread member naming a thread that does not exist", () =>
+    Effect.gen(function* () {
+      // The other direction: a member that claims to be wakeable and is not.
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add-phantom"),
+          channelId: CHANNEL,
+          member: {
+            handle: "phantom",
+            memberKind: "thread",
+            memberId: "thread-does-not-exist",
+          },
+        } as never,
+        readModel: readModel(),
+        issuer: HUMAN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is not a thread");
+      }
+    }),
+  );
+
+  it.effect("refuses a thread member naming a DELETED thread", () =>
+    Effect.gen(function* () {
+      // Deletion is soft, so the id still resolves. A member pointing at a deleted
+      // thread is a roster entry no mention can ever wake — it looks like a
+      // participant and is not one, which is worse than refusing it.
+      const base = readModel();
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add-deleted"),
+          channelId: CHANNEL,
+          member: {
+            handle: "ghost",
+            memberKind: "thread",
+            memberId: "thread-x",
+          },
+        } as never,
+        readModel: {
+          ...base,
+          threads: threadsNamed(CHANNEL_THREAD_IDS, { deleted: ["thread-x"] }),
+        },
+        issuer: HUMAN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("can never be woken");
+      }
+    }),
+  );
+
+  it.effect("accepts a human member whose id is not any thread's", () =>
+    Effect.gen(function* () {
+      // The mirror. A guard that refused every human member would pass the three
+      // tests above and lock humans out of channels entirely.
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add-human"),
+          channelId: CHANNEL,
+          member: { handle: "walt", memberKind: "human", memberId: "human-walt" },
+        } as never,
+        readModel: readModel(),
+        issuer: HUMAN,
+      });
+      const events = Array.isArray(decided) ? decided : [decided];
+      expect(events[0]?.type).toBe("channel.member-added");
     }),
   );
 

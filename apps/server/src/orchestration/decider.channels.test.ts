@@ -26,6 +26,39 @@ const PM_ISSUER = { memberKind: "thread", memberId: "thread-pm" } as const;
 const ADMIN = { memberKind: "human", memberId: "human-walt" } as const;
 const STRANGER = { memberKind: "thread", memberId: "thread-stranger" } as const;
 
+/**
+ * The threads a channel's members name.
+ *
+ * A `thread` member must resolve to a live thread, so a fixture whose members
+ * name threads that do not exist is not a realistic read model — every channel
+ * test had one until the shape invariant landed and refused them all. Minimal by
+ * design: the invariant reads `id` and `deletedAt`, and the cast is what lets the
+ * fixture say so instead of carrying thirty irrelevant fields.
+ */
+function threadsNamed(
+  ids: ReadonlyArray<string>,
+  options: { readonly deleted?: ReadonlyArray<string> } = {},
+): OrchestrationReadModel["threads"] {
+  return ids.map((id) => ({
+    id,
+    deletedAt: options.deleted?.includes(id) === true ? NOW : null,
+  })) as unknown as OrchestrationReadModel["threads"];
+}
+
+const CHANNEL_THREAD_IDS = [
+  "thread-boss1",
+  "thread-pm",
+  "thread-boss3",
+  "thread-a",
+  "thread-b",
+  "thread-other",
+  "thread-stranger",
+  "thread-nobody",
+  "thread-x",
+  "thread-emoji",
+  "thread-impostor",
+];
+
 /** A #seniors-shaped channel: one thread member and one human. */
 function makeReadModel(
   members: ReadonlyArray<{ handle: string; memberKind: "thread" | "human"; memberId: string }> = [
@@ -36,7 +69,7 @@ function makeReadModel(
   return {
     snapshotSequence: 0,
     projects: [],
-    threads: [],
+    threads: threadsNamed(CHANNEL_THREAD_IDS),
     channels: [
       {
         id: CHANNEL,
