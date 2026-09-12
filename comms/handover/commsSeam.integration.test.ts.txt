@@ -34,7 +34,11 @@ import {
 } from "../../../orchestration/commandInvariants.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ChannelGateway from "./channelGateway.ts";
-import { CommsToolkitHandlersLive, normalizeChannelName, resolveMentions } from "./handlers.ts";
+import {
+  CommsToolkitHandlersLive,
+  canonicalChannelName as toolkitCanonicalChannelName,
+  resolveMentions,
+} from "./handlers.ts";
 import { CommsToolkit } from "./tools.ts";
 
 const THREAD_ID = ThreadId.make("thread-boss3");
@@ -240,7 +244,7 @@ describe("comms toolkit against the real aggregate invariants", () => {
       "# #ops",
       "a#b",
     ];
-    expect(cases.map((raw) => [raw, normalizeChannelName(raw)])).toEqual(
+    expect(cases.map((raw) => [raw, toolkitCanonicalChannelName(raw)])).toEqual(
       cases.map((raw) => [raw, canonicalChannelName(raw)]),
     );
   });
@@ -306,7 +310,7 @@ describe("comms toolkit against the real aggregate invariants", () => {
   it("what an error echoes is a function of the caller's own input, never of what is stored", () => {
     // Every echoed value in the two error paths is derived from the argument
     // alone, so an error cannot confirm a name or a handle the caller guessed.
-    expect(normalizeChannelName("#SECRET-PROJECT")).toBe("secret-project");
+    expect(toolkitCanonicalChannelName("#SECRET-PROJECT")).toBe("secret-project");
     expect(resolveMentions(["@GHOST", "Nobody", "@Boss1"], MEMBERS)).toEqual({
       unknown: ["GHOST", "Nobody"],
     });

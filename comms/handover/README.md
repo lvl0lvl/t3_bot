@@ -28,13 +28,32 @@ It needs the decider branch present: the three imports from
 `orchestration/commandInvariants.ts` are the contract, and it is written so that
 if those move, it fails rather than skips.
 
-**Two things to fix on the way in**, both from renames after it was written:
+**The two renames are APPLIED — the file is ready to drop in unmodified.**
+Both were the only ones needed. The toolkit's is aliased as
+`toolkitCanonicalChannelName` so the decider's keeps the bare name it has
+everywhere else.
 
-- It imports `normalizeChannelName` from `handlers.ts`. That is now
-  `canonicalChannelName`.
-- Which then collides with the decider's `canonicalChannelName`, imported in the
-  same file. Alias one — and prefer aliasing the toolkit's, so the decider's
-  keeps the bare name it has everywhere else.
+**Verified on the tree `main` becomes** (boss1, 2026-09-12): a44's head merged
+with `boss3/t3_bot-2x5-canonical-names`, own install, workspace links confirmed
+resolving inside the scratch tree. Combined tree 785 tests / 80 files green,
+typecheck 0. This file: 6 tests, all pass, with no edits beyond the renames.
 
-Saved as `.txt` so no toolchain tries to compile a file whose imports do not
-resolve yet. Rename it back when it lands.
+**It still bites**, which is the only thing that makes it worth landing. Two
+mutations of the seam, each confirmed RED:
+
+| mutation | result |
+|---|---|
+| toolkit stops folding case on names | 3 RED, incl. "the toolkit's name rule and the decider's agree, input for input" |
+| toolkit emits the lookup key instead of the member's stored handle | 1 RED: "distinct members never collapse into one mention key" |
+
+The second is the key/value bug: normalise for LOOKUP, emit what the other side
+STORES.
+
+**Where it lands.** The `t3_bot-iin` follow-up, which is also the change that
+imports `@t3tools/shared/channelIdentity` and deletes the toolkit's copies — the
+first commit where both halves are on `main`, so the imports resolve. Earlier is
+a file that cannot compile; later is a window where the rule is single-copy and
+unguarded.
+
+Saved as `.txt` so no toolchain tries to compile it before then. Rename it back
+to `.ts` when it lands, next to `handlers.test.ts`.
