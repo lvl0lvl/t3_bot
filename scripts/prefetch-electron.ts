@@ -37,7 +37,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import { createRequire } from "node:module";
+import * as NodeModule from "node:module";
 
 // Resolved from the workspace root, which is where `prepare` runs. `electron`
 // is a dependency of `apps/desktop`, so it resolves through that package
@@ -48,7 +48,7 @@ if (!NodeFS.existsSync(desktopPackageJson)) {
   process.stdout.write("prefetch-electron: no apps/desktop here, nothing to fetch\n");
   process.exit(0);
 }
-const desktopRequire = createRequire(desktopPackageJson);
+const desktopRequire = NodeModule.createRequire(desktopPackageJson);
 
 let electronDir: string;
 try {
