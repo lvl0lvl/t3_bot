@@ -1859,16 +1859,58 @@ export const ChannelMemberAddedPayload = Schema.Struct({
  * every consumer a second case forever to distinguish states differing in one
  * field the projector never reads.
  *
- * TWO FLAT FIELDS, NOT THE NOMINAL `ChannelMemberRef`. That type is a class with
- * a private field precisely so it cannot be built from a payload, and an event
- * payload is decoded from rows — the one place it must not appear. The class is
- * the comparison type at the seam; this is what the seam compares against.
+ * "FOREVER" IS A COST THAT WAS DECLINED, NOT A LAW. This repo backfills event
+ * payloads in migrations — `011_OrchestrationThreadCreatedRuntimeMode` adds an
+ * optional field to a stored payload and then fills the historical rows so it
+ * need not stay optional, and five migrations rewrite `orchestration_events`.
+ * This field is harder than that one: it has no constant default, so a backfill
+ * would have to replay `channel.created` / `member-added` / `member-removed` in
+ * order and resolve the handle against the roster as of each sequence. Nobody
+ * has paid for that. Said plainly so the next reader does not conclude the
+ * option does not exist.
+ *
+ * A NESTED STRUCT, WHICH IS THIS FILE'S OWN CONVENTION for a ref on a payload:
+ * `ChannelPostCreatedPayload` nests `authorRef: ChannelAuthorRef` and
+ * `ChannelMemberAddedPayload` nests `member: ChannelMember`. An earlier version
+ * of this field was two flat optionals, defended as "flat fields, not the
+ * nominal class" — a false dichotomy a lane caught, because the option actually
+ * available was neither of those. The argument against the nominal class is
+ * sound and is kept at `ChannelMemberRefPayload`; it simply was not an argument
+ * for flattening.
  */
+/**
+ * Who a channel event is about, in the shape a stored payload can hold.
+ *
+ * THE SAME TWO FIELDS AS `ChannelAuthorRef`, and deliberately a second name
+ * rather than a reuse: that one says "who wrote this post" and its docstring
+ * says so, and a removal has no author. One struct serving both roles would
+ * make one of the two docstrings false, which is the defect this file has spent
+ * the day removing.
+ *
+ * NOT the nominal `ChannelMemberRef` from `channelMemberRef.ts`, which is the
+ * same IDENTITY and cannot live here: it is a class with a private field, has no
+ * Schema, and cannot be decoded out of a row. That type is unconstructible on
+ * purpose; a payload is decoded from bytes, so it is the one place the nominal
+ * form must not appear.
+ */
+export const ChannelMemberRefPayload = Schema.Struct({
+  memberKind: Schema.Literals(["thread", "human"]),
+  memberId: TrimmedNonEmptyString,
+});
+export type ChannelMemberRefPayload = typeof ChannelMemberRefPayload.Type;
+
 export const ChannelMemberRemovedPayload = Schema.Struct({
   channelId: ChannelId,
   handle: ChannelMemberHandle,
-  memberKind: Schema.optional(Schema.Literals(["thread", "human"])),
-  memberId: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * ONE OPTIONAL OVER A STRUCT, not two independent optionals over its fields.
+   * Two optionals admit four states where the domain has two, and both
+   * half-states DECODE — a lane drove them through this very schema and through
+   * the event union. A kind with no id identifies nobody, and every consumer
+   * would inherit a two-part `!== undefined` check to rule out a state the type
+   * should never have allowed.
+   */
+  removedMember: Schema.optional(ChannelMemberRefPayload),
   updatedAt: IsoDateTime,
 });
 

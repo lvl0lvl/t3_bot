@@ -304,8 +304,8 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
         // BOTH FIELDS. Asserting the id alone passes against an event that
         // hardcodes the wrong kind, which is the whole distinction the socket
         // gate turns on.
-        expect(event.payload.memberKind).toBe("thread");
-        expect(event.payload.memberId).toBe("thread-pm");
+        expect(event.payload.removedMember?.memberKind).toBe("thread");
+        expect(event.payload.removedMember?.memberId).toBe("thread-pm");
         // And the handle stays: it is the projector's key, unique within a
         // channel in a way `memberId` is not, and what the client renders.
         expect(event.payload.handle).toBe("twin");

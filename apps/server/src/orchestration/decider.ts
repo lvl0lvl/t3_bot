@@ -2237,8 +2237,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           channelId: command.channelId,
           handle,
-          memberKind: removed.memberKind,
-          memberId: removed.memberId,
+          removedMember: { memberKind: removed.memberKind, memberId: removed.memberId },
           updatedAt: occurredAt,
         },
       };

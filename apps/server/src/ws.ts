@@ -842,15 +842,18 @@ const makeWsRpcLayer = (
         // `unattributedRemoval` is separate because a historical event carries
         // no ref at all: "a removal happened and I cannot say whose" is a third
         // state, and it must EMIT rather than be mistaken for "no removal".
+        //
+        // ONE `!== undefined`, because the payload nests the ref in a single
+        // optional struct. It was two independent optionals and therefore two
+        // checks here, which is the maintenance cost a lane predicted every
+        // consumer would inherit — and this was the only consumer, inheriting it
+        // on day one.
         removedRefs:
-          event.type === "channel.member-removed" &&
-          event.payload.memberKind !== undefined &&
-          event.payload.memberId !== undefined
-            ? [{ memberKind: event.payload.memberKind, memberId: event.payload.memberId }]
+          event.type === "channel.member-removed" && event.payload.removedMember !== undefined
+            ? [event.payload.removedMember]
             : [],
         unattributedRemoval:
-          event.type === "channel.member-removed" &&
-          (event.payload.memberKind === undefined || event.payload.memberId === undefined),
+          event.type === "channel.member-removed" && event.payload.removedMember === undefined,
       });
       type ShellEvent = ReturnType<typeof toShellEvent>;
 

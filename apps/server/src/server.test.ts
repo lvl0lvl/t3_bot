@@ -8717,8 +8717,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     payload: {
       channelId: ChannelId.make("channel-project"),
       handle: ChannelMemberHandle.make("pm"),
-      memberKind: "thread",
-      memberId: HUMAN_OPERATOR_MEMBER_ID,
+      removedMember: { memberKind: "thread", memberId: HUMAN_OPERATOR_MEMBER_ID },
       updatedAt: "2026-01-01T00:00:01.000Z",
     },
   } as unknown as OrchestrationEvent;
@@ -8803,8 +8802,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         payload: {
           ...(foreignRemovalEvent as unknown as { payload: Record<string, unknown> }).payload,
           handle: ChannelMemberHandle.make("bob"),
-          memberKind: "human",
-          memberId: "human-bob",
+          removedMember: { memberKind: "human", memberId: "human-bob" },
         },
       } as unknown as OrchestrationEvent;
 
@@ -8871,8 +8869,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         payload: {
           ...(foreignRemovalEvent as unknown as { payload: Record<string, unknown> }).payload,
           handle: ChannelMemberHandle.make("walt"),
-          memberKind: "human",
-          memberId: HUMAN_OPERATOR_MEMBER_ID,
+          removedMember: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
         },
       } as unknown as OrchestrationEvent;
 
@@ -8953,8 +8950,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           handle: ChannelMemberHandle.make("walt"),
           // The connection member EXACTLY: human, and the operator's id. The
           // foreign event above differs from this one in `memberKind` alone.
-          memberKind: "human",
-          memberId: HUMAN_OPERATOR_MEMBER_ID,
+          removedMember: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
         },
       } as unknown as OrchestrationEvent;
 
