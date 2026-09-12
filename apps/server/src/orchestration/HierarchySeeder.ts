@@ -35,11 +35,11 @@
  * and a condition does not: `grep requireChannelMemberShape` answers it.
  */
 import {
+  CLAUDE_DRIVER_KIND,
   ChannelId,
   ChannelMemberHandle,
   CommandId,
   ProjectId,
-  ProviderDriverKind,
   ThreadId,
   defaultInstanceIdForDriver,
   type CommandIssuer,
@@ -150,7 +150,13 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
       projectId,
       title: thread.title,
       modelSelection: {
-        instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("claude")),
+        // FROM THE DRIVER, never spelled here. This was
+        // `ProviderDriverKind.make("claude")` and the driver's kind is
+        // `claudeAgent` — a branded slug, so the typo typechecked, shipped, and
+        // made every wake fail with "references unknown provider instance
+        // 'claude'". Nothing in the suite could see it: no test resolves a
+        // seeded instanceId against the provider registry.
+        instanceId: defaultInstanceIdForDriver(CLAUDE_DRIVER_KIND),
         model: "claude-opus-5",
       },
       // Auto, so the demo does not stall on an approval prompt nobody is
