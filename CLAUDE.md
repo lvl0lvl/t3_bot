@@ -66,12 +66,16 @@ message types: `comms/README.md` there.
   property rather than the mutant you wrote, and re-read every negative when a fixture grows a subject.
 - **A guard wired at N call sites needs N tests.** "I tested the guard" is not "I tested every site";
   removing the check from one site must red a test that names that site.
-- **A test count may not go down silently.** A green suite says nothing about proofs that were deleted: a
-  range-replace patch removed three direct-gateway tests from #13 and reverting #13's fix passed 152/152. The
-  author measures per-file test counts base vs head from the runner (never a grep for `it(`, which counts
-  strings and comments) and states them in the PR body's local-gate section; a decrease is named there with
-  the reason, and the previous PR's mutants on that file are re-run. The PM checks the table before merging.
-  No script enforces this yet (bead `t3_bot-9wj`); until one does, the table in the body is the gate.
+- **A test may not disappear silently — by name, not only by count.** A green suite says nothing about
+  proofs that were deleted: a range-replace patch removed three direct-gateway tests from #13 and reverting
+  #13's fix passed 152/152. The count never moved on the incident the rule was written for (eleven tests
+  before, eleven after); the one renamed name is what catches it. `pnpm test:count-gate --base origin/main`
+  measures per-file counts AND test names, base against head, from the runner (never a grep for `it(`), over
+  the whole repo by default; the table's first line states the scope. Exit 0 = nothing lost; 1 = something
+  lost and unexplained — name it with `--allow path#test name=reason` so the reason lands in the PR body, and
+  re-run the previous PR's mutants on that file; 2 = could not measure (runner matched nothing, a test file
+  fails to load in either revision, base will not check out) — never read 2 as green. What it cannot see: an
+  assertion hollowed out of a test that keeps its name. The PM checks the gate output before merging.
 - Comments state the input that would break the code, not the reason it is safe.
 - Before pushing, write the adversarial question you would give a reviewer — "what legitimate input
   does this now reject that worked before?" — and answer it yourself. Writing the prompt is the review.
