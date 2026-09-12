@@ -22,12 +22,17 @@
  * `requireActiveProjectWorkspaceRootAbsent` refuses. See `seedHierarchy` for why
  * that read is safe to separate from its write.
  *
- * CHANNELS COME LAST, and on this tree that is convention rather than
- * enforcement. Once `t3_bot-8i2` lands, a channel member of kind `thread` must
- * resolve to a LIVE thread and seeding channels first FAILS. Today nothing
- * refuses it, and a guard sweep confirmed the reorder is invisible to the whole
- * suite — so this comment says what is true now, not what is true in the branch
- * this was written alongside.
+ * CHANNELS COME LAST, and whether that is convention or enforcement depends on
+ * one thing: whether `requireChannelMemberShape` is present. It refuses a
+ * channel member of kind `thread` whose id is not a live thread, so where it
+ * exists, seeding channels first fails outright — measured on a tree carrying
+ * both changes: three tests red with
+ * `Member 'pm' claims memberKind 'thread' but 'thread-pm' is not a thread.`
+ * Where it does not exist, the ordering is still correct and simply unenforced,
+ * and a reorder is invisible to the whole suite.
+ *
+ * Stated as a condition rather than a date because a date goes stale on its own
+ * and a condition does not: `grep requireChannelMemberShape` answers it.
  */
 import {
   ChannelId,
@@ -75,7 +80,8 @@ const SENIORS_CHANNEL = ChannelId.make("channel-seniors");
  * rather than a real account id. It is the field the web UI will need in order
  * to render "you", and it is recorded on `t3_bot-1nx` as the thing to replace
  * when identities exist. Deliberately NOT a thread id: a human member carrying
- * a thread's id is the impersonation route `requireChannelMemberShape` refuses.
+ * a thread's id is the impersonation route `requireChannelMemberShape` exists to
+ * refuse.
  */
 const WALT_MEMBER_ID = "human-walt";
 
@@ -158,8 +164,8 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
     });
   }
 
-  // Channels last: once 8i2 lands a `thread` member must resolve to a live
-  // thread, and until then this ordering is correct but unenforced.
+  // Channels last, because a `thread` member must resolve to a live thread
+  // wherever `requireChannelMemberShape` is present. See the header.
   yield* dispatch({
     type: "channel.create",
     commandId: CommandId.make("seed-channel-project"),
