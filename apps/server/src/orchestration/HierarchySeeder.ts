@@ -41,6 +41,7 @@ import {
   CommandId,
   HUMAN_OPERATOR_MEMBER_ID,
   ProjectId,
+  ProviderInstanceId,
   ThreadId,
   defaultInstanceIdForDriver,
   type CommandIssuer,
@@ -85,6 +86,27 @@ const SENIORS_CHANNEL = ChannelId.make("channel-seniors");
  * refuse.
  */
 const WALT_MEMBER_ID = HUMAN_OPERATOR_MEMBER_ID;
+
+/** What a seeded thread should run. */
+const SEEDED_MODEL_SELECTION = {
+  instanceId: defaultInstanceIdForDriver(CLAUDE_DRIVER_KIND),
+  model: "claude-opus-5",
+} as const;
+
+/**
+ * What the seeder stored BEFORE `t3_bot-4ii` — an instance id no build can
+ * resolve, because the driver's kind is `claudeAgent` and this said `claude`.
+ *
+ * It is here as data rather than as a memory because the repair has to
+ * recognise exactly this and nothing else. "Any unresolvable instance" would
+ * also match a thread the operator has since re-pointed at a provider they have
+ * not installed, and silently dragging that back to Claude is a worse bug than
+ * the one being repaired.
+ */
+const PRE_4II_MODEL_SELECTION = {
+  instanceId: ProviderInstanceId.make("claude"),
+  model: "claude-opus-5",
+} as const;
 
 const SEEDED_THREADS = [
   { id: PM_THREAD, handle: "pm", title: "PM" },
@@ -150,16 +172,13 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
       threadId: thread.id,
       projectId,
       title: thread.title,
-      modelSelection: {
-        // FROM THE DRIVER, never spelled here. This was
-        // `ProviderDriverKind.make("claude")` and the driver's kind is
-        // `claudeAgent` — a branded slug, so the typo typechecked, shipped, and
-        // made every wake fail with "references unknown provider instance
-        // 'claude'". Nothing in the suite could see it: no test resolves a
-        // seeded instanceId against the provider registry.
-        instanceId: defaultInstanceIdForDriver(CLAUDE_DRIVER_KIND),
-        model: "claude-opus-5",
-      },
+      // FROM THE DRIVER, never spelled here. This was
+      // `ProviderDriverKind.make("claude")` and the driver's kind is
+      // `claudeAgent` — a branded slug, so the typo typechecked, shipped, and
+      // made every wake fail with "references unknown provider instance
+      // 'claude'". Nothing in the suite could see it: no test resolved a seeded
+      // instanceId against the provider registry.
+      modelSelection: SEEDED_MODEL_SELECTION,
       // Auto, so the demo does not stall on an approval prompt nobody is
       // watching. A seeded agent thread that needs a human to unblock it is not
       // a demo of agents talking to each other.
@@ -168,6 +187,39 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
       branch: null,
       worktreePath: null,
       createdAt: input.createdAt,
+    });
+  }
+
+  // REPAIR, for a database seeded before `t3_bot-4ii`.
+  //
+  // The create above short-circuits on its receipt — the check compares the
+  // commandId and the aggregate ref and never the payload — so fixing the
+  // instance id in that command fixes nothing on a database that has already
+  // booted. Its threads keep pointing at `claude`, every wake fails at the
+  // provider boundary, and the seeder reports success. That is the same trap
+  // the `#seniors` membership hit one file over, and I fixed it there without
+  // looking one command up.
+  //
+  // Repairing only the EXACT pre-4ii selection, rather than "any unresolvable
+  // instance": an operator who has re-pointed a seeded thread at a provider
+  // they have not installed yet would otherwise have it dragged back to Claude
+  // by a seeder they did not ask to run.
+  const seededBefore = yield* projections.getCommandReadModel();
+  for (const thread of SEEDED_THREADS) {
+    const current = seededBefore.threads.find((row) => row.id === thread.id);
+    if (
+      current === undefined ||
+      current.deletedAt !== null ||
+      current.modelSelection.instanceId !== PRE_4II_MODEL_SELECTION.instanceId ||
+      current.modelSelection.model !== PRE_4II_MODEL_SELECTION.model
+    ) {
+      continue;
+    }
+    yield* dispatch({
+      type: "thread.meta.update",
+      commandId: CommandId.make(`seed-thread-${thread.handle}-model-4ii`),
+      threadId: thread.id,
+      modelSelection: SEEDED_MODEL_SELECTION,
     });
   }
 

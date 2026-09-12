@@ -2362,6 +2362,160 @@ describe("OrchestrationEngine", () => {
     }
   });
 
+  /**
+   * The seed as it existed before `t3_bot-4ii`: the same command ids, and
+   * threads pointing at the unresolvable instance `claude`.
+   *
+   * Built by hand rather than by running an old copy of the seeder, because the
+   * point is the RECEIPTS: boot 2 must find these command ids already accepted.
+   */
+  const replayPre4iiSeed = async (
+    system: Awaited<ReturnType<typeof createOrchestrationSystem>>,
+    workspaceRoot: string,
+  ) => {
+    const seedIssuer = HierarchySeeder.__testing.SEED_ISSUER;
+    await system.run(
+      system.engine.dispatch(
+        {
+          type: "project.create",
+          commandId: CommandId.make("seed-project"),
+          projectId: ProjectId.make("project-t3bot"),
+          title: "t3_bot",
+          workspaceRoot,
+          createdAt: now(),
+        },
+        { issuer: seedIssuer },
+      ),
+    );
+    for (const thread of HierarchySeeder.__testing.SEEDED_THREADS) {
+      await system.run(
+        system.engine.dispatch(
+          {
+            type: "thread.create",
+            commandId: CommandId.make(`seed-thread-${thread.handle}`),
+            threadId: thread.id,
+            projectId: ProjectId.make("project-t3bot"),
+            title: thread.title,
+            // THE BUG, as it was stored.
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claude"),
+              model: "claude-opus-5",
+            },
+            runtimeMode: "auto",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now(),
+          },
+          { issuer: seedIssuer },
+        ),
+      );
+    }
+  };
+
+  it("repairs a seeded thread's unresolvable instance on an already-booted database", async () => {
+    // THE SAME TRAP AS THE #seniors MEMBERSHIP, one command up, and I fixed it
+    // there without looking. `thread.create` short-circuits on its receipt, so
+    // correcting the instance id inside that command corrects nothing on a
+    // database that has already booted: the threads keep pointing at `claude`,
+    // every wake fails at the provider boundary, and the seeder reports
+    // success. Found on a real environment, not by a test.
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-model-repair-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    const workspaceRoot = NodePath.join(directory, "repo");
+    let system = await createOrchestrationSystem(databasePath);
+    try {
+      await replayPre4iiSeed(system, workspaceRoot);
+      const before = await system.readModel();
+      expect(before.threads.map((thread) => thread.modelSelection.instanceId).sort()).toEqual([
+        "claude",
+        "claude",
+        "claude",
+      ]);
+
+      await system.dispose();
+      system = await createOrchestrationSystem(databasePath);
+      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
+
+      const after = await system.readModel();
+      // Every seeded thread resolvable, asserted against the record the product
+      // keys by driver kind rather than against the string "claudeAgent" — a
+      // test naming the value would pass today and say nothing about the next
+      // seeded provider.
+      const builtInInstanceIds = new Set(
+        Object.keys(PROVIDER_DISPLAY_NAMES).map((kind) =>
+          defaultInstanceIdForDriver(ProviderDriverKind.make(kind)),
+        ),
+      );
+      for (const thread of after.threads) {
+        expect(
+          builtInInstanceIds.has(thread.modelSelection.instanceId),
+          `thread ${thread.id} still carries '${thread.modelSelection.instanceId}' after a boot on the new code`,
+        ).toBe(true);
+      }
+
+      // And it is idempotent on the third boot: the repair carries its own
+      // deterministic id, so it short-circuits rather than re-deciding.
+      await system.dispose();
+      system = await createOrchestrationSystem(databasePath);
+      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
+      const third = await system.readModel();
+      expect(third.threads.map((thread) => thread.modelSelection.instanceId).sort()).toEqual(
+        after.threads.map((thread) => thread.modelSelection.instanceId).sort(),
+      );
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a seeded thread the operator has re-pointed alone", async () => {
+    // CRITERION 3, and the reason the repair matches the EXACT pre-4ii
+    // selection rather than "any instance this build cannot resolve". An
+    // operator who has re-pointed a seeded thread at a provider they have not
+    // installed yet would otherwise have it dragged back to Claude by a seeder
+    // they did not ask to run — a worse bug than the one being repaired,
+    // because it overwrites a choice rather than a mistake.
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-model-repoint-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    const workspaceRoot = NodePath.join(directory, "repo");
+    let system = await createOrchestrationSystem(databasePath);
+    try {
+      await replayPre4iiSeed(system, workspaceRoot);
+      const repointed = HierarchySeeder.__testing.SEEDED_THREADS[0]!;
+      await system.run(
+        system.engine.dispatch(
+          {
+            type: "thread.meta.update",
+            commandId: CommandId.make("test-repoint-boss-thread"),
+            threadId: repointed.id,
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("some-byo-instance"),
+              model: "a-model-this-build-never-heard-of",
+            },
+          },
+          { issuer: HierarchySeeder.__testing.SEED_ISSUER },
+        ),
+      );
+
+      await system.dispose();
+      system = await createOrchestrationSystem(databasePath);
+      await system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: now() }));
+
+      const after = await system.readModel();
+      const stillRepointed = after.threads.find((thread) => thread.id === repointed.id);
+      expect(stillRepointed?.modelSelection.instanceId).toBe("some-byo-instance");
+      expect(stillRepointed?.modelSelection.model).toBe("a-model-this-build-never-heard-of");
+      // The others, which were NOT re-pointed, are repaired.
+      for (const other of after.threads.filter((thread) => thread.id !== repointed.id)) {
+        expect(other.modelSelection.instanceId).toBe("claudeAgent");
+      }
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("adds the operator to a #seniors that was seeded before they were a member", async () => {
     // THE UPGRADE PATH. Neither test around this one can reach it: both start
     // from a fresh mkdtemp, and the idempotence test boots the SAME code twice,
