@@ -64,6 +64,12 @@ import * as Logger from "effect/Logger";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { MentionWakeBudgetRepositoryLive } from "../../persistence/Layers/MentionWakeBudget.ts";
+import {
+  COLLIDING_CHANNEL_ID,
+  COLLIDING_CHANNEL_NAME,
+  COLLIDING_THREAD_ISSUER,
+  seedCollidingRoster,
+} from "../testing/collidingRoster.ts";
 import { MentionWakeBudgetRepository } from "../../persistence/Services/MentionWakeBudget.ts";
 import { ChannelPostWakeRepository } from "../../persistence/Services/ChannelPostWakes.ts";
 import { wakesForPosts } from "../channelPostWakes.ts";
@@ -2379,9 +2385,10 @@ describe("MentionWakeReactor wake budget", () => {
    * `memberId === x` and `memberKind === k && memberId === x` are the same
    * function.
    */
-  const COLLIDE_CHANNEL_ID = ChannelId.make("channel-collide");
-  const TWIN_MEMBER_ID = "human-walt";
-  const AS_TWIN = { memberKind: "thread", memberId: TWIN_MEMBER_ID } as const;
+  // THE COLLIDING ROSTER IS SHARED (`../testing/collidingRoster.ts`). This test
+  // held its own spelling — a channel id, a twin id, an issuer — and so did
+  // three other files, each differently. One module now; the reason it exists
+  // and the ordering that makes it constructible are on that module.
 
   /** A second channel with the same roster, to prove the budget is per channel. */
   const seedOtherChannel = async (system: System) => {
@@ -2674,58 +2681,31 @@ describe("MentionWakeReactor wake budget", () => {
     try {
       await seedChannel(system);
 
-      // THE COLLIDING ROSTER (`t3_bot-46h`), and it is reachable through the
-      // aggregate today rather than only through a pre-invariant event - which
-      // is that bead's open question, answered here by construction. The
-      // ORDERING is the whole fixture: `requireChannelMemberShape` refuses a
-      // HUMAN member whose memberId names an existing thread, so the human goes
-      // into the roster first and the thread of that name is created after.
-      // Nothing refuses the reverse, and no invariant makes memberId unique.
+      // THE COLLIDING ROSTER, seeded by the shared fixture: human seated first,
+      // the thread of that id created after, the thread member added last. The
+      // ordering and the reason it is the ONLY order the aggregate admits are on
+      // `collidingRoster.ts`; this test's claim is what the budget does with it.
       await system.run(
-        system.engine.dispatch(
-          {
-            type: "channel.create",
-            commandId: CommandId.make("cmd-channel-collide"),
-            channelId: COLLIDE_CHANNEL_ID,
-            name: "collide",
-            members: [
-              { handle: ChannelMemberHandle.make("woken"), memberKind: "thread", memberId: WOKEN },
-              {
-                handle: ChannelMemberHandle.make("walt"),
-                memberKind: "human",
-                memberId: TWIN_MEMBER_ID,
-              },
-            ],
-            createdAt: NOW,
-          },
-          { issuer: WALT },
-        ),
-      );
-      await system.run(
-        system.engine.dispatch({
-          type: "thread.create",
-          commandId: CommandId.make("cmd-thread-twin"),
+        seedCollidingRoster({
+          engine: system.engine,
           projectId: PROJECT_ID,
-          threadId: ThreadId.make(TWIN_MEMBER_ID),
-          title: "Twin",
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: null,
-          createdAt: NOW,
+          issuer: WALT,
+          now: NOW,
         }),
       );
+      // Plus the woken thread, which the budget test needs on the roster and the
+      // shared fixture does not carry: it is this file's member, not the
+      // collision's.
       await system.run(
         system.engine.dispatch(
           {
             type: "channel.member.add",
-            commandId: CommandId.make("cmd-member-twin"),
-            channelId: COLLIDE_CHANNEL_ID,
+            commandId: CommandId.make("cmd-collide-woken"),
+            channelId: COLLIDING_CHANNEL_ID,
             member: {
-              handle: ChannelMemberHandle.make("twin"),
+              handle: ChannelMemberHandle.make("woken"),
               memberKind: "thread",
-              memberId: TWIN_MEMBER_ID,
+              memberId: WOKEN,
             },
           },
           { issuer: WALT },
@@ -2734,10 +2714,12 @@ describe("MentionWakeReactor wake budget", () => {
 
       await system.startReactor();
       await agentPosts(system, "twin", WAKE_BUDGET_PER_CHANNEL + 1, {
-        channelId: COLLIDE_CHANNEL_ID,
-        issuer: AS_TWIN,
+        channelId: COLLIDING_CHANNEL_ID,
+        issuer: COLLIDING_THREAD_ISSUER,
       });
-      expect((await wakesFrom(system, "collide")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+      expect((await wakesFrom(system, COLLIDING_CHANNEL_NAME)).length).toBe(
+        WAKE_BUDGET_PER_CHANNEL,
+      );
 
       // THE ASSERTION THE FIXTURE EXISTS FOR. The twin is a THREAD whose
       // memberId is also a human member's, so a reset that resolved the author
@@ -2746,22 +2728,26 @@ describe("MentionWakeReactor wake budget", () => {
       // its own way out. Against every other fixture in this repository that
       // check and `authorRef.memberKind === "human"` are the same function.
       await agentPosts(system, "twin-again", 1, {
-        channelId: COLLIDE_CHANNEL_ID,
-        issuer: AS_TWIN,
+        channelId: COLLIDING_CHANNEL_ID,
+        issuer: COLLIDING_THREAD_ISSUER,
       });
-      expect((await wakesFrom(system, "collide")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+      expect((await wakesFrom(system, COLLIDING_CHANNEL_NAME)).length).toBe(
+        WAKE_BUDGET_PER_CHANNEL,
+      );
 
       // And the other direction, without which this proves only that nothing
       // resets it: the HUMAN of that same memberId does clear it.
-      await post(system, { id: "collide-human", mentions: [], channelId: COLLIDE_CHANNEL_ID });
+      await post(system, { id: "collide-human", mentions: [], channelId: COLLIDING_CHANNEL_ID });
       await system.run(
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
       await agentPosts(system, "twin-after-human", 1, {
-        channelId: COLLIDE_CHANNEL_ID,
-        issuer: AS_TWIN,
+        channelId: COLLIDING_CHANNEL_ID,
+        issuer: COLLIDING_THREAD_ISSUER,
       });
-      expect((await wakesFrom(system, "collide")).length).toBe(WAKE_BUDGET_PER_CHANNEL + 1);
+      expect((await wakesFrom(system, COLLIDING_CHANNEL_NAME)).length).toBe(
+        WAKE_BUDGET_PER_CHANNEL + 1,
+      );
     } finally {
       await system.dispose();
       await removeDirectory(directory);
