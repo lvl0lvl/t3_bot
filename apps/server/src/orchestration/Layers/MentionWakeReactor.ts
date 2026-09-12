@@ -204,6 +204,10 @@ const make = Effect.gen(function* () {
     // is removed by the sequence filter below rather than by timing.
     const live = yield* engine.subscribeDomainEvents;
     const from = yield* resumeFrom().pipe(Effect.orDie);
+    // Everything at or below the resume point was handled by a previous run, so
+    // the fence starts there rather than at zero. Without this a caller waiting
+    // on an older sequence waits forever for an event this run will never see.
+    yield* noteSeen(from);
     let handled = from;
     yield* forkParked(
       Stream.runForEach(
