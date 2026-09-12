@@ -205,11 +205,20 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   if (AsyncResult.isFailure(page) && posts.length === 0) {
     return <PostsUnavailable />;
   }
+  // RETURNED INSTEAD OF THE SCROLL CONTAINER, the way `PostsUnavailable` is.
+  // Found by rendering twice: inside that container the empty state cannot
+  // centre, because `justify-end` is what puts posts above the composer and
+  // `flex-1` on a child of the inner wrapper has nothing to stretch against. It
+  // first arrived pinned to the composer, then 100px higher, and neither read as
+  // an empty state. The container is right for posts and wrong for this.
+  if (posts.length === 0 && !page.waiting) {
+    return <NoPostsYet />;
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col justify-end overflow-y-auto">
       <div className="flex flex-col gap-3 p-4">
-        {reachedStart || posts.length === 0 ? null : (
+        {reachedStart ? null : (
           <Button
             variant="ghost"
             size="sm"
@@ -225,7 +234,6 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
             {page.waiting ? "Loading earlier posts…" : "Earlier posts"}
           </Button>
         )}
-        {posts.length === 0 && !page.waiting ? <NoPostsYet /> : null}
         {posts.map((post) => (
           <ChannelPost key={post.id} environmentId={environmentId} post={post} />
         ))}
@@ -270,10 +278,21 @@ function ChannelPost({
  * quiet when its history is simply unreachable.
  */
 function NoPostsYet() {
+  // CENTRED, NOT `self-center` INSIDE `justify-end`. Found by rendering: the
+  // first version arrived pinned just above the composer with the whole pane
+  // empty above it, reading as a stray label rather than an empty state — and
+  // `PostsUnavailable`, the other empty state in this same region, centres. Two
+  // placements for two empty states a reader sees one at a time is the kind of
+  // inconsistency only a render pass finds.
+  //
+  // `justify-end` on the scroll container stays: it is right for posts, which
+  // grow upward from the composer.
   return (
-    <p className="self-center text-sm text-muted-foreground">
-      No posts yet. Say something to start the channel.
-    </p>
+    <div className="flex min-h-0 flex-1 items-center justify-center">
+      <p className="text-sm text-muted-foreground">
+        No posts yet. Say something to start the channel.
+      </p>
+    </div>
   );
 }
 
