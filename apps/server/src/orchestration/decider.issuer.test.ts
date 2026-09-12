@@ -828,8 +828,13 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       Effect.gen(function* () {
         // `t3_bot-ami`, found by the guard sweep: dropping the `memberKind` clause from
         // `requireChannelAuthorIsMember` leaves every test in this directory green, because
-        // every fixture's members differ in BOTH fields and a memberId-only comparison then
-        // returns the same row as the correct one.
+        // no fixture that reaches THIS guard holds a colliding pair — and that is the
+        // accurate form of the claim. Colliding rosters do exist in the tree:
+        // `decider.channels.test.ts`'s `COLLIDING_ROSTER` and one in
+        // `MentionWakeReactor.test.ts`, both one memberId under two memberKinds. They cannot
+        // kill this mutant because they are spent on other guards — the removal event's ref
+        // and the wake budget — and neither drives a post through the author lookup. The
+        // sweep measured the mutant surviving with both of them already present.
         //
         // THE FIXTURE THAT SEPARATES THEM is one channel holding two members with the same
         // `memberId` and different `memberKind`, with the WRONG one first — `find` returns the
