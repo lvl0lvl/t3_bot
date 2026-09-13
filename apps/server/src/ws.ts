@@ -768,7 +768,6 @@ const makeWsRpcLayer = (
             ? new OrchestrationDispatchCommandError({
                 message: cause.message,
                 refusal: cause.reason,
-                cause,
               })
             : new OrchestrationDispatchCommandError({
                 message: cause instanceof Error ? cause.message : fallbackMessage,
