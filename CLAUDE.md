@@ -118,6 +118,11 @@ in the scratch tree, and no lane ever creates or repoints a symlink inside a sha
 over 12,246 type errors). Suspect it: `readlink -f apps/server/node_modules/@t3tools/contracts` must
 resolve inside the tree you are standing in.
 
+**UI evidence lives on the orphan branch `pr-assets`.** AGENTS.md forbids PR-only screenshots in the tree;
+`gh` cannot attach images to a PR body. So a UI PR pushes its renders to `pr-assets/<pr-number>/` on the
+orphan branch (never merged, never in any checkout) and links them by SHA from the body. The design lane
+takes the 390 and 1280 measurements headless and states them as numbers in the body.
+
 **`gh` targets the fork, never upstream.** This clone has `upstream` = Theo's public repo, and
 `gh` resolved to it until `gh repo set-default lvl0lvl/t3_bot` was run (repo-level git config,
 shared by every worktree). Belt and braces: pass `--repo lvl0lvl/t3_bot` on every `gh` write
