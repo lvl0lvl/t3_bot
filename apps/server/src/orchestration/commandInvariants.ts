@@ -692,7 +692,10 @@ export function requireThreadAbsent(input: {
  *     is seated yet, and a thread created then would make the seeder's own
  *     `channel.create` fail on the next boot (the shape guard refuses the
  *     human member because the thread now exists), leaving the operator in no
- *     channel at all. That is the input the seated check alone admits.
+ *     channel at all. That is the input the seated check alone admits. When
+ *     accounts exist this clause becomes every known human account id, read
+ *     from the aggregate — not the session's id, which the decider does not
+ *     have and which would admit a system issuer minting another account's.
  *
  * A THREAD member's id is not refused: a deleted thread's id may be created
  * again (`requireThreadAbsent` blocks only a live row) while a channel still

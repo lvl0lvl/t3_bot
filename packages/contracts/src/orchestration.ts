@@ -518,12 +518,14 @@ export type CommandIssuer = typeof CommandIssuer.Type;
  * and nothing distinguishes two browser sessions, so every RPC client is issued
  * as this member.
  *
- * IT IS A CONSTANT IN CONTRACTS RATHER THAN ONE PER CALLER because two callers
- * are already using it: the hierarchy seeder writes it into the seeded channels'
- * membership, and the WebSocket layer stamps it onto every command. If those two
- * strings ever differ, the operator is a member of a channel they cannot post
- * to, and `requireChannelAuthorIsMember` refuses with a message about
- * membership that is true and useless. One definition cannot drift.
+ * IT IS A CONSTANT IN CONTRACTS RATHER THAN ONE PER CALLER because its callers
+ * must agree on the string: the hierarchy seeder writes it into the seeded
+ * channels' membership, and the WebSocket layer stamps it onto every command
+ * through `refFromOperatorSession` / `operatorCommandIssuer`
+ * (`channelMemberRef.ts`). If those strings ever differ, the operator is a
+ * member of a channel they cannot post to, and `requireChannelAuthorIsMember`
+ * refuses with a message about membership that is true and useless. One
+ * definition cannot drift.
  *
  * It is NOT a stand-in for authorization. Membership still decides what this
  * member may do, and `requireChannelAuthorIsMember` refuses a post to a channel
@@ -532,7 +534,15 @@ export type CommandIssuer = typeof CommandIssuer.Type;
  * nothing is refused on a fresh server; the check is load-bearing the moment a
  * channel exists that they are not in.
  *
- * Replace it when accounts exist, at both call sites, and delete this.
+ * WHEN ACCOUNTS EXIST, each use becomes something different, and the
+ * difference is why this is not one find-and-replace. The seeder and the two
+ * identity constructors in `channelMemberRef.ts` become session-bound: the
+ * account on this connection. `requireThreadIdIsNoHuman`'s constant clause
+ * does NOT — it refuses a thread named after ANY human, seated or not, so it
+ * becomes the set of known human account ids read from the aggregate. The
+ * decider has no session, and routing that clause through the session's id
+ * would admit a system issuer minting some other account's id as a thread.
+ * Make those replacements and delete this.
  */
 export const HUMAN_OPERATOR_MEMBER_ID = "human-walt";
 
