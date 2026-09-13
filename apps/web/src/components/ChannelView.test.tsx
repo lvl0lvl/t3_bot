@@ -832,6 +832,36 @@ describe("ChannelPostRegion", () => {
     expect(buttonLabels(tree)).not.toContain("Earlier posts");
   });
 
+  it("withdraws the failed label once a newest read lands", async () => {
+    // THE WAY OUT. A one-way door is a bug: a `newestFailed` latched once true kept
+    // "didn’t load" up over a channel that had since read fine, with the new post
+    // rendered beneath a control offering to retry a read that succeeded. No other
+    // fixture answers a Success after a Failure on the same key.
+    reset();
+    const previous = { posts: [post(1, "p-only", "only")], nextCursor: null };
+    answer(CHANNEL_A, previous);
+    const { ChannelView } = await import("./ChannelView");
+    const tree = await mount(CHANNEL_A);
+
+    answerFailure(CHANNEL_A, undefined, previous);
+    harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(buttonLabels(tree)).toContain("Newer posts didn’t load. Try again");
+
+    answer(CHANNEL_A, {
+      posts: [post(1, "p-only", "only"), post(2, "p-two", "two")],
+      nextCursor: null,
+    });
+    harness.latestPostAtForA = "2026-01-01T00:06:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(bodies(tree)).toEqual(["only", "two"]);
+    expect(buttonLabels(tree)).not.toContain("Newer posts didn’t load. Try again");
+  });
+
   it("keeps the newest post clear of the failed-read pill for a reader at the live edge", async () => {
     // THE PILL SITS OVER THE SCROLLER, so on the newest page it covered the newest
     // post's last line. The column pads for it while the label is lit, and the input
