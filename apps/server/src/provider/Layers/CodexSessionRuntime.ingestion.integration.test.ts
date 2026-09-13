@@ -83,6 +83,59 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
     assert.deepEqual(raw, ["client.handleServerRequest(", "client.handleServerNotification("]);
   });
 
+  it("brands a turn id from the app-server only behind the doors", () => {
+    // Upstream's history restore (fd5553f1a, #11338) adds `readCodexThread`,
+    // which pages `thread/turns/list` and builds each turn with
+    // `TurnId.make(turn.id)`; the sync conflicts at the `readThread` and
+    // `rollbackThread` call sites, ~1400 lines from that `.make`, which
+    // merges clean. A resolution that keeps upstream's helper re-admits the
+    // input `t3_bot-a50` closed, with nothing that names it. The runtime may
+    // brand a turn id only on a value the doors admitted: the route fields
+    // read from a notification `refusedIds` passed, and the handlers that run
+    // after it. An eleventh `TurnId.make(` is a merge landing outside the
+    // doors, and where the id goes picks the resolution: a response id that
+    // stays inside T3 goes through `decodeTurnIdFromResponse`; one the
+    // runtime sends back to the app-server (upstream's `thread/revert`
+    // `beforeTurnId`) is checked with the decoder and branded raw, the door
+    // pattern `refusedIds` already uses, and that site is added to the list
+    // below. A response's turn id is never `.make`d without that check: the
+    // decoder trims a padded " turn-1 " and `.make` carries it as sent, and
+    // the app-server must get its own string back. Only code counts: a
+    // full-line `//`, `*`, or single `/* … */` comment naming the call is not
+    // a brand site; a same-line comment after code or after another comment,
+    // and a string literal, still red the pin and are reworded, not listed.
+    // The pin sees the literal `TurnId.make(` (and `TurnId?.make(`,
+    // `TurnId!.make(`) only: a cast `as TurnId`, an aliased or destructured
+    // `make`, a `.call`/`.apply`/`.bind` on it, or a bracket access stays
+    // green, and so does a same-string `.make` moved to another site: the pin
+    // sees which strings, in what order, not which line (upstream writes none
+    // of these today; `vp fmt` normalises the whitespace forms into reach).
+    const source = NodeFS.readFileSync(
+      NodePath.join(import.meta.dirname, "CodexSessionRuntime.ts"),
+      "utf8",
+    );
+    // A line is a comment only when no code follows its `*/`: `/* note */ const x`
+    // and a block closed as ` */ const x` both keep their code, so a call after
+    // either still counts. The runtime names `TurnId.make(` in no comment today;
+    // the strip's subject is the comment a sync maintainer will write.
+    const code = source.replace(/^\s*(?:\/\/|(?!.*\*\/[ \t]*\S)(?:\/\*|\*)).*$/gm, "");
+    assert.deepEqual(code.match(/TurnId[?!]?\.make\([^)]*\)/g), [
+      // readRouteFields, over a notification refusedIds admitted
+      "TurnId.make(notification.params.turn.id)",
+      "TurnId.make(notification.params.turnId)",
+      "TurnId.make(notification.params.turnId)",
+      "TurnId.make(notification.params.turnId)",
+      "TurnId.make(notification.params.turnId)",
+      // handler bodies that run after refusedIds: turn/started behind
+      // handleNotification, then the four guardRequest handlers
+      "TurnId.make(payload.turn.id)",
+      "TurnId.make(payload.turnId)",
+      "TurnId.make(payload.turnId)",
+      "TurnId.make(payload.turnId)",
+      "TurnId.make(payload.turnId)",
+    ]);
+  });
+
   it.effect("reports an empty turn id as a codex error and keeps delivering", () =>
     Effect.gen(function* () {
       const scriptPath = yield* writeScript("empty-turn-id", {
