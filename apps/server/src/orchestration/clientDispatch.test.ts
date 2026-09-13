@@ -2,7 +2,7 @@ import { HUMAN_OPERATOR_MEMBER_ID, type OrchestrationCommand } from "@t3tools/co
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import { clientDispatch } from "./clientDispatch.ts";
+import { makeClientDispatch } from "./clientDispatch.ts";
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
 
 /**
@@ -37,11 +37,11 @@ const command: OrchestrationCommand = {
   createdAt: "2026-01-01T00:00:00.000Z",
 } as OrchestrationCommand;
 
-describe("clientDispatch", () => {
+describe("makeClientDispatch", () => {
   it.effect("issues every command as the human operator, spelled out", () =>
     Effect.gen(function* () {
       const { calls, engine } = recording();
-      const result = yield* clientDispatch(engine)(command);
+      const result = yield* makeClientDispatch(engine)(command);
       expect(result).toEqual({ sequence: 1 });
       // The literal, not `operatorCommandIssuer()`: comparing against the
       // constructor moves both sides together and cannot catch a wrong issuer.
@@ -58,8 +58,8 @@ describe("clientDispatch", () => {
     Effect.gen(function* () {
       const { calls, engine } = recording();
       const origin = { surface: "web" as const, appVersion: "1.2.3" };
-      yield* clientDispatch(engine, origin)(command);
-      yield* clientDispatch(engine)(command);
+      yield* makeClientDispatch(engine, origin)(command);
+      yield* makeClientDispatch(engine)(command);
       expect(calls.map((call) => call.options)).toEqual([
         { origin, issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID } },
         { issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID } },

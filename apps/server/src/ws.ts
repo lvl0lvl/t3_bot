@@ -102,7 +102,7 @@ import { OrchestrationCommandInvariantError } from "./orchestration/Errors.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
 import { readChannelPostPage } from "./orchestration/channelPosts.ts";
-import { clientDispatch } from "./orchestration/clientDispatch.ts";
+import { makeClientDispatch } from "./orchestration/clientDispatch.ts";
 import { rowHasMember, toChannelShell, withMemberChannels } from "./orchestration/channelShell.ts";
 
 /**
@@ -522,7 +522,7 @@ const makeWsRpcLayer = (
        * connection dispatches", and argued that two values would be two ways to
        * be wrong in opposite directions — an operator who can post to a channel
        * they cannot see, or see one they cannot post to. That sentence outlived
-       * the code: the write identity is the operator issuer `clientDispatch`
+       * the code: the write identity is the operator issuer `makeClientDispatch`
        * stamps below, because the two are not the same SET and a plain object
        * satisfying both structurally is what hid the distinction.
        *
@@ -544,14 +544,14 @@ const makeWsRpcLayer = (
         clientOrigin.surface !== undefined || clientOrigin.appVersion !== undefined;
       /**
        * Every command from this connection, through the one stamp both client
-       * doors share (`clientDispatch`): issued as the human operator, carrying
+       * doors share (`makeClientDispatch`): issued as the human operator, carrying
        * this connection's origin when it has one. The WRITE identity that used
        * to be built here as `connectionIssuer` is the helper's; `connectionMember`
        * above stays the READ one, and the two are different SETS — `CommandIssuer`
        * admits `system`, which is not a channel member kind — which is why one
        * constant serving both jobs structurally is what hid the distinction.
        */
-      const dispatchFromClient = clientDispatch(
+      const dispatchFromClient = makeClientDispatch(
         orchestrationEngine,
         hasClientOrigin ? clientOrigin : undefined,
       );

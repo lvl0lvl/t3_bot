@@ -42,7 +42,7 @@ export type ClientDispatch = (
  * `origin?: OrchestrationClientOrigin` under `exactOptionalPropertyTypes` — the engine
  * itself reads `options?.origin` and treats the two the same.
  */
-export const clientDispatch = (
+export const makeClientDispatch = (
   engine: Pick<OrchestrationEngineShape, "dispatch">,
   origin?: OrchestrationClientOrigin,
 ): ClientDispatch => {

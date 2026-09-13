@@ -11,7 +11,7 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
 import { readChannelPostPage } from "./channelPosts.ts";
-import { clientDispatch } from "./clientDispatch.ts";
+import { makeClientDispatch } from "./clientDispatch.ts";
 import { withMemberChannels } from "./channelShell.ts";
 import { cleanupFailedUploadedAttachments, normalizeDispatchCommand } from "./Normalizer.ts";
 import {
@@ -32,7 +32,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const orchestrationEngine = yield* OrchestrationEngineService;
-    const dispatchFromClient = clientDispatch(orchestrationEngine);
+    const dispatchFromClient = makeClientDispatch(orchestrationEngine);
 
     return handlers
       .handle(
@@ -205,7 +205,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           // `ClientOrchestrationCommand` is this route's payload and the
           // WebSocket RPC's, so widening it widened both; stamping only the
           // socket left every channel command here failing closed as a 500.
-          // The stamp is `clientDispatch`'s now, shared with the socket, so this
+          // The stamp is `makeClientDispatch`'s now, shared with the socket, so this
           // door cannot be the one that forgot. No origin: nothing on this
           // request says which surface sent it.
           return yield* dispatchFromClient(normalizedCommand).pipe(

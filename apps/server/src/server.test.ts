@@ -2279,7 +2279,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // command, so two mutants of this door survived it: routing every
       // non-`channel.*` command to `orchestrationEngine.dispatch(command)`
       // bare (the stamp keyed on the command someone thought of), and binding
-      // `clientDispatch(orchestrationEngine, { surface: "web" })` (an origin
+      // `makeClientDispatch(orchestrationEngine, { surface: "web" })` (an origin
       // nothing on the request says). A command with no issuer invariant sees
       // the first; `deepStrictEqual` on the full object sees the extra key of
       // the second.
@@ -7820,8 +7820,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       Effect.gen(function* () {
         // THE WHOLE OPTIONS OBJECT, not `options?.issuer`. The two socket tests
         // above read the issuer alone, so the door's other half of the stamp —
-        // the origin it hands `clientDispatch` — had no test: binding
-        // `clientDispatch(orchestrationEngine)` with no origin kept all of
+        // the origin it hands `makeClientDispatch` — had no test: binding
+        // `makeClientDispatch(orchestrationEngine)` with no origin kept all of
         // them green. Two inputs, one test: a socket connected WITH a surface
         // must carry it on every command, and a socket connected WITHOUT one
         // must pass no `origin` key at all — dropping the `hasClientOrigin`
