@@ -1414,11 +1414,12 @@ const ChannelMemberAddCommand = Schema.Struct({
 
 /**
  * Keyed by handle. `memberId` alone is still not unique — a thread member and a human
- * member can share one (`t3_bot-46h`) — but since `t3_bot-1ez` the PAIR is unique per
- * channel, so keying by `(memberKind, memberId)` would also be well defined. The handle
- * stays because it is what the projector keys rows by and what an operator names. That
- * the removal resolves by handle while every authorization decision resolves by the pair
- * is the mismatch `t3_bot-s4l` is about, not a constraint.
+ * member can share one (`t3_bot-46h`), by replay of rows written before `t3_bot-7iw` —
+ * but since `t3_bot-1ez` the PAIR is unique per channel, so keying by
+ * `(memberKind, memberId)` would also be well defined. The handle stays because it is
+ * what the projector keys rows by and what an operator names. That the removal resolves
+ * by handle while every authorization decision resolves by the pair is the mismatch
+ * `t3_bot-s4l` is about, not a constraint.
  */
 const ChannelMemberRemoveCommand = Schema.Struct({
   type: Schema.Literal("channel.member.remove"),
@@ -2076,17 +2077,16 @@ export const ChannelMemberAddedPayload = Schema.Struct({
  * that is unique: `requireChannelMembersUnique` makes the handle AND the
  * `(memberKind, memberId)` pair unique within a channel at the command boundary
  * (`t3_bot-1ez`), so two same-kind members can no longer hold one id under two
- * handles. Two kinds of non-uniqueness are left. CROSS-KIND is still admitted — a
- * thread member and a human member can share one id (`t3_bot-46h`) BY ORDERING,
- * which is worth writing out because the obvious reading is that the aggregate
- * refuses it:
- *
- *   `requireChannelMemberShape` refuses a human member whose id names a thread,
- *   but it looks the id up in the roster AT ADD TIME and never re-validates an
- *   existing one. `thread.create` takes a caller-supplied `threadId`. So: add
- *   the human member with id X while no thread X exists (admitted), create
- *   thread X (admitted), add a thread member for X (admitted). One roster, two
- *   kinds, one id, no invariant broken.
+ * handles. Two kinds of non-uniqueness are left. CROSS-KIND — a thread member
+ * and a human member sharing one id (`t3_bot-46h`) — has three states worth
+ * telling apart: in one command it is refused by `requireChannelMemberShape`;
+ * BY ORDERING it WAS admitted (seat the human under id X, create thread X, add
+ * the thread member — the shape guard checks the roster at add time and never
+ * re-validates an existing row; #24); since `t3_bot-7iw` the middle step is
+ * refused by `requireThreadIdIsNoHuman` at `thread.create`. What remains is
+ * replay of rows written before either guard, which is the population every
+ * membership comparison keeps its kind clause for. The history is on
+ * `apps/server/src/orchestration/testing/collidingRoster.ts`.
  *
  * And the second: the projector filters by HANDLE and appends
  * (`projector.ts`), so a roster REPLAYED from events written before `t3_bot-1ez`
