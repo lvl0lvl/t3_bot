@@ -354,6 +354,7 @@ describe("pull request toolkit handlers", () => {
             ? new OrchestrationCommandInvariantError({
                 commandType: command.type,
                 detail: "already linked",
+                reason: { _tag: "pull-request-already-linked" },
               })
             : null,
       });
@@ -361,6 +362,49 @@ describe("pull request toolkit handlers", () => {
         url: "https://github.com/t3tools/t3code/pull/123",
       });
       expect(result.alreadyLinked).toBe(true);
+    }),
+  );
+
+  it.effect("reports any other refusal of a link as a failure, not as alreadyLinked", () =>
+    Effect.gen(function* () {
+      // THE INPUT THAT BROKE THE OLD CATCH: a refusal that is not the duplicate —
+      // untagged here, as a missing thread or a future issuer invariant would
+      // be. Until `t3_bot-9dp` it read as `alreadyLinked: true`, and the agent
+      // was told it had a link it never got.
+      const harness = yield* makeHarness({
+        reject: (command) =>
+          command.type === "thread.pull-request.link"
+            ? new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "thread not found",
+              })
+            : null,
+      });
+      const error = yield* harness
+        .call("link_pull_request", { url: "https://github.com/t3tools/t3code/pull/123" })
+        .pipe(Effect.flip);
+      expect(error._tag).toBe("PullRequestLinkFailedError");
+    }),
+  );
+
+  it.effect("reports any other refusal of an unlink as a failure, not as wasLinked=false", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        thread: makeThread([makeLink(5)]),
+        reject: (command) =>
+          command.type === "thread.pull-request.unlink"
+            ? new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "thread archived",
+                // A tag the unlink does not answer from is still "some other refusal".
+                reason: { _tag: "channel-archived" },
+              })
+            : null,
+      });
+      const error = yield* harness
+        .call("unlink_pull_request", { repository: "t3tools/t3code", number: 5 })
+        .pipe(Effect.flip);
+      expect(error._tag).toBe("PullRequestUnlinkFailedError");
     }),
   );
 
@@ -373,6 +417,7 @@ describe("pull request toolkit handlers", () => {
             ? new OrchestrationCommandInvariantError({
                 commandType: command.type,
                 detail: "not linked",
+                reason: { _tag: "pull-request-not-linked" },
               })
             : null,
       });

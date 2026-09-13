@@ -316,6 +316,11 @@ it.layer(NodeServices.layer)("pull request link decider", (it) => {
         readModel: makeReadModel([makeLink()]),
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      // THE TAG is what the MCP link tool answers `alreadyLinked` from; an
+      // untagged refusal here would reach the agent as a failure.
+      expect(error._tag === "OrchestrationCommandInvariantError" && error.reason).toEqual({
+        _tag: "pull-request-already-linked",
+      });
     }),
   );
 
@@ -482,6 +487,9 @@ it.layer(NodeServices.layer)("pull request link decider", (it) => {
         readModel: makeReadModel([makeLink()]),
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      expect(error._tag === "OrchestrationCommandInvariantError" && error.reason).toEqual({
+        _tag: "pull-request-not-linked",
+      });
     }),
   );
 

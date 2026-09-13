@@ -1055,9 +1055,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         existing?.source === "stack-dismissed" &&
         (command.source === "manual" || command.source === "agent" || command.source === "created");
       if (existing !== undefined && !undismisses) {
+        // TAGGED, because the MCP link tool reports this one as the outcome the
+        // agent asked for and must not do that for any other refusal.
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `pull request ${key.host}/${key.repository}#${key.number} is already linked to thread ${command.threadId}`,
+          reason: { _tag: "pull-request-already-linked" },
         });
       }
       const occurredAt = yield* nowIso;
@@ -1099,6 +1102,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `pull request ${key.host}/${key.repository}#${key.number} is not linked to thread ${command.threadId}`,
+          reason: { _tag: "pull-request-not-linked" },
         });
       }
       const occurredAt = yield* nowIso;

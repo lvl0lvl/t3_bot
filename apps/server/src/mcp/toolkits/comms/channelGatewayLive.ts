@@ -354,9 +354,16 @@ const make = Effect.gen(function* () {
                   return new ChannelMentionUnresolvable({ handles: error.reason.handles });
                 case "channel-archived":
                   return new ChannelArchived();
+                case "pull-request-already-linked":
+                case "pull-request-not-linked":
+                  // The pull-request tools' outcomes, tagged for that door. A
+                  // channel post cannot be refused for either; if one ever were,
+                  // it is a refusal this seam has no word for and falls through
+                  // to "the channel refused the post" like an untagged one.
+                  break;
                 default: {
-                  // A fourth member of `CommandInvariantRefusal` with no arm
-                  // here would fall through to "the channel refused the post".
+                  // A member of `CommandInvariantRefusal` with no arm here
+                  // would fall through to "the channel refused the post".
                   error.reason satisfies never;
                 }
               }

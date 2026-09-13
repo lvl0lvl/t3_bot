@@ -2927,16 +2927,26 @@ export class OrchestrationGetSnapshotError extends Schema.TaggedError<Orchestrat
  * It lives here rather than beside the decider because both dispatch doors
  * put it on the wire (`t3_bot-nqf`): the socket in
  * `OrchestrationDispatchCommandError.refusal`, HTTP in
- * `EnvironmentCommandRefusedError.refusal`. On the wire it is a CLOSED union:
- * an older client handed a tag it does not know fails to decode the whole
- * error, and `RpcClient` turns that into a defect in place of the refusal
- * (`orDie`). Adding a member is a client-breaking change; it ships after the
- * clients know the tag.
+ * `EnvironmentCommandRefusedError.refusal`. A client handed a tag it does not
+ * know fails to decode the whole error, and `RpcClient` turns that into a
+ * defect in place of the refusal (`orDie`) — so adding a member is a
+ * client-breaking change for any DEPLOYED client that decodes this field. The
+ * clients are web and mobile from this repo, shipped with the server, which is
+ * why the two pull-request members could be added (`t3_bot-9dp`) without a
+ * staged rollout; a client shipped separately would need the tag first.
+ *
+ * The pull-request members exist because the MCP pull-request tools act on
+ * them: "already linked" and "not linked" are the outcomes the agent asked
+ * for (`alreadyLinked`, `wasLinked: false`), and every OTHER refusal of those
+ * commands is a failure the agent must see — the catch that told them apart
+ * by "any invariant error" reported a missing thread or a bad host as success.
  */
 export const CommandInvariantRefusal = Schema.Union([
   Schema.TaggedStruct("channel-archived", {}),
   Schema.TaggedStruct("author-not-member", {}),
   Schema.TaggedStruct("mentions-unresolved", { handles: Schema.Array(ChannelMemberHandle) }),
+  Schema.TaggedStruct("pull-request-already-linked", {}),
+  Schema.TaggedStruct("pull-request-not-linked", {}),
 ]);
 export type CommandInvariantRefusal = typeof CommandInvariantRefusal.Type;
 
