@@ -7,6 +7,7 @@
  * same input must now surface as a provider error naming codex, and every
  * later notification must still arrive.
  */
+// @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -214,6 +215,7 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
         // No approval was raised for the operator, and the app-server got an
         // error response (the peer records what it was answered with).
         assert.isFalse(events.some((event) => event.kind === "request"));
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
         const recorded = JSON.parse(
           NodeFS.readFileSync(`${scriptPath}.responses`, "utf8").trim().split("\n")[0]!,
         ) as { id: number; result?: unknown; error?: { message?: string } };
