@@ -1,0 +1,145 @@
+{
+  "testCommand": [
+    "pnpm",
+    "exec",
+    "vp",
+    "test",
+    "run",
+    "apps/server/src/orchestration/Layers/MentionWakeReactor.test.ts",
+    "apps/server/src/orchestration/decider.issuer.test.ts",
+    "apps/server/src/mcp/toolkits/comms/commsLive.integration.test.ts",
+    "apps/server/src/server.test.ts",
+    "apps/server/src/persistence/Layers/ProjectionChannels.test.ts"
+  ],
+  "setupCommand": ["pnpm", "install", "--frozen-lockfile"],
+  "mutations": [
+    {
+      "id": "wake-filter-ignores-kind",
+      "guard": "MentionWakeReactor/wake-filter",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/Layers/MentionWakeReactor.ts",
+      "find": "              member.memberKind === \"thread\" &&\n              mentioned.has(member.handle) &&",
+      "replace": "              mentioned.has(member.handle) &&"
+    },
+    {
+      "id": "wake-filter-wakes-nobody",
+      "guard": "MentionWakeReactor/wake-filter",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/Layers/MentionWakeReactor.ts",
+      "find": "              member.memberKind === \"thread\" &&\n              mentioned.has(member.handle) &&",
+      "replace": "              member.memberKind === \"system\" &&\n              mentioned.has(member.handle) &&"
+    },
+    {
+      "id": "author-exclusion-never-excludes",
+      "guard": "MentionWakeReactor/author-exclusion",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/Layers/MentionWakeReactor.ts",
+      "find": "                event.payload.authorRef.memberKind === \"thread\" &&\n                event.payload.authorRef.memberId === member.memberId",
+      "replace": "                false"
+    },
+    {
+      "id": "author-exclusion-by-id-alone",
+      "guard": "MentionWakeReactor/author-exclusion",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/Layers/MentionWakeReactor.ts",
+      "find": "                event.payload.authorRef.memberKind === \"thread\" &&\n                event.payload.authorRef.memberId === member.memberId",
+      "replace": "                event.payload.authorRef.memberId === member.memberId"
+    },
+    {
+      "id": "budget-reset-by-any-kind",
+      "guard": "MentionWakeReactor/resetIfHuman",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/Layers/MentionWakeReactor.ts",
+      "find": "    event.payload.authorRef.memberKind === \"human\"\n      ? budget.clear",
+      "replace": "    event.payload.authorRef.memberKind !== \"system\"\n      ? budget.clear"
+    },
+    {
+      "id": "budget-reset-never",
+      "guard": "MentionWakeReactor/resetIfHuman",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/Layers/MentionWakeReactor.ts",
+      "find": "    event.payload.authorRef.memberKind === \"human\"\n      ? budget.clear",
+      "replace": "    event.payload.authorRef.memberKind === \"system\"\n      ? budget.clear"
+    },
+    {
+      "id": "author-lookup-by-id-alone",
+      "guard": "commandInvariants/requireChannelAuthorIsMember",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      member.memberKind === input.authorRef.memberKind &&\n      member.memberId === input.authorRef.memberId,",
+      "replace": "      member.memberId === input.authorRef.memberId,"
+    },
+    {
+      "id": "author-lookup-refuses-own-kind",
+      "guard": "commandInvariants/requireChannelAuthorIsMember",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      member.memberKind === input.authorRef.memberKind &&\n      member.memberId === input.authorRef.memberId,",
+      "replace": "      member.memberKind !== input.authorRef.memberKind &&\n      member.memberId === input.authorRef.memberId,"
+    },
+    {
+      "id": "gateway-member-by-id-alone",
+      "guard": "channelGatewayLive/getChannelForMember",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "          candidate.memberKind === member.memberKind && candidate.memberId === member.memberId,",
+      "replace": "          candidate.memberId === member.memberId,"
+    },
+    {
+      "id": "gateway-member-refuses-own-kind",
+      "guard": "channelGatewayLive/getChannelForMember",
+      "axis": "wider",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "          candidate.memberKind === member.memberKind && candidate.memberId === member.memberId,",
+      "replace": "          candidate.memberKind !== member.memberKind && candidate.memberId === member.memberId,"
+    },
+    {
+      "id": "row-has-member-by-id-alone",
+      "guard": "channelShell/rowHasMember",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/channelShell.ts",
+      "find": "      candidate.memberKind === member.memberKind && candidate.memberId === member.memberId,",
+      "replace": "      candidate.memberId === member.memberId,"
+    },
+    {
+      "id": "row-has-member-refuses-own-kind",
+      "guard": "channelShell/rowHasMember",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/channelShell.ts",
+      "find": "      candidate.memberKind === member.memberKind && candidate.memberId === member.memberId,",
+      "replace": "      candidate.memberKind !== member.memberKind && candidate.memberId === member.memberId,"
+    },
+    {
+      "id": "removal-obliges-by-id-alone",
+      "guard": "ws/removalObligesThisConnection",
+      "axis": "inert",
+      "file": "apps/server/src/ws.ts",
+      "find": "            ref.memberKind === connectionMember.memberKind &&\n            ref.memberId === connectionMember.memberId,",
+      "replace": "            ref.memberId === connectionMember.memberId,"
+    },
+    {
+      "id": "removal-obliges-other-kind-only",
+      "guard": "ws/removalObligesThisConnection",
+      "axis": "wider",
+      "file": "apps/server/src/ws.ts",
+      "find": "            ref.memberKind === connectionMember.memberKind &&\n            ref.memberId === connectionMember.memberId,",
+      "replace": "            ref.memberKind !== connectionMember.memberKind &&\n            ref.memberId === connectionMember.memberId,"
+    },
+    {
+      "id": "list-for-member-by-id-alone",
+      "guard": "ProjectionChannels/listChannelsForMember",
+      "axis": "inert",
+      "file": "apps/server/src/persistence/Layers/ProjectionChannels.ts",
+      "find": "        WHERE m.member_kind = ${member.memberKind} AND m.member_id = ${member.memberId}",
+      "replace": "        WHERE m.member_id = ${member.memberId}"
+    },
+    {
+      "id": "list-for-member-refuses-own-kind",
+      "guard": "ProjectionChannels/listChannelsForMember",
+      "axis": "wider",
+      "file": "apps/server/src/persistence/Layers/ProjectionChannels.ts",
+      "find": "        WHERE m.member_kind = ${member.memberKind} AND m.member_id = ${member.memberId}",
+      "replace": "        WHERE m.member_kind != ${member.memberKind} AND m.member_id = ${member.memberId}"
+    }
+  ]
+}
