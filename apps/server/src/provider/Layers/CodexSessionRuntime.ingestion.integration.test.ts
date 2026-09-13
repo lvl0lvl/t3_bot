@@ -92,15 +92,24 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
     // input `t3_bot-a50` closed, with nothing that names it. The runtime may
     // brand a turn id only on a value the doors admitted: the route fields
     // read from a notification `refusedIds` passed, and the handlers that run
-    // after it. A response's turn id goes through `decodeTurnIdFromResponse`
-    // and is never `.make`d. An eleventh `TurnId.make(` is a merge landing
-    // outside the doors: route the value through `decodeTurnIdFromResponse`,
-    // or add a post-door site to the list below. Only code counts: a comment
-    // naming the call is not a brand site. The pin sees the literal
-    // `TurnId.make(` only: a cast `as TurnId`, an aliased or destructured
+    // after it. An eleventh `TurnId.make(` is a merge landing outside the
+    // doors, and where the id goes picks the resolution: a response id that
+    // stays inside T3 goes through `decodeTurnIdFromResponse`; one the
+    // runtime sends back to the app-server (upstream's `thread/revert`
+    // `beforeTurnId`) is checked with the decoder and branded raw, the door
+    // pattern `refusedIds` already uses, and that site is added to the list
+    // below. A response's turn id is never `.make`d without that check: the
+    // decoder trims a padded " turn-1 " and `.make` carries it as sent, and
+    // the app-server must get its own string back. Only code counts: a
+    // full-line `//`, `*`, or single `/* … */` comment naming the call is not
+    // a brand site; a same-line comment after code or after another comment,
+    // and a string literal, still red the pin and are reworded, not listed.
+    // The pin sees the literal `TurnId.make(` (and `TurnId?.make(`,
+    // `TurnId!.make(`) only: a cast `as TurnId`, an aliased or destructured
     // `make`, a `.call`/`.apply`/`.bind` on it, or a bracket access stays
-    // green (upstream writes none of these today; `vp fmt` normalises the
-    // whitespace forms into reach).
+    // green, and so does a same-string `.make` moved to another site: the pin
+    // sees which strings, in what order, not which line (upstream writes none
+    // of these today; `vp fmt` normalises the whitespace forms into reach).
     const source = NodeFS.readFileSync(
       NodePath.join(import.meta.dirname, "CodexSessionRuntime.ts"),
       "utf8",
