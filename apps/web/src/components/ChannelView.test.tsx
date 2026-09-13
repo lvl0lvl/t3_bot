@@ -55,6 +55,13 @@ const harness = vi.hoisted(() => ({
   asked: [] as Array<{ channelId: string; direction: string; cursor?: string }>,
   refreshes: 0,
   /**
+   * WHICH request each refresh re-read, in order. `refreshes` alone cannot tell the
+   * newest-page atom from the pager's: a live-arrival effect that refreshed the
+   * PAGER's request while the reader was paged up counted the same +1 and re-read
+   * an older page instead of the newest one.
+   */
+  refreshed: [] as Array<{ channelId: string; direction: string; cursor?: string }>,
+  /**
    * Channel A's `latestPostAt`, MUTABLE.
    *
    * The live-arrival effect fires on a CHANGE to this value, and the only fixture that
@@ -99,6 +106,7 @@ vi.mock("@effect/atom-react", async (importOriginal) => ({
     }
     const made = () => {
       harness.refreshes += 1;
+      harness.refreshed.push((atom as { __request: (typeof harness.asked)[number] }).__request);
     };
     harness.refreshers.set(key, made);
     return made;
@@ -306,6 +314,7 @@ describe("ChannelPostRegion", () => {
     harness.results.clear();
     harness.asked.length = 0;
     harness.refreshes = 0;
+    harness.refreshed.length = 0;
   };
 
   it("renders the page the server returned, in the server's order", async () => {
@@ -439,6 +448,15 @@ describe("ChannelPostRegion", () => {
       tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
     });
     expect(harness.refreshes).toBe(before + 1);
+    // AND IT IS THE NEWEST PAGE that was re-read, not the pager's. Two atoms are
+    // mounted here; a refresh of the one holding the cursor would count identically
+    // and re-read the older page.
+    expect(harness.refreshed[harness.refreshed.length - 1]).toEqual({
+      channelId: CHANNEL_A,
+      direction: "backward",
+      limit: 50,
+    });
+    expect(harness.refreshed[harness.refreshed.length - 1]).not.toHaveProperty("cursor");
   });
 
   it("offers the way back to a post that landed while the reader was up in history", async () => {
