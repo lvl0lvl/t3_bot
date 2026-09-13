@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
@@ -155,6 +156,17 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
             .pipe(
               Effect.tapError(() =>
                 cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
+              ),
+              // The engine squashes a defect in its worker and fails the
+              // caller's Deferred with it (`OrchestrationEngine.ts`,
+              // `Cause.squash(exit.cause) as OrchestrationDispatchError`), so
+              // a thrown TypeError reaches this door as an UNTAGGED failure
+              // the arms below cannot match. Without this it leaves as an
+              // empty 500 with no traceId and no error-level log. Before the
+              // arms, not after: a catch after them folds their 409 too.
+              Effect.catchIf(
+                (cause) => !Predicate.hasProperty(cause, "_tag"),
+                (cause) => failEnvironmentInternal("orchestration_dispatch_failed", cause),
               ),
               // EVERY TAG LISTED, as on `channelPosts` above. One `Effect.catch`
               // here answered a decider refusal - not a member, archived, a

@@ -2483,6 +2483,48 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("answers a squashed defect on the HTTP door as an internal error with a trace", () =>
+    Effect.gen(function* () {
+      // What the engine hands this door when its worker throws: `Cause.squash`
+      // of the Die, failed into the Deferred as a typed failure with no `_tag`.
+      // `catchTags` cannot match it; removing the `Effect.catch` backstop
+      // answers it as an empty 500 with no traceId.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () => Effect.fail(new TypeError("boom-untagged") as never),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "thread.settle",
+          commandId: "cmd-http-squashed-defect",
+          threadId: "thread-http-squashed-defect",
+        }),
+      });
+      const body = yield* responseJsonEffect<{
+        readonly _tag: string;
+        readonly reason: string;
+        readonly traceId: unknown;
+      } | null>(response);
+
+      assert.equal(response.status, 500);
+      // An empty body parses as null; the status alone is what the door
+      // answered without the backstop.
+      assert.notEqual(body, null);
+      assert.equal(body?._tag, "EnvironmentInternalError");
+      assert.equal(body?.reason, "orchestration_dispatch_failed");
+      assert.equal(typeof body?.traceId, "string");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("still answers a dispatch failure on the HTTP door as an internal error", () =>
     Effect.gen(function* () {
       // The other side of the split, so a fix that widened the refusal arm to
