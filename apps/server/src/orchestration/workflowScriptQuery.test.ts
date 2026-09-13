@@ -20,6 +20,11 @@ NodeFS.writeFileSync(nonJsPath, "export const meta = {};\n");
 const outside = NodePath.join(NodeOS.tmpdir(), "wf-outside.js");
 NodeFS.writeFileSync(outside, "evil\n");
 const link = NodePath.join(root, "sneaky.js");
+// A `.js` name INSIDE the root that resolves to the non-js file: the request
+// passes the extension check on the requested path and containment, so only
+// the extension check on the RESOLVED path can refuse it. A sweep found that
+// check deletable with every test green (`t3_bot-jaq`) — no fixture reached it.
+const disguised = NodePath.join(root, "disguised.js");
 // Planted only where the host allows it; the escape test is skipped
 // otherwise rather than passing vacuously on "not-found".
 if (symlinksSupported) {
@@ -27,6 +32,11 @@ if (symlinksSupported) {
   NodeFS.symlinkSync(outside, link);
   if (!NodeFS.lstatSync(link).isSymbolicLink()) {
     throw new Error("test setup: sneaky.js must be a symlink");
+  }
+  NodeFS.rmSync(disguised, { force: true });
+  NodeFS.symlinkSync(nonJsPath, disguised);
+  if (!NodeFS.lstatSync(disguised).isSymbolicLink()) {
+    throw new Error("test setup: disguised.js must be a symlink");
   }
 }
 
@@ -84,6 +94,13 @@ describe("readWorkflowScript containment", () => {
         if (sneaky._tag === "Success") {
           assert.equal(sneaky.value, "outside-root");
         }
+        // A `.js` link to a non-js file inside the root: contained, so the
+        // resolved-path extension check is the only refusal left. Drop it and
+        // the `.ts` is served.
+        const disguisedResult = yield* readWorkflowScript({ scriptPath: disguised }).pipe(
+          Effect.flip,
+        );
+        assert.equal(disguisedResult.reason, "not-js");
       }),
   );
 });
