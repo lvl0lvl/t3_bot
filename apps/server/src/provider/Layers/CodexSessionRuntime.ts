@@ -875,11 +875,10 @@ export function makeMemoryConsolidationNotificationFilter(): (
  * `turn.id` is "" made `sendTurn` succeed and then nothing - the throw ended
  * the client's reader loop and the runtime's own notification consumer, so no
  * later notification arrived, no error was logged, and the turn never
- * closed. Every handler below runs only
- * after this has checked the payload's ids with the brand's decoder and
- * dropped the message on refusal; the handlers then brand the RAW wire
- * string, not the decoded value, so a padded id (" turn-1 ") is admitted
- * here and carried untrimmed, by design.
+ * closed. Every handler below runs only after this has checked the payload's
+ * ids with the brand's decoder and dropped the message on refusal; the
+ * handlers then brand the RAW wire string, not the decoded value, so a padded
+ * id (" turn-1 ") is admitted here and carried untrimmed, by design.
  *
  * Read from the four field shapes the protocol uses (`turnId`, `itemId`,
  * `turn.id`, `item.id`) rather than from a per-method table, so a method that
@@ -1406,18 +1405,17 @@ export const makeCodexSessionRuntime = (
       method: string,
       refused: ReadonlyArray<RefusedId>,
       outcome: "the message was dropped" | "the request was answered with an error",
-    ) =>
-      emitEvent({
+    ) => {
+      const list = refused.map((entry) => `${entry.field} ${entry.preview}`).join(", ");
+      const which = refused.length === 1 ? "is not an id" : "are not ids";
+      return emitEvent({
         kind: "error",
         threadId: options.threadId,
         method: "codex/malformed-id",
-        message: `Codex sent ${method} with ${refused
-          .map((entry) => `${entry.field} ${entry.preview}`)
-          .join(
-            ", ",
-          )}, which ${refused.length === 1 ? "is not an id" : "are not ids"}; ${outcome}.`,
+        message: `Codex sent ${method} with ${list}, which ${which}; ${outcome}.`,
         payload: { method, refused },
       });
+    };
     const emitHandlerFailure = (method: string, cause: Cause.Cause<unknown>) => {
       const failure = Cause.squash(cause);
       return emitEvent({
