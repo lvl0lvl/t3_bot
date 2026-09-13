@@ -45,7 +45,10 @@ import {
   type ProjectionChannelPost,
 } from "../../../persistence/Services/ProjectionChannels.ts";
 import {
+  ChannelArchived,
   ChannelGateway,
+  ChannelMembershipRevoked,
+  ChannelMentionUnresolvable,
   ChannelStoreUnavailable,
   ChannelCursorUnusable,
   ChannelWriteConflict,
@@ -328,41 +331,41 @@ const make = Effect.gen(function* () {
           { issuer: { memberKind: "thread", memberId: input.threadId } },
         )
         .pipe(
-          Effect.mapError(
-            (error) =>
-              // TOLD APART BY TAG, not by prose. The dispatch error union has
-              // the decider's own refusals as one member, and a refusal is
-              // PERMANENT for the same input: a revoked membership, a mention
-              // that no longer resolves. Everything else is infrastructure and
-              // is worth trying again.
-              //
-              // An earlier version mapped all of it to retryable, on the
-              // argument that telling them apart would mean matching the
-              // decider's message text — true, and it stopped me looking for
-              // the discriminator that was already exported. The result was an
-              // agent told to "try again" on a post that could never land.
-              //
-              // THE DETAIL IS A CONSTANT, and the agent is told only WHETHER
-              // rather than why. That is the trade and it is deliberate: the
-              // decider's prose carried the internal channelId - "Author is not
-              // a member of channel 'channel-seniors-t'" - which the tool
-              // surface otherwise never hands an agent, since
-              // `PostResult.channel` and `ReadChannelResult.channel` are both
-              // the NAME. It also carried the phrase "Orchestration command
-              // invariant failed". An agent can act on `retryable`; it can act
-              // on neither of those.
-              //
-              // What it COSTS is real and should not be read as free: a
-              // membership revoked between the check and the write now reaches
-              // the agent as "the channel refused the post", permanently, with
-              // no reason. `t3_bot-dnz` is where the decider gains a
-              // machine-readable reason so this can say why without quoting
-              // English.
-              new ChannelWriteConflict({
-                detail: "the channel refused the post",
-                retryable: !isOrchestrationCommandRejection(error),
-              }),
-          ),
+          Effect.mapError((error) => {
+            // TOLD APART BY TAG, never by prose. The decider's refusal carries
+            // `reason` for exactly the causes this seam names, and the seam
+            // error for each is built from that field alone: the unresolved
+            // handles are the ones the decider echoes back, not parsed out of
+            // its sentence. Before `reason` existed this branch could only
+            // choose between matching the decider's English and forwarding it,
+            // and forwarding handed an agent the internal channelId and the
+            // phrase "Orchestration command invariant failed"; the fix then was
+            // one constant detail for every refusal, which left a revoked
+            // membership reaching the agent as "the channel refused the post"
+            // with no reason (`t3_bot-dnz`).
+            //
+            // A refusal with NO reason is still the decider's, still permanent
+            // for this input, and still told to the agent as WHETHER rather
+            // than why - the prose is a log line and never crosses this seam.
+            if (error._tag === "OrchestrationCommandInvariantError" && error.reason !== undefined) {
+              switch (error.reason._tag) {
+                case "author-not-member":
+                  return new ChannelMembershipRevoked();
+                case "mentions-unresolved":
+                  return new ChannelMentionUnresolvable({ handles: error.reason.handles });
+                case "channel-archived":
+                  return new ChannelArchived();
+              }
+            }
+            // Everything else: an untagged refusal is still permanent for this
+            // input, and infrastructure is worth trying again. `retryable` is
+            // decided by which, and a discriminator asserted in one direction
+            // only is satisfied by a constant.
+            return new ChannelWriteConflict({
+              detail: "the channel refused the post",
+              retryable: !isOrchestrationCommandRejection(error),
+            });
+          }),
         );
       return { postId, createdAt };
     });

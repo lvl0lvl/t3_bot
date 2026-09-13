@@ -425,24 +425,21 @@ export interface ChannelGatewayShape {
    * `channelId`, and rejects a post carrying a mention that does not resolve to
    * one — a post that silently drops a mention wakes nobody while looking sent.
    *
-   * THREE OF THE FIVE FAILURES BELOW HAVE NO LIVE PRODUCER, and a caller should
-   * not write handling for them yet. `ChannelGatewayLive` returns
-   * `ChannelStoreUnavailable` or `ChannelWriteConflict` and nothing else: the
-   * decider's refusals all arrive as one invariant error distinguished only by
-   * its prose, and matching on that prose is both fragile and the thing that
-   * leaked an internal channelId to an agent. `ChannelMembershipRevoked`,
-   * `ChannelMentionUnresolvable` and `ChannelArchived` are constructed by test
-   * fakes only.
+   * EVERY FAILURE BELOW HAS A LIVE PRODUCER, and `commsLive.integration.test`
+   * reaches each of the last three through the real decider by changing the
+   * channel between the toolkit's check and the write - which is the only way
+   * they arrive, since the toolkit pre-checks the same three things. The live
+   * layer classifies from the decider's `reason` tag, never from its prose:
+   * the prose names the channel by its internal id, and forwarding it once
+   * handed that id to an agent (`t3_bot-dnz`). A refusal the decider has not
+   * tagged arrives as `ChannelWriteConflict` with `retryable: false`.
    *
-   * They stay declared because the distinctions are the right ones and a caller
-   * will want them; `t3_bot-dnz` is giving the decider a machine-readable reason
-   * so the live layer can classify without reading English.
-   *
-   * ARCHIVED IS THE CALLER'S, not this seam's, until then: decide it from the
-   * `archivedAt` on the channel you already resolved membership on. Re-reading
-   * the row here would answer an existence question without a membership check,
-   * and "archived" tells a reader the channel EXISTS — which a non-member must
-   * not learn.
+   * ARCHIVED IS STILL THE CALLER'S FIRST: decide it from the `archivedAt` on the
+   * channel you already resolved membership on, and treat `ChannelArchived`
+   * from here as the race. The decider checks membership BEFORE archived, so a
+   * non-member never learns the channel exists this way; a caller re-reading
+   * the row itself would answer that existence question with no membership
+   * check.
    */
   readonly createPost: (
     input: CreatePostInput,

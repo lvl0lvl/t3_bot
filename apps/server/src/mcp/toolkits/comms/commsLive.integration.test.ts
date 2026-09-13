@@ -18,6 +18,7 @@ import {
   ChannelMemberHandle,
   CommandId,
   EnvironmentId,
+  type OrchestrationCommand,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -113,6 +114,47 @@ const dispatchFailsWith = (error: OrchestrationDispatchError) =>
             : real.dispatch(command, options),
       };
     }),
+  );
+
+/**
+ * The real engine, with one real command slipped in BETWEEN the toolkit's
+ * check and its write.
+ *
+ * The toolkit pre-checks membership, mentions and archived against the channel
+ * it read, so the aggregate's own refusals of a post are reachable only when
+ * the channel changes after that read and before the post lands. This is the
+ * one place that gap can be held open on purpose: the post's dispatch arrives
+ * here with the toolkit's checks already passed, the interposed command goes
+ * through the REAL engine first, and the post then meets the REAL decider over
+ * the changed channel. Unlike `dispatchFailsWith`, nothing about the refusal
+ * is injected - only its timing.
+ */
+const dispatchBeforePost = (interposed: OrchestrationCommand) =>
+  Layer.effect(
+    OrchestrationEngineService,
+    Effect.gen(function* () {
+      const real = yield* OrchestrationEngineService;
+      return {
+        ...real,
+        dispatch: (
+          command: Parameters<typeof real.dispatch>[0],
+          options?: Parameters<typeof real.dispatch>[1],
+        ) =>
+          command.type === "channel.post.create"
+            ? real
+                .dispatch(interposed, { issuer: ADMIN })
+                .pipe(Effect.andThen(real.dispatch(command, options)))
+            : real.dispatch(command, options),
+      };
+    }),
+  );
+
+/** The toolkit over the live gateway over a tapped engine; `seed` still sees the real one. */
+const racedBy = (interposed: OrchestrationCommand) =>
+  CommsToolkitHandlersLive.pipe(
+    Layer.provideMerge(ChannelGatewayLive),
+    Layer.provide(dispatchBeforePost(interposed)),
+    Layer.provideMerge(BaseLayer),
   );
 
 /**
@@ -714,6 +756,103 @@ describe("the comms toolkit on the live gateway", () => {
         );
         expect(infrastructure).toMatchObject({ _tag: "ChannelWriteConflict", retryable: true });
       }),
+    30_000,
+  );
+
+  it.effect(
+    "tells an agent its membership went, when it went between the check and the write",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        // THE RACE THE ERROR WAS WRITTEN FOR, run for real: the author is a
+        // member when the toolkit reads the channel and is not when the
+        // decider sees the post. Until `t3_bot-dnz` this reached the agent
+        // as "the channel refused the post" - the decider's refusal was one
+        // shape for every cause, and `CommsMembershipLostError` was produced
+        // by test fakes only.
+        const error = yield* call(
+          "comms_post",
+          { channel: "seniors", body: "am I still here" },
+          BOSS3,
+        ).pipe(Effect.flip);
+        expect(error).toMatchObject({ _tag: "CommsMembershipLostError" });
+        // WHAT THE AGENT READS carries neither the internal channelId nor the
+        // decider's phrasing: the reason crossed the seam as a tag, and the
+        // prose stayed a log line. #13 closed this and it stays closed.
+        const message = (error as { message: string }).message;
+        expect(message).not.toContain(CHANNEL_ID);
+        expect(message).not.toContain("Orchestration command invariant failed");
+      }).pipe(
+        Effect.provide(
+          racedBy({
+            type: "channel.member.remove",
+            commandId: CommandId.make("cmd-remove-author-raced"),
+            channelId: CHANNEL_ID,
+            handle: ChannelMemberHandle.make("boss3"),
+          }),
+        ),
+      ),
+    30_000,
+  );
+
+  it.effect(
+    "names the mention that stopped resolving between the check and the write",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        // The toolkit resolved "boss1" against a roster that still had them.
+        // The decider's list of what did NOT resolve is what the agent is
+        // shown - the same list, and only that list, the decider computed.
+        const error = yield* call(
+          "comms_post",
+          { channel: "seniors", body: "still there?", mentions: ["boss1"] },
+          BOSS3,
+        ).pipe(Effect.flip);
+        expect(error).toMatchObject({ _tag: "CommsMemberNotFoundError", handles: ["boss1"] });
+        const message = (error as { message: string }).message;
+        expect(message).not.toContain(CHANNEL_ID);
+        expect(message).not.toContain("Orchestration command invariant failed");
+      }).pipe(
+        Effect.provide(
+          racedBy({
+            type: "channel.member.remove",
+            commandId: CommandId.make("cmd-remove-mentioned-raced"),
+            channelId: CHANNEL_ID,
+            handle: ChannelMemberHandle.make("boss1"),
+          }),
+        ),
+      ),
+    30_000,
+  );
+
+  it.effect(
+    "says the channel was archived, by NAME, when it was archived between the check and the write",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        // The toolkit read `archivedAt: null`. The gateway's `ChannelArchived`
+        // exists for exactly this: the toolkit's own archived check has
+        // already passed, and the aggregate is the only thing left that can
+        // say so. The agent is told the channel's NAME, which it knows, and
+        // not its id, which it must not.
+        const error = yield* call(
+          "comms_post",
+          { channel: "seniors", body: "last word" },
+          BOSS3,
+        ).pipe(Effect.flip);
+        expect(error).toMatchObject({ _tag: "CommsChannelArchivedError", channel: "seniors" });
+        const message = (error as { message: string }).message;
+        expect(message).not.toContain(CHANNEL_ID);
+        expect(message).not.toContain("Orchestration command invariant failed");
+      }).pipe(
+        Effect.provide(
+          racedBy({
+            type: "channel.archive",
+            commandId: CommandId.make("cmd-archive-raced"),
+            channelId: CHANNEL_ID,
+          }),
+        ),
+      ),
     30_000,
   );
 
