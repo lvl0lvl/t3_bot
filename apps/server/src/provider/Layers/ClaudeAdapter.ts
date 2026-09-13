@@ -848,7 +848,10 @@ function asRuntimeRequestId(value: ApprovalRequestId): RuntimeRequestId {
 // A persisted resume cursor is a row the adapter wrote and an operator can
 // edit. Its threadId feeds a trace annotation only, and every other field
 // here is dropped when malformed; a refused thread id ("" or whitespace) is
-// dropped the same way instead of throwing in `.make` while the session starts.
+// dropped the same way instead of throwing in `.make` while the session
+// starts, and `startSession` logs the drop at debug. Dropping is the
+// decision (pm, 2026-09-13): a trace label is not worth a failed session
+// start, so do not promote a malformed cursor field to an error later.
 const decodeCursorThreadId = Schema.decodeUnknownOption(ThreadId);
 
 function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undefined {
@@ -4202,6 +4205,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const startedAt = yield* nowIso;
       const resumeState = readClaudeResumeState(input.resumeCursor);
+      const cursorThreadId = (input.resumeCursor as { threadId?: unknown } | undefined)?.threadId;
+      if (typeof cursorThreadId === "string" && resumeState?.threadId === undefined) {
+        yield* Effect.logDebug("claude.resume.cursor_thread_id_dropped", {
+          threadId: input.threadId,
+          cursorThreadId: cursorThreadId.slice(0, 64),
+          cursorThreadIdLength: cursorThreadId.length,
+        });
+      }
       const threadId = input.threadId;
       const existingResumeSessionId = resumeState?.resume;
       const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
