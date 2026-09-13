@@ -255,11 +255,10 @@ describe("describeChannelPostWakes", () => {
 
   it("says a turn is off the record for `unknown`, not that the wake failed or is old", () => {
     // Turn rows persist: an `unknown` means the thread was reverted past this turn
-    // or its id was recreated. The word has to be neither "failed" (it is not one)
-    // nor an age (it is not that either).
+    // or its id was recreated. `toBe` on the exact phrase is what refuses both
+    // "failed" and an age; a looser check would pass either.
     const [line] = describeChannelPostWakes([wake("t-1", "unknown")]) ?? [];
     expect(line?.ended).toBe("turn no longer on record");
-    expect(line?.ended).not.toContain("fail");
   });
 
   it("uses the reader's words for the two the projection spells differently", () => {
