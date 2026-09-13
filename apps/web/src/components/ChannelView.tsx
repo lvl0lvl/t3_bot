@@ -426,7 +426,7 @@ function ChannelPost({
  * (server: `listActiveThreadRows`); archived shells come from a separate
  * `archivedShellSnapshot` read this pane does not issue. So a woken thread that
  * was later archived — or deleted — is identified by its id here. Reading the
- * archived snapshot from the pane is a payload decision left to a follow-up bead.
+ * archived snapshot from the pane is a payload decision, held by `t3_bot-fis`.
  *
  * NOT A LINK. The turn id behind this line is provider-shaped (see
  * `describeChannelPostWakes`), so a control here would act on a turn the reader
