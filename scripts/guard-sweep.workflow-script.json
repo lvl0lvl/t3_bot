@@ -1,0 +1,53 @@
+{
+  "testCommand": [
+    "pnpm",
+    "exec",
+    "vp",
+    "test",
+    "run",
+    "apps/server/src/orchestration/workflowScriptQuery.test.ts"
+  ],
+  "setupCommand": ["pnpm", "install", "--frozen-lockfile"],
+  "mutations": [
+    {
+      "id": "request-gate-extension-dropped",
+      "guard": "readWorkflowScript/request-gate",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  if (!NodePath.isAbsolute(requested) || NodePath.extname(requested) !== \".js\") {",
+      "replace": "  if (!NodePath.isAbsolute(requested)) {"
+    },
+    {
+      "id": "request-gate-absolute-dropped",
+      "guard": "readWorkflowScript/request-gate",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  if (!NodePath.isAbsolute(requested) || NodePath.extname(requested) !== \".js\") {",
+      "replace": "  if (NodePath.extname(requested) !== \".js\") {"
+    },
+    {
+      "id": "request-gate-refuses-everything",
+      "guard": "readWorkflowScript/request-gate",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  if (!NodePath.isAbsolute(requested) || NodePath.extname(requested) !== \".js\") {",
+      "replace": "  if (true as boolean) {"
+    },
+    {
+      "id": "containment-dropped",
+      "guard": "readWorkflowScript/containment",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  if (resolved !== root && !resolved.startsWith(`${root}${NodePath.sep}`)) {",
+      "replace": "  if (false as boolean) {"
+    },
+    {
+      "id": "resolved-extension-dropped",
+      "guard": "readWorkflowScript/resolved-extension",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  if (NodePath.extname(resolved) !== \".js\") {",
+      "replace": "  if (false as boolean) {"
+    }
+  ]
+}
