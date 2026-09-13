@@ -62,6 +62,12 @@ const harness = vi.hoisted(() => ({
    */
   refreshed: [] as Array<{ channelId: string; direction: string; cursor?: string }>,
   /**
+   * How many times the region scrolled its sentinel into view. Without a node behind
+   * the ref every `scrollIntoView` was a no-op on `null`, so the scroll — the theft
+   * paging upward exists to prevent — could move above its cursor gate unseen.
+   */
+  scrolls: 0,
+  /**
    * Channel A's `latestPostAt`, MUTABLE.
    *
    * The live-arrival effect fires on a CHANGE to this value, and the only fixture that
@@ -311,8 +317,13 @@ describe("ChannelPostRegion", () => {
     let tree!: ReactTestRenderer;
     await act(async () => {
       tree = create(<ChannelView environmentId={ENVIRONMENT} channelId={channelId} />, {
-        // A node for every ref, so the region's sentinel exists to be observed.
-        createNodeMock: () => ({ scrollIntoView() {} }),
+        // A node for every ref, so the region's sentinel exists to be observed and
+        // its scroll to be counted.
+        createNodeMock: () => ({
+          scrollIntoView() {
+            harness.scrolls += 1;
+          },
+        }),
       });
     });
     return tree;
@@ -324,6 +335,7 @@ describe("ChannelPostRegion", () => {
     harness.asked.length = 0;
     harness.refreshes = 0;
     harness.refreshed.length = 0;
+    harness.scrolls = 0;
   };
 
   it("renders the page the server returned, in the server's order", async () => {
@@ -478,6 +490,7 @@ describe("ChannelPostRegion", () => {
     answer(CHANNEL_A, { posts: [post(1, "p-one", "one")], nextCursor: null });
     const { ChannelView } = await import("./ChannelView");
     const onNewest = await mount(CHANNEL_A);
+    const scrolledOnOpen = harness.scrolls;
     answer(CHANNEL_A, {
       posts: [post(1, "p-one", "one"), post(2, "p-two", "two")],
       nextCursor: null,
@@ -488,6 +501,8 @@ describe("ChannelPostRegion", () => {
     });
     expect(bodies(onNewest)).toEqual(["one", "two"]);
     expect(buttonLabels(onNewest)).not.toContain("New posts");
+    // Taken there, once, for the one post that landed.
+    expect(harness.scrolls).toBe(scrolledOnOpen + 1);
 
     reset();
     answer(CHANNEL_A, {
@@ -505,6 +520,7 @@ describe("ChannelPostRegion", () => {
       pager?.props.onClick?.();
     });
     expect(bodies(pagedUp)).toEqual(["one", "two"]);
+    const scrolledBeforeGrowth = harness.scrolls;
 
     // The newest page grows under a reader who is up in history.
     answer(CHANNEL_A, {
@@ -517,14 +533,19 @@ describe("ChannelPostRegion", () => {
     });
     expect(bodies(pagedUp)).toEqual(["one", "two", "three"]);
     expect(buttonLabels(pagedUp)).toContain("New posts");
+    // NOT SCROLLED. A scroll here is the theft: the reader is up in history and a new
+    // post pulled them to the present. A layout effect scrolling on every newest post,
+    // whatever the cursor, is one line away and this is the assertion that sees it.
+    expect(harness.scrolls).toBe(scrolledBeforeGrowth);
 
-    // Taking it is one click, and the offer is withdrawn once taken.
+    // Taking it is one click — the one scroll — and the offer is withdrawn once taken.
     const back = pagedUp.root
       .findAll((node) => node.type === "button")
       .find((button) => text(button).includes("New posts"));
     await act(async () => {
       back?.props.onClick?.();
     });
+    expect(harness.scrolls).toBe(scrolledBeforeGrowth + 1);
     expect(buttonLabels(pagedUp)).not.toContain("New posts");
   });
 
