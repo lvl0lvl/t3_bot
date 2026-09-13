@@ -225,17 +225,26 @@ const answer = (
 };
 
 /**
- * A read that FAILED, holding no previous success.
+ * A read that FAILED, holding no previous success unless one is given.
  *
  * `AsyncResult.value` of a Failure is `Option.map(previousSuccess, ...)`, so an absent
  * previous success is what makes `arrived` undefined — which is exactly the state in
- * which the old pager offered to fetch a page it had no cursor for.
+ * which the old pager offered to fetch a page it had no cursor for. A re-read that
+ * fails AFTER a page landed carries that page as its previous success, and the value
+ * stays on screen while the failure has to be said some other way.
  */
-const answerFailure = (channelId: ChannelId, cursor?: string) => {
+const answerFailure = (
+  channelId: ChannelId,
+  cursor?: string,
+  previous?: { posts: ReadonlyArray<unknown>; nextCursor: string | null },
+) => {
   harness.results.set(requestKey(channelId, cursor), {
     waiting: false,
     _tag: "Failure",
-    previousSuccess: Option.none(),
+    previousSuccess:
+      previous === undefined
+        ? Option.none()
+        : Option.some({ waiting: false, _tag: "Success", value: previous }),
   });
 };
 
@@ -604,6 +613,59 @@ describe("ChannelPostRegion", () => {
       vi.unstubAllGlobals();
       observers.length = 0;
     }
+  });
+
+  it("says the newest read failed while paged up, and retries THAT read", async () => {
+    // Two atoms are mounted once the reader pages up, and every failure branch read
+    // `page` — the pager's. The input: `latestPostAt` changes, the newest re-read
+    // fails holding its previous page. Nothing on screen said so; the next change
+    // was the only retry. The general notice is `t3_bot-ssz`'s; this is the one
+    // path that PR opens, in the slot the "New posts" control already owns.
+    reset();
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-two", "two")],
+      nextCursor: "channel-a:backward:1",
+    });
+    answer(
+      CHANNEL_A,
+      { posts: [post(1, "p-one", "one")], nextCursor: null },
+      "channel-a:backward:1",
+    );
+    const { ChannelView } = await import("./ChannelView");
+    const tree = await mount(CHANNEL_A);
+    const pager = tree.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      pager?.props.onClick?.();
+    });
+    expect(bodies(tree)).toEqual(["one", "two"]);
+
+    answerFailure(CHANNEL_A, undefined, {
+      posts: [post(2, "p-two", "two")],
+      nextCursor: "channel-a:backward:1",
+    });
+    harness.latestPostAtForA = "2026-01-01T00:06:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    // The posts stay; the failure is said; nothing claims there are new posts to go to.
+    expect(bodies(tree)).toEqual(["one", "two"]);
+    expect(buttonLabels(tree)).toContain("Newer posts didn’t load. Try again");
+    expect(buttonLabels(tree)).not.toContain("New posts");
+
+    // Pressing it re-issues the NEWEST read — no cursor — and not the pager's.
+    const before = harness.refreshes;
+    const retry = tree.root
+      .findAll((node) => node.type === "button")
+      .find((button) => text(button).includes("Newer posts"));
+    await act(async () => {
+      retry?.props.onClick?.();
+    });
+    expect(harness.refreshes).toBe(before + 1);
+    expect(harness.refreshed[harness.refreshed.length - 1]).toEqual({
+      channelId: CHANNEL_A,
+      direction: "backward",
+      limit: 50,
+    });
   });
 
   it("says a page failed, and the control retries it", async () => {

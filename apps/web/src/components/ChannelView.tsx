@@ -418,6 +418,13 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // arrival had stopped too, since `cursor` is no longer undefined. A channel that
   // silently stops mid-history with a control that lies about being able to continue.
   const pageFailed = AsyncResult.isFailure(page);
+  // THE NEWEST READ FAILS ON ITS OWN while the reader is paged up — it is a second
+  // atom there, and every other failure here is read over `page`. The input: a
+  // `latestPostAt` change after a page-up whose re-read fails. Nothing on screen
+  // said so, and the next `latestPostAt` change was the only retry. On the newest
+  // page the two atoms are one and `pageFailed` already covers it; the general
+  // failed-with-posts-on-screen notice is `t3_bot-ssz`'s.
+  const newestFailed = cursor !== undefined && AsyncResult.isFailure(newestPage);
   // RETURNED INSTEAD OF THE SCROLL CONTAINER, the way `PostsUnavailable` is.
   // Found by rendering twice: inside that container the empty state cannot
   // centre, because `justify-end` is what puts posts above the composer and
@@ -481,10 +488,14 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
           <div ref={bottom} />
         </div>
       </div>
-      {unseenBelow ? (
+      {newestFailed || unseenBelow ? (
         // THE WAY BACK, for a reader who paged up while the channel moved on. It
         // scrolls; it does not re-read or touch the cursor, because the posts are
         // already merged in and the pager's place in history is theirs to keep.
+        //
+        // THE SAME SLOT SAYS WHEN THE NEWEST READ FAILED, and the failure takes
+        // precedence: a page that did not arrive has no new posts to go to, and
+        // the click re-issues the NEWEST read, not the pager's.
         //
         // THE CHAT PILL'S RECIPE (`ChatView`'s "Scroll to end"): the app's floating
         // control is `glass`, `xs`, `rounded-full`, a chevron and a short label,
@@ -505,12 +516,22 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
             className="pointer-events-auto gap-1.5 rounded-full px-3 text-muted-foreground hover:text-foreground"
             onPointerDown={(event) => event.preventDefault()}
             onClick={() => {
+              if (newestFailed) {
+                refreshNewest();
+                return;
+              }
               bottom.current?.scrollIntoView({ block: "end" });
               setSeenNewestId(newestId);
             }}
           >
-            <ChevronDownIcon className="size-3.5" />
-            New posts
+            {newestFailed ? (
+              "Newer posts didn’t load. Try again"
+            ) : (
+              <>
+                <ChevronDownIcon className="size-3.5" />
+                New posts
+              </>
+            )}
           </Button>
         </div>
       ) : null}
