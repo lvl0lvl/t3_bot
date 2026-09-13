@@ -77,8 +77,8 @@ export const makeClientDispatch = (
  * NOT A SPREAD. `streamDomainEvents` is a getter that opens a fresh subscription on
  * every access (`Layers/OrchestrationEngine.ts`); `{ ...engine }` would read it
  * once at the hand-off and every consumer of the copy would share that one
- * subscription. Members are named one by one so that a member added to the shape
- * fails here at `tsc` rather than reaching a helper as `undefined`.
+ * subscription. The return annotation makes a member added to the shape a `tsc`
+ * error here either way; naming the members is for the getter.
  */
 export const withClientDispatch = (
   engine: OrchestrationEngineShape,
