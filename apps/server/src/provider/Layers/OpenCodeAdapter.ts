@@ -503,6 +503,20 @@ const previewRefusedId = (id: unknown) => {
     ? text
     : `${text.slice(0, REFUSED_ID_PREVIEW_LENGTH)}… (${text.length} chars)`;
 };
+// A part id from the SDK (`part.id`, `partID`, `part.callID`) is outside
+// input that becomes a RuntimeItemId, the key of a timeline row. The
+// truthiness guard `buildEventBase` used to carry dropped "" before `.make`
+// could throw on it and let "  " through as a row keyed by whitespace; the
+// decoder refuses both, and a refused id is dropped the way "" always was:
+// the event goes out with no item and ingestion folds it into the turn's
+// assistant message. What passes is branded RAW, as with the turn id above:
+// the decoder trims, and the id is echoed back to OpenCode in tool and
+// question replies. A request id is NOT gated (`t3_bot-1n6`): it names an
+// approval the provider must get back byte-for-byte (#49's contract), no
+// server mints the shape the decoder would refuse, and `.make` admitting
+// whitespace is accepted there rather than answered with a refusal path
+// nothing but a test would ever exercise.
+const decodeRuntimeItemId = Schema.decodeUnknownOption(RuntimeItemId);
 const admitMessageTurnId = (id: string) =>
   Option.isNone(decodeMessageTurnId(id))
     ? Effect.fail(
@@ -1059,17 +1073,30 @@ export function makeOpenCodeAdapter(
       return `msg_${encodedTime}${random}`;
     });
     const buildEventBase = (input: EventBaseInput) =>
-      Effect.all({
-        eventId: randomUUIDv4.pipe(Effect.map(EventId.make)),
-        createdAt: input.createdAt === undefined ? nowIso : Effect.succeed(input.createdAt),
-      }).pipe(
-        Effect.map(({ eventId, createdAt }) => ({
+      Effect.gen(function* () {
+        const itemAdmitted =
+          input.itemId !== undefined && Option.isSome(decodeRuntimeItemId(input.itemId));
+        if (input.itemId !== undefined && !itemAdmitted) {
+          yield* Effect.logDebug("opencode.event.item_id_dropped", {
+            threadId: input.threadId,
+            itemId: input.itemId.slice(0, REFUSED_ID_PREVIEW_LENGTH),
+            itemIdLength: input.itemId.length,
+          });
+        }
+        const { eventId, createdAt } = yield* Effect.all({
+          eventId: randomUUIDv4.pipe(Effect.map(EventId.make)),
+          createdAt: input.createdAt === undefined ? nowIso : Effect.succeed(input.createdAt),
+        });
+        return {
           eventId,
           provider: PROVIDER,
           threadId: input.threadId,
           createdAt,
           ...(input.turnId ? { turnId: input.turnId } : {}),
-          ...(input.itemId ? { itemId: RuntimeItemId.make(input.itemId) } : {}),
+          ...(itemAdmitted ? { itemId: RuntimeItemId.make(input.itemId as string) } : {}),
+          // Carried raw by decision: the provider must get its own string
+          // back (#49), so a padded request id stays padded here and in the
+          // reply; `.make` admitting whitespace is accepted (`t3_bot-1n6`).
           ...(input.requestId ? { requestId: RuntimeRequestId.make(input.requestId) } : {}),
           ...(input.raw !== undefined
             ? {
@@ -1079,8 +1106,8 @@ export function makeOpenCodeAdapter(
                 },
               }
             : {}),
-        })),
-      );
+        };
+      });
 
     // Layer-level finalizer: when the adapter layer shuts down, stop every
     // session. Each session's `Scope.close` tears down its spawned OpenCode
