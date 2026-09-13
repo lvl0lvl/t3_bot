@@ -181,8 +181,16 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
                   failEnvironmentInternal("orchestration_dispatch_failed", cause),
                 OrchestrationCommandIdConflictError: (cause) =>
                   failEnvironmentInternal("orchestration_dispatch_failed", cause),
-                OrchestrationCommandPreviouslyRejectedError: (cause) =>
-                  failEnvironmentInternal("orchestration_dispatch_failed", cause),
+                // A retry of a refused commandId: the engine persisted the
+                // rejection's `message` in its receipt and replays it here
+                // (`OrchestrationEngine.ts`, `status: "rejected"`). Same
+                // situation as the first attempt, so the same 409; no tag is
+                // recoverable from a receipt, so none is sent.
+                OrchestrationCommandPreviouslyRejectedError: (error) =>
+                  failEnvironmentCommandRefused({
+                    commandType: normalizedCommand.type,
+                    message: error.message,
+                  }),
                 OrchestrationProjectorDecodeError: (cause) =>
                   failEnvironmentInternal("orchestration_dispatch_failed", cause),
                 OrchestrationListenerCallbackError: (cause) =>

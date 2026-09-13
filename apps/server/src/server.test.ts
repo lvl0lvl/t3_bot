@@ -126,6 +126,7 @@ import { ChannelPostWakeRepository } from "./persistence/Services/ChannelPostWak
 import { ProjectionTurnRepository } from "./persistence/Services/ProjectionTurns.ts";
 import {
   OrchestrationCommandInvariantError,
+  OrchestrationCommandPreviouslyRejectedError,
   OrchestrationListenerCallbackError,
   OrchestrationThreadSettleBlockedError,
 } from "./orchestration/Errors.ts";
@@ -2374,6 +2375,67 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(
         body.message,
         "This thread still needs attention. Resolve or interrupt it first, then try again.",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("answers a retry of a refused commandId on the HTTP door as the same refusal", () =>
+    Effect.gen(function* () {
+      // The engine persists a rejection's receipt and replays it as
+      // `OrchestrationCommandPreviouslyRejectedError` when the same commandId
+      // comes back (pinned in OrchestrationEngine.test.ts). Pointing that arm
+      // at the internal error made one refusal 409 on the first attempt and
+      // 500 on the retry; this stub is the engine's two answers in order.
+      const threadId = ThreadId.make("thread-http-settle-replay");
+      let attempts = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (command) => {
+              attempts += 1;
+              const first = new OrchestrationThreadSettleBlockedError({ threadId });
+              return attempts === 1
+                ? Effect.fail(first)
+                : Effect.fail(
+                    new OrchestrationCommandPreviouslyRejectedError({
+                      commandId: command.commandId,
+                      detail: first.message,
+                    }),
+                  );
+            },
+          },
+        },
+      });
+
+      const url = yield* getHttpServerUrl("/api/orchestration/dispatch");
+      const cookie = yield* getAuthenticatedSessionCookieHeader();
+      const dispatch = () =>
+        fetchEffect(url, {
+          method: "POST",
+          headers: { "content-type": "application/json", cookie },
+          body: jsonRequestBody({
+            type: "thread.settle",
+            commandId: "cmd-http-settle-replay",
+            threadId,
+          }),
+        });
+      const first = yield* dispatch();
+      const second = yield* dispatch();
+      const body = yield* responseJsonEffect<{
+        readonly _tag: string;
+        readonly commandType: string;
+        readonly refusal?: unknown;
+        readonly message: string;
+      }>(second);
+
+      assert.equal(first.status, 409);
+      assert.equal(second.status, 409);
+      assert.equal(body._tag, "EnvironmentCommandRefusedError");
+      assert.equal(body.commandType, "thread.settle");
+      assert.equal(body.refusal, undefined);
+      assert.equal(
+        body.message,
+        "Command previously rejected (cmd-http-settle-replay): This thread still needs attention. Resolve or interrupt it first, then try again.",
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
