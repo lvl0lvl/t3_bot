@@ -559,20 +559,25 @@ describe("nonNormalMutationPaths", () => {
 
   it("names a row whose path git would print without the `./`", () => {
     // The spelling that caused the false kill. `git status --porcelain` prints
-    // `src/thing.ts`, so a row spelled `./src/thing.ts` matches no keyed check here.
+    // `src/thing.ts`, so a row spelled `./src/thing.ts` is absent from the Set the
+    // setup-written guard asks, while git accepts that spelling everywhere else.
     expect(nonNormalMutationPaths([row("a", "./src/thing.ts")])).toEqual([
       { id: "a", file: "./src/thing.ts" },
     ]);
   });
 
-  it("names a `..` segment anywhere in the path, and an absolute path", () => {
+  it("names a `.` or `..` segment anywhere in the path, and an absolute path", () => {
+    // The single-dot segment is here because the pattern could be narrowed to `..` alone and
+    // still pass every other case, while `src/./thing.ts` is the same defect: porcelain prints
+    // `src/thing.ts` for it too.
     expect(
       nonNormalMutationPaths([
+        row("dot-inside", "src/./thing.ts"),
         row("dotdot-inside", "src/../src/thing.ts"),
         row("dotdot-leading", "../sibling/thing.ts"),
         row("absolute", "/etc/passwd"),
       ]).map((offender) => offender.id),
-    ).toEqual(["dotdot-inside", "dotdot-leading", "absolute"]);
+    ).toEqual(["dot-inside", "dotdot-inside", "dotdot-leading", "absolute"]);
   });
 
   it("ADMITS a dotfile path, which is what separates this from a leading-dot check", () => {
