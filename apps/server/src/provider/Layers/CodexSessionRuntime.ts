@@ -1382,20 +1382,6 @@ export const makeCodexSessionRuntime = (
         message: `codex handling of ${method} failed: ${Cause.squash(cause) instanceof Error ? (Cause.squash(cause) as Error).message : Cause.pretty(cause)}`,
         payload: { method, cause: Cause.pretty(cause) },
       });
-    const admitted = <A, E, R>(
-      method: string,
-      params: unknown,
-      handle: Effect.Effect<A, E, R>,
-    ): Effect.Effect<void, CodexErrors.CodexAppServerIdentifierGenerationError, R> => {
-      const refused = refusedIds(params);
-      if (refused.length > 0) {
-        return reportRefusedIds(method, refused);
-      }
-      return handle.pipe(
-        Effect.asVoid,
-        Effect.catchCause((cause) => reportHandlerFailure(method, cause)),
-      );
-    };
     const onRequest = <M extends CodexRpc.ServerRequestMethod>(
       method: M,
       handler: (
@@ -1433,15 +1419,24 @@ export const makeCodexSessionRuntime = (
           ),
         );
       });
+    // Registered with the client by `registerServerNotification`, not here: a
+    // second registration per method would run `refusedIds` twice.
+    const directNotificationHandlers = new Map<
+      CodexRpc.ServerNotificationMethod,
+      (payload: unknown) => Effect.Effect<void, CodexErrors.CodexAppServerError>
+    >();
     const onNotification = <M extends CodexRpc.ServerNotificationMethod>(
       method: M,
       handler: (
         payload: CodexRpc.ServerNotificationParamsByMethod[M],
       ) => Effect.Effect<void, CodexErrors.CodexAppServerError>,
     ) =>
-      client.handleServerNotification(method, (payload) =>
-        admitted(method, payload, handler(payload)),
-      );
+      Effect.sync(() => {
+        directNotificationHandlers.set(
+          method,
+          handler as (payload: unknown) => Effect.Effect<void, CodexErrors.CodexAppServerError>,
+        );
+      });
 
     const updateCollabChildMetadata = (
       agentThreadId: string,
@@ -2330,11 +2325,22 @@ export const makeCodexSessionRuntime = (
     );
 
     const registerServerNotification = <M extends CodexRpc.ServerNotificationMethod>(method: M) =>
-      onNotification(method, (params) =>
-        Queue.offer(serverNotifications, makeCodexServerNotification(method, params)).pipe(
+      client.handleServerNotification(method, (payload) => {
+        const refused = refusedIds(payload);
+        if (refused.length > 0) {
+          return reportRefusedIds(method, refused);
+        }
+        const direct = directNotificationHandlers.get(method);
+        // The handler is invoked only once the ids are admitted: an eager
+        // `.make` in its body would otherwise throw before the check ran.
+        return Effect.suspend(() => (direct ? direct(payload) : Effect.void)).pipe(
+          Effect.catchCause((cause) => reportHandlerFailure(method, cause)),
+          Effect.andThen(
+            Queue.offer(serverNotifications, makeCodexServerNotification(method, payload)),
+          ),
           Effect.asVoid,
-        ),
-      );
+        );
+      });
 
     yield* Effect.forEach(
       Object.values(

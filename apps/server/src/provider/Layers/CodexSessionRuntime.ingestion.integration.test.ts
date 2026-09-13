@@ -95,8 +95,9 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
       yield* runtime.sendTurn({ input: "an empty turn id follows" });
       const events = Array.from(yield* Fiber.join(collected));
 
-      const refusal = events.find((event) => event.method === "codex/malformed-id");
-      assert.isDefined(refusal, summarize(events[events.length - 1]!));
+      const refusals = events.filter((event) => event.method === "codex/malformed-id");
+      assert.equal(refusals.length, 1, events.map(summarize).join("\n"));
+      const refusal = refusals[0]!;
       assert.equal(refusal.kind, "error");
       assert.equal(refusal.provider, "codex");
       assert.include(refusal.message, "codex sent turn/started");
@@ -150,8 +151,9 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
       yield* runtime.sendTurn({ input: "an empty item id follows" });
       const events = Array.from(yield* Fiber.join(collected));
 
-      const refusal = events.find((event) => event.method === "codex/malformed-id");
-      assert.isDefined(refusal);
+      const refusals = events.filter((event) => event.method === "codex/malformed-id");
+      assert.equal(refusals.length, 1, events.map(summarize).join("\n"));
+      const refusal = refusals[0]!;
       assert.include(refusal.message, "codex sent item/agentMessage/delta");
       assert.include(refusal.message, 'itemId ""');
       assert.isFalse(events.some((event) => event.method === "item/agentMessage/delta"));
@@ -208,8 +210,9 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
         yield* runtime.sendTurn({ input: "an approval with an empty turn id follows" });
         const events = Array.from(yield* Fiber.join(collected));
 
-        const refusal = events.find((event) => event.method === "codex/malformed-id");
-        assert.isDefined(refusal);
+        const refusals = events.filter((event) => event.method === "codex/malformed-id");
+        assert.equal(refusals.length, 1, events.map(summarize).join("\n"));
+        const refusal = refusals[0]!;
         assert.include(refusal.message, "codex sent item/commandExecution/requestApproval");
         assert.include(refusal.message, 'turnId ""');
         // No approval was raised for the operator, and the app-server got an
