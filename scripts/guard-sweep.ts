@@ -1207,7 +1207,7 @@ export const guardSweepCommand = Command.make(
       if (nonNormal.length > 0) {
         return yield* new GuardSweepConfigError({
           detail:
-            `${nonNormal.length} mutation${nonNormal.length === 1 ? "" : "s"} name a path that is ` +
+            `${nonNormal.length} ${nonNormal.length === 1 ? "mutation names" : "mutations name"} a path that is ` +
             "not plain repo-relative, and this tool decides whether a row is measurable by " +
             "looking its file up in the output of `git status --porcelain`, which prints " +
             "`src/thing.ts`:\n  " +

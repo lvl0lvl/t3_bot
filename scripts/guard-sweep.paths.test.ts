@@ -119,6 +119,7 @@ describe("a path git would print differently is refused", () => {
         const output = `${done.stdout}${done.stderr}`;
         expect(done.status).not.toBe(0);
         expect(output).toContain("GuardSweepConfigError");
+        expect(output).toContain("1 mutation names a path");
         // NAMES THE ROW AND THE SPELLING, because the operator has to fix the config and the
         // only actionable thing is which row and what is wrong with it.
         expect(output).toContain("the-row");
