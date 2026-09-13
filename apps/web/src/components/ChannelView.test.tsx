@@ -263,12 +263,40 @@ const text = (node: ReactTestInstance): string =>
 const buttonLabels = (tree: ReactTestRenderer) =>
   tree.root.findAll((node) => node.type === "button").map(text);
 
+/**
+ * The observer the region puts on its bottom sentinel, replaced so a test can say
+ * "the sentinel is on screen": react-test-renderer has no layout, so nothing
+ * intersects anything unless a test reports it. After `lib/visibleAnimation.test.ts`.
+ * A test that installs it on `globalThis` removes it again — the others exercise the
+ * click alone, which is what the region does where there is no observer.
+ */
+const observers: TestIntersectionObserver[] = [];
+class TestIntersectionObserver {
+  constructor(private readonly callback: IntersectionObserverCallback) {
+    observers.push(this);
+  }
+
+  observe = vi.fn();
+  unobserve = vi.fn();
+  disconnect = vi.fn();
+
+  report(target: Element, isIntersecting: boolean) {
+    this.callback(
+      [{ target, isIntersecting } as IntersectionObserverEntry],
+      this as unknown as IntersectionObserver,
+    );
+  }
+}
+
 describe("ChannelPostRegion", () => {
   const mount = async (channelId: ChannelId) => {
     const { ChannelView } = await import("./ChannelView");
     let tree!: ReactTestRenderer;
     await act(async () => {
-      tree = create(<ChannelView environmentId={ENVIRONMENT} channelId={channelId} />);
+      tree = create(<ChannelView environmentId={ENVIRONMENT} channelId={channelId} />, {
+        // A node for every ref, so the region's sentinel exists to be observed.
+        createNodeMock: () => ({ scrollIntoView() {} }),
+      });
     });
     return tree;
   };
@@ -471,6 +499,53 @@ describe("ChannelPostRegion", () => {
       back?.props.onClick?.();
     });
     expect(buttonLabels(pagedUp)).not.toContain("New posts");
+  });
+
+  it("withdraws the offer when the reader reaches the newest post by hand", async () => {
+    // THE INPUT THAT DISTINGUISHES: a paged-up reader who wheels down to the newest post
+    // without clicking. Only the click and the layout effect marked a post seen, and the
+    // layout effect is gated on the cursor — so the control stayed lit over the post
+    // they were reading, a label saying "new" about something on screen.
+    reset();
+    vi.stubGlobal("IntersectionObserver", TestIntersectionObserver);
+    try {
+      answer(CHANNEL_A, {
+        posts: [post(2, "p-two", "two")],
+        nextCursor: "channel-a:backward:1",
+      });
+      answer(
+        CHANNEL_A,
+        { posts: [post(1, "p-one", "one")], nextCursor: null },
+        "channel-a:backward:1",
+      );
+      const { ChannelView } = await import("./ChannelView");
+      const tree = await mount(CHANNEL_A);
+      const pager = tree.root.findAll((node) => node.type === "button")[0];
+      await act(async () => {
+        pager?.props.onClick?.();
+      });
+
+      answer(CHANNEL_A, {
+        posts: [post(2, "p-two", "two"), post(3, "p-three", "three")],
+        nextCursor: "channel-a:backward:1",
+      });
+      harness.latestPostAtForA = "2026-01-01T00:06:00.000Z";
+      await act(async () => {
+        tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+      });
+      expect(buttonLabels(tree)).toContain("New posts");
+
+      // The sentinel enters the scroller's viewport: no click.
+      const observer = observers[observers.length - 1]!;
+      const sentinel = observer.observe.mock.calls[0]?.[0] as Element;
+      await act(async () => {
+        observer.report(sentinel, true);
+      });
+      expect(buttonLabels(tree)).not.toContain("New posts");
+    } finally {
+      vi.unstubAllGlobals();
+      observers.length = 0;
+    }
   });
 
   it("says a page failed, and the control retries it", async () => {

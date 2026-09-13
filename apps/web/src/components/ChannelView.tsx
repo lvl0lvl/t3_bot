@@ -223,6 +223,7 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // The newest post the reader has been shown at the bottom; a newer one than this
   // is what lights the "New posts" control.
   const [seenNewestId, setSeenNewestId] = useState<string | undefined>(undefined);
+  const scroller = useRef<HTMLDivElement | null>(null);
   const bottom = useRef<HTMLDivElement | null>(null);
 
   const request = orchestrationEnvironment.channelPosts({
@@ -333,11 +334,52 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
     bottom.current?.scrollIntoView({ block: "end" });
     setSeenNewestId(newestId);
   }, [cursor, newestId]);
+  // SEEN WHEN THE SENTINEL COMES INTO VIEW, not only on the click. The input that
+  // distinguishes: a reader who paged up, then wheeled back down to the newest post
+  // by hand — the layout effect above is gated on the cursor, so nothing else
+  // marked it seen and the control stayed lit over the post they were reading.
+  //
+  // The id is read through a ref at callback time. The observer is built once per
+  // scroller mount, so a callback that closed over `newestId` would mark every
+  // later post seen with the id of the one on screen when it was built.
+  const newestIdRef = useRef(newestId);
+  useEffect(() => {
+    newestIdRef.current = newestId;
+  }, [newestId]);
+  // The two early returns below replace the scroller, sentinel included, and the
+  // first commit of an open can be one of them (`NoPostsYet` while `posts` is still
+  // `[]`) — an observer attached once on mount would then observe nothing.
+  const unreadable = AsyncResult.isFailure(page) && posts.length === 0;
+  const empty = posts.length === 0 && !page.waiting;
+  useEffect(() => {
+    if (unreadable || empty) {
+      return;
+    }
+    // react-test-renderer has no `IntersectionObserver`; the component tests that
+    // do not install one exercise the click alone.
+    if (typeof IntersectionObserver === "undefined") {
+      return;
+    }
+    const sentinel = bottom.current;
+    if (!sentinel) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setSeenNewestId(newestIdRef.current);
+        }
+      },
+      { root: scroller.current },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [unreadable, empty]);
   // Not gated on the cursor a second time: on the newest page the effect above marks
   // every newest post seen before paint, so the id comparison alone is the fact.
   const unseenBelow = newestId !== undefined && newestId !== seenNewestId;
 
-  if (AsyncResult.isFailure(page) && posts.length === 0) {
+  if (unreadable) {
     return <PostsUnavailable onRetry={refresh} />;
   }
   // A FAILURE WITH POSTS ALREADY ON SCREEN IS NOT THE SAME STATE, and it used to be
@@ -354,7 +396,7 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // `flex-1` on a child of the inner wrapper has nothing to stretch against. It
   // first arrived pinned to the composer, then 100px higher, and neither read as
   // an empty state. The container is right for posts and wrong for this.
-  if (posts.length === 0 && !page.waiting) {
+  if (empty) {
     return <NoPostsYet />;
   }
 
@@ -375,7 +417,7 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
     // the pane, so the property could not be exercised. `mt-auto` gives the same
     // bottom alignment for a short list and leaves the overflow scrollable.
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div ref={scroller} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <div className="mt-auto flex flex-col gap-3 p-4">
           {moreAbove ? (
             // ONE CONTROL, whose action is what the reader needs next. On a failure it
