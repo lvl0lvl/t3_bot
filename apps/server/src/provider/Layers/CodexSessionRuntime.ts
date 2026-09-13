@@ -1415,14 +1415,16 @@ export const makeCodexSessionRuntime = (
           )}, which ${refused.length === 1 ? "is not an id" : "are not ids"}; ${outcome}.`,
         payload: { method, refused },
       });
-    const reportHandlerFailure = (method: string, cause: Cause.Cause<unknown>) =>
-      emitEvent({
+    const reportHandlerFailure = (method: string, cause: Cause.Cause<unknown>) => {
+      const failure = Cause.squash(cause);
+      return emitEvent({
         kind: "error",
         threadId: options.threadId,
         method: "codex/handler-failed",
-        message: `codex handling of ${method} failed: ${Cause.squash(cause) instanceof Error ? (Cause.squash(cause) as Error).message : Cause.pretty(cause)}`,
+        message: `codex handling of ${method} failed: ${failure instanceof Error ? failure.message : Cause.pretty(cause)}`,
         payload: { method, cause: Cause.pretty(cause) },
       });
+    };
     const onRequest = <M extends CodexRpc.ServerRequestMethod>(
       method: M,
       handler: (
