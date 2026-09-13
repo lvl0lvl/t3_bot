@@ -14,14 +14,17 @@
  * call-site count that produced the defect; a door that dispatches THROUGH this
  * helper cannot forget.
  *
- * WHAT THIS DOES NOT COVER is a door that hands the engine service itself to a
- * helper. `ws.ts` provides `OrchestrationEngineService` to `importRecentAgentThreads`
- * (the `agentSessionsImport` RPC: `thread.create`, `thread.history.import`) and to
+ * A DOOR THAT HANDS THE ENGINE SERVICE TO A HELPER is a door too. `ws.ts` provides
+ * `OrchestrationEngineService` to `importRecentAgentThreads` (the
+ * `agentSessionsImport` RPC: `thread.create`, `thread.history.import`) and to
  * `linkCreatedPullRequest` (the `gitRunStackedAction` RPC: `thread.pull-request.link`),
- * and both dispatch bare — no issuer, no origin, and no `dispatch` at the door to
- * see. Neither command has an issuer invariant today, so nothing refuses; the first
- * to grow one is refused inside that helper. Rewiring both through this helper is
- * `t3_bot-y7q`.
+ * and with the raw engine both dispatched bare — no issuer, no origin, and no
+ * `dispatch` at the door to see; the absence sat at a `provideService`. What those
+ * RPCs provide now is `withClientDispatch`: the same service with its `dispatch`
+ * replaced by the door's bound one, so a helper cannot dispatch as anyone but the
+ * connection's operator. The input that breaks a raw hand-off: the first of those
+ * commands to grow an issuer invariant, refused inside the helper with nothing at
+ * the door to point at.
  *
  * THE STAMP IS UNCONDITIONAL. `requireCommandIssuer` ignores the field for every
  * command that has no issuer invariant, so stamping only channel commands would make
@@ -64,3 +67,28 @@ export const makeClientDispatch = (
       issuer,
     });
 };
+
+/**
+ * The engine as a door hands it to a helper: every member the helper could reach,
+ * with `dispatch` replaced by the door's bound one.
+ *
+ * NOT A SPREAD. `streamDomainEvents` is a getter that opens a fresh subscription on
+ * every access (`Layers/OrchestrationEngine.ts`); `{ ...engine }` would read it
+ * once at the hand-off and every consumer of the copy would share that one
+ * subscription. Members are named one by one so that a member added to the shape
+ * fails here at `tsc` rather than reaching a helper as `undefined`.
+ */
+export const withClientDispatch = (
+  engine: OrchestrationEngineShape,
+  dispatch: ClientDispatch,
+): OrchestrationEngineShape => ({
+  readEvents: engine.readEvents,
+  readThreadEvents: engine.readThreadEvents,
+  getThreadReplayStats: engine.getThreadReplayStats,
+  dispatch,
+  subscribeDomainEvents: engine.subscribeDomainEvents,
+  get streamDomainEvents() {
+    return engine.streamDomainEvents;
+  },
+  latestSequence: engine.latestSequence,
+});

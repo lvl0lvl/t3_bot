@@ -102,7 +102,7 @@ import { OrchestrationCommandInvariantError } from "./orchestration/Errors.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
 import { readChannelPostPage } from "./orchestration/channelPosts.ts";
-import { makeClientDispatch } from "./orchestration/clientDispatch.ts";
+import { makeClientDispatch, withClientDispatch } from "./orchestration/clientDispatch.ts";
 import { rowHasMember, toChannelShell, withMemberChannels } from "./orchestration/channelShell.ts";
 
 /**
@@ -552,6 +552,11 @@ const makeWsRpcLayer = (
         orchestrationEngine,
         hasClientOrigin ? clientOrigin : undefined,
       );
+      // For the RPCs that hand a helper the engine service rather than a
+      // dispatch: the same service, dispatching as this connection. A helper
+      // given the raw engine dispatched with no issuer and no origin, and the
+      // omission was invisible at the door.
+      const clientEngine = withClientDispatch(orchestrationEngine, dispatchFromClient);
       const recordClientCommandAnalytics = (command: OrchestrationCommand) => {
         switch (command.type) {
           case "thread.create":
@@ -2867,10 +2872,7 @@ const makeWsRpcLayer = (
             WS_METHODS.agentSessionsImport,
             importRecentAgentThreads(input).pipe(
               Effect.provideService(AgentSessionScanner.AgentSessionScanner, agentSessionScanner),
-              Effect.provideService(
-                OrchestrationEngine.OrchestrationEngineService,
-                orchestrationEngine,
-              ),
+              Effect.provideService(OrchestrationEngine.OrchestrationEngineService, clientEngine),
               Effect.provideService(
                 ProjectionSnapshotQuery.ProjectionSnapshotQuery,
                 projectionSnapshotQuery,
@@ -3013,7 +3015,7 @@ const makeWsRpcLayer = (
                           }).pipe(
                             Effect.provideService(
                               OrchestrationEngine.OrchestrationEngineService,
-                              orchestrationEngine,
+                              clientEngine,
                             ),
                             Effect.provideService(
                               ProjectionSnapshotQuery.ProjectionSnapshotQuery,

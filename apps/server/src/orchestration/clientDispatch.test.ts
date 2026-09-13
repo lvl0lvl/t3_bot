@@ -6,8 +6,9 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 
-import { makeClientDispatch } from "./clientDispatch.ts";
+import { makeClientDispatch, withClientDispatch } from "./clientDispatch.ts";
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
 
 /**
@@ -74,6 +75,37 @@ describe("makeClientDispatch", () => {
       // (TS2379 on `{ origin, issuer }`), so the key set asserted by name is
       // the runtime pin of the same shape.
       expect(Object.keys(calls[1]!.options as object)).toEqual(["issuer"]);
+    }),
+  );
+
+  it.effect("hands a helper the same engine, dispatching as the door", () =>
+    Effect.gen(function* () {
+      // THE INPUT THAT BREAKS A SPREAD: `streamDomainEvents` is a getter that
+      // opens a fresh subscription per access. Counted here; `{ ...engine }`
+      // reads it once at the hand-off and the count stays at 1.
+      let streamReads = 0;
+      const { calls, engine: recorder } = recording();
+      const engine: OrchestrationEngineShape = {
+        ...recorder,
+        readEvents: () => Stream.empty,
+        readThreadEvents: () => Stream.empty,
+        getThreadReplayStats: () => Effect.die("unused"),
+        subscribeDomainEvents: Effect.succeed(Stream.empty),
+        get streamDomainEvents() {
+          streamReads += 1;
+          return Stream.empty;
+        },
+        latestSequence: Effect.succeed(0),
+      };
+      const handed = withClientDispatch(engine, makeClientDispatch(engine));
+      yield* handed.dispatch(command);
+      expect(calls.map((call) => call.options)).toEqual([
+        { issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID } },
+      ]);
+      void handed.streamDomainEvents;
+      void handed.streamDomainEvents;
+      expect(streamReads).toBe(2);
+      expect(yield* handed.latestSequence).toBe(0);
     }),
   );
 });
