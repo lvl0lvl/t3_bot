@@ -403,18 +403,21 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // `memberId` alone would refuse this, and this is exactly the roster
       // `requireChannelAuthorIsMember` compares both fields for, the one
       // `t3_bot-46h` was filed about, and the shape three fixtures in this tree
-      // depend on. Whether a channel may hold it at all is `t3_bot-7iw` and is
-      // not decided here — so this test is what stops that decision being made
-      // by accident.
+      // depend on. Whether a channel may hold it at all was `t3_bot-7iw`, decided
+      // at `thread.create` (`requireThreadIdIsNoHuman`), not here:
+      // `channel.member.add` deliberately still admits the pair, so a roster a
+      // database written before 7iw holds can still be completed — and this test
+      // is what pins that, so the decision is not remade here by accident.
       //
       // THE SHARED COLLISION (`collidingRoster.ts`), not a local spelling of it —
       // this was the eighth, and collapsing it is what `t3_bot-46h` closed.
       //
       // TAKEN MID-ORDERING, after step 2 and before step 3, because step 3 being
-      // ADMITTED is the whole subject: the human is seated while no thread carries
-      // the id, the thread is created, and this is the add that follows. So the
-      // roster here holds the human half only and the test adds the thread half
-      // itself. `collidingReadModel` is the state AFTER step 3, which is why it is
+      // ADMITTED is the whole subject: the human is seated and a thread carries
+      // the id — a replay state now, the one a database written before 7iw holds
+      // — and step 3 is the add that follows it. So the roster here holds the
+      // human half only and the test adds the thread half itself.
+      // `collidingReadModel` is the state AFTER step 3, which is why it is
       // narrowed rather than used as-is; both halves and the id they share still
       // come from the module.
       const afterStepTwo = collidingReadModel({ now: NOW, first: "human" });
