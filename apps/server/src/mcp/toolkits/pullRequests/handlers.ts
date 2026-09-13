@@ -19,10 +19,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
-import type {
-  OrchestrationCommandInvariantError,
-  OrchestrationDispatchError,
-} from "../../../orchestration/Errors.ts";
+import type { OrchestrationDispatchError } from "../../../orchestration/Errors.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -191,12 +188,10 @@ const make = Effect.gen(function* () {
    */
   const refusedAs =
     <A>(tag: CommandInvariantRefusal["_tag"], answer: A) =>
-    <R>(
-      effect: Effect.Effect<A, OrchestrationDispatchError, R>,
-    ): Effect.Effect<A, OrchestrationDispatchError, R> =>
+    <R>(effect: Effect.Effect<A, OrchestrationDispatchError, R>) =>
       Effect.catchIf(
         effect,
-        (error): error is OrchestrationCommandInvariantError =>
+        (error) =>
           error._tag === "OrchestrationCommandInvariantError" && error.reason?._tag === tag,
         () => Effect.succeed(answer),
       );
