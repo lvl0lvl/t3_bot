@@ -30,11 +30,14 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as Tracer from "effect/Tracer";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -6096,6 +6099,88 @@ describe("ClaudeAdapterLive", () => {
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("starts a session whose resume cursor carries a thread id the brand refuses", () => {
+    // The cursor is a persisted row an operator can edit. Its threadId feeds
+    // only the `claude.resume.thread_id` span attribute. "  " is admitted by
+    // ThreadId.make and refused by decode: the one input whose behaviour the
+    // gate changes, so it runs first. "" is refused by both (the truthiness
+    // guard the gate replaced dropped it too); a guard that reaches `.make`
+    // with it dies here instead of failing an assertion. "claude-thread-abc"
+    // decodes; only the synthetic-id conjunct refuses it, and the drop log
+    // fires for it too: the value was dropped, whichever conjunct did it.
+    // "  t1  " decodes to "t1" and is branded raw: the span carries it padded.
+    const harness = makeHarness();
+    const spans: Array<Tracer.NativeSpan> = [];
+    const tracer = Tracer.make({
+      span: (options) => {
+        const span = new Tracer.NativeSpan(options);
+        spans.push(span);
+        return span;
+      },
+    });
+    const dropLogs: Array<Record<string, unknown>> = [];
+    const logger = Logger.make(({ message }) => {
+      if (Array.isArray(message) && message[0] === "claude.resume.cursor_thread_id_dropped") {
+        dropLogs.push(message[1] as Record<string, unknown>);
+      }
+    });
+    const lastStartSessionThreadIdAttribute = () =>
+      spans
+        .findLast((span) => span.name === "startSession")
+        ?.attributes.get("claude.resume.thread_id");
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      // One resume uuid per row: `getLastCreateQueryInput` is a last-write
+      // slot, so a shared uuid would let a row that never reached
+      // `createQuery` read the previous row's input.
+      const cursors = [
+        { threadId: "  ", resume: "550e8400-e29b-41d4-a716-446655440000", dropped: true },
+        { threadId: "", resume: "6ba7b810-9dad-11d1-80b4-00c04fd430c8", dropped: true },
+        {
+          threadId: "claude-thread-abc",
+          resume: "6ba7b811-9dad-11d1-80b4-00c04fd430c8",
+          dropped: true,
+        },
+        {
+          threadId: "resume-thread-1",
+          resume: "6ba7b812-9dad-11d1-80b4-00c04fd430c8",
+          dropped: false,
+        },
+        { threadId: "  t1  ", resume: "6ba7b813-9dad-11d1-80b4-00c04fd430c8", dropped: false },
+      ];
+      for (const { threadId, resume, dropped } of cursors) {
+        const dropsBefore = dropLogs.length;
+        const session = yield* adapter.startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          resumeCursor: { threadId, resume },
+          runtimeMode: "full-access",
+        });
+
+        assert.equal(session.threadId, RESUME_THREAD_ID);
+        assert.equal(harness.getLastCreateQueryInput()?.options.resume, resume);
+        assert.equal(lastStartSessionThreadIdAttribute(), dropped ? "" : threadId);
+        assert.equal(dropLogs.length, dropped ? dropsBefore + 1 : dropsBefore);
+        if (dropped) {
+          assert.equal(dropLogs.at(-1)?.cursorThreadIdLength, threadId.length);
+        }
+        yield* adapter.stopSession(RESUME_THREAD_ID);
+      }
+    }).pipe(
+      Effect.withTracer(tracer),
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(
+        Layer.mergeAll(
+          harness.layer,
+          Logger.layer([logger], { mergeWithExisting: false }),
+          Layer.succeed(References.MinimumLogLevel, "Debug"),
+        ),
+      ),
     );
   });
 

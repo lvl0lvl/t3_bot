@@ -73,6 +73,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -844,6 +845,18 @@ function asRuntimeRequestId(value: ApprovalRequestId): RuntimeRequestId {
   return RuntimeRequestId.make(value);
 }
 
+// A persisted resume cursor is a row the adapter wrote and an operator can
+// edit. Its threadId feeds a trace annotation only, and every other field
+// here is dropped when malformed; a refused thread id ("" or whitespace) is
+// dropped the same way instead of throwing in `.make` while the session
+// starts, and `startSession` logs the drop at debug. Dropping is the
+// decision (`t3_bot-qci`): a trace label is not worth a failed session
+// start, so do not promote a malformed cursor field to an error later.
+// An admitted id is branded raw, not as the decoded value: ThreadId trims
+// at decode (`t3_bot-py6`), so a padded id reaches the span padded. That
+// is the answer to the question #47 deferred here.
+const decodeCursorThreadId = Schema.decodeUnknownOption(ThreadId);
+
 function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undefined {
   if (!resumeCursor || typeof resumeCursor !== "object") {
     return undefined;
@@ -858,7 +871,9 @@ function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undef
 
   const threadIdCandidate = typeof cursor.threadId === "string" ? cursor.threadId : undefined;
   const threadId =
-    threadIdCandidate && !isSyntheticClaudeThreadId(threadIdCandidate)
+    threadIdCandidate !== undefined &&
+    !isSyntheticClaudeThreadId(threadIdCandidate) &&
+    Option.isSome(decodeCursorThreadId(threadIdCandidate))
       ? ThreadId.make(threadIdCandidate)
       : undefined;
   const resumeCandidate =
@@ -4193,6 +4208,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const startedAt = yield* nowIso;
       const resumeState = readClaudeResumeState(input.resumeCursor);
+      const cursorThreadId = (input.resumeCursor as { threadId?: unknown } | undefined)?.threadId;
+      if (typeof cursorThreadId === "string" && resumeState?.threadId === undefined) {
+        yield* Effect.logDebug("claude.resume.cursor_thread_id_dropped", {
+          threadId: input.threadId,
+          cursorThreadId: cursorThreadId.slice(0, 64),
+          cursorThreadIdLength: cursorThreadId.length,
+        });
+      }
       const threadId = input.threadId;
       const existingResumeSessionId = resumeState?.resume;
       const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
