@@ -230,4 +230,138 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
         yield* runtime.close;
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+
+  it.effect("delivers a thread-scoped hook/started whose turnId is null", () =>
+    Effect.gen(function* () {
+      // The admit side. `null` is the protocol's spelling of "no turn
+      // context" on the hook notifications; a door that reads it as a
+      // refused value drops every session-start hook.
+      yield* writeScript({
+        rootThreadId: ROOT,
+        recordRequests: false,
+        notifications: [
+          {
+            method: "hook/started",
+            params: {
+              threadId: ROOT,
+              turnId: null,
+              run: {
+                id: "hook-run-1",
+                displayOrder: 0,
+                entries: [],
+                eventName: "sessionStart",
+                executionMode: "sync",
+                handlerType: "command",
+                scope: "thread",
+                sourcePath: "/tmp/hooks.json",
+                startedAt: 1,
+                status: "running",
+              },
+            },
+          },
+          {
+            method: "turn/completed",
+            params: { threadId: ROOT, turn: { id: "turn-after", status: "completed", items: [] } },
+          },
+        ],
+      });
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-ingestion-null-hook-turn-id"),
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
+        runtimeMode: "full-access",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      });
+      const collected = yield* runtime.events.pipe(
+        Stream.takeUntil((event) => event.turnId === "turn-after"),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* runtime.start();
+      yield* runtime.sendTurn({ input: "a null turn id follows" });
+      const events = Array.from(yield* Fiber.join(collected));
+
+      assert.equal(
+        events.filter((event) => event.method === "codex/malformed-id").length,
+        0,
+        events.map(summarize).join("\n"),
+      );
+      assert.equal(events.filter((event) => event.method === "hook/started").length, 1);
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("raises an elicitation whose turnId is null and answers it with a result", () =>
+    Effect.gen(function* () {
+      // The request door's admit side. MCP models an elicitation as a
+      // standalone request, so its turnId is null outside a turn.
+      yield* writeScript({
+        rootThreadId: ROOT,
+        recordRequests: false,
+        holdTurnOpen: true,
+        completeTurnOnServerResponse: true,
+        notifications: [],
+        serverRequests: [
+          {
+            id: 7101,
+            method: "mcpServer/elicitation/request",
+            params: {
+              mode: "form",
+              message: "Allow ChatGPT to use Safari?",
+              serverName: "computer-use",
+              threadId: ROOT,
+              turnId: null,
+              _meta: { app_name: "Safari", persist: ["session", "always"] },
+              requestedSchema: {
+                type: "object",
+                properties: { approval: { type: "string", enum: ["once", "session", "always"] } },
+                required: ["approval"],
+              },
+            },
+          },
+        ],
+      });
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-ingestion-null-elicitation-turn-id"),
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
+        runtimeMode: "auto",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      });
+      const collected = yield* runtime.events.pipe(
+        Stream.tap((event) =>
+          event.kind === "request" && event.requestId !== undefined
+            ? runtime.respondToRequest(event.requestId, "accept")
+            : Effect.void,
+        ),
+        Stream.takeUntil((event) => event.method === "turn/completed"),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* runtime.start();
+      yield* runtime.sendTurn({ input: "an elicitation with a null turn id follows" });
+      const events = Array.from(yield* Fiber.join(collected));
+
+      assert.equal(
+        events.filter((event) => event.method === "codex/malformed-id").length,
+        0,
+        events.map(summarize).join("\n"),
+      );
+      const requests = events.filter((event) => event.kind === "request");
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0]?.method, "mcpServer/elicitation/request");
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      const recorded = JSON.parse(
+        NodeFS.readFileSync(`${scriptPath}.responses`, "utf8").trim().split("\n")[0]!,
+      ) as { id: number; result?: unknown; error?: unknown };
+      assert.equal(recorded.id, 7101);
+      assert.isUndefined(recorded.error);
+      assert.deepEqual(recorded.result, { action: "accept", content: { approval: "once" } });
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });

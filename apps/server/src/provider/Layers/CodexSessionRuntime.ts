@@ -881,7 +881,11 @@ export function makeMemoryConsolidationNotificationFilter(): (
  *
  * Read from the four field shapes the protocol uses (`turnId`, `itemId`,
  * `turn.id`, `item.id`) rather than from a per-method table, so a method that
- * grows one of those fields is covered without a second list to keep.
+ * grows one of those fields is covered without a second list to keep. Refused
+ * is a PRESENT value the brand refuses, never an absent one: the protocol
+ * spells "no turn context" as `turnId: null` on the hook notifications,
+ * `thread/goal/updated` and `mcpServer/elicitation/request`, and `itemId:
+ * null` on `thread/realtime/audioChunk`; those must pass.
  */
 const decodeTurnId = Schema.decodeUnknownOption(TurnId);
 const decodeProviderItemId = Schema.decodeUnknownOption(ProviderItemId);
@@ -901,7 +905,7 @@ function refusedIds(params: unknown): ReadonlyArray<RefusedId> {
     value: unknown,
     decode: (input: unknown) => Option.Option<unknown>,
   ) => {
-    if (value !== undefined && Option.isNone(decode(value))) {
+    if (value !== undefined && value !== null && Option.isNone(decode(value))) {
       refused.push({ field, value });
     }
   };
