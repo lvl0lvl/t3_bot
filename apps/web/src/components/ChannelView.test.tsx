@@ -676,6 +676,79 @@ describe("ChannelPostRegion", () => {
     }
   });
 
+  it("says a live re-read failed on the newest page, with posts on screen and no pager", async () => {
+    // THE BEAD'S FIXTURE (`t3_bot-ssz`): one successful page already on screen, then
+    // a failing refresh — and a channel whose history fits one page, so there is no
+    // pager and no "Earlier posts didn’t load" to lean on. Before this change the
+    // failure was read only while paged up; here the region rendered the old page
+    // unchanged and nothing said the read failed. A fixture with a pager agrees with
+    // both implementations, which is why this one has none.
+    reset();
+    answer(CHANNEL_A, { posts: [post(1, "p-only", "only")], nextCursor: null });
+    const { ChannelView } = await import("./ChannelView");
+    const tree = await mount(CHANNEL_A);
+    expect(bodies(tree)).toEqual(["only"]);
+    expect(buttonLabels(tree)).not.toContain("Earlier posts");
+
+    answerFailure(CHANNEL_A, undefined, {
+      posts: [post(1, "p-only", "only")],
+      nextCursor: null,
+    });
+    harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    // The post stays — this is not `PostsUnavailable`, which owns the no-posts case —
+    // and the failure is said in the slot, with nothing claiming new posts to go to.
+    expect(bodies(tree)).toEqual(["only"]);
+    expect(buttonLabels(tree)).toContain("Newer posts didn’t load. Try again");
+    expect(buttonLabels(tree)).not.toContain("New posts");
+    expect(buttonLabels(tree)).not.toContain("Earlier posts didn’t load. Try again");
+
+    // The retry re-issues the read that failed: the newest page, no cursor.
+    const before = harness.refreshes;
+    const retry = tree.root
+      .findAll((node) => node.type === "button")
+      .find((button) => text(button).includes("Newer posts"));
+    await act(async () => {
+      retry?.props.onClick?.();
+    });
+    expect(harness.refreshes).toBe(before + 1);
+    expect(harness.refreshed[harness.refreshed.length - 1]).toEqual({
+      channelId: CHANNEL_A,
+      direction: "backward",
+      limit: 50,
+    });
+  });
+
+  it("does not let the pager claim the newest read's failure as its own", async () => {
+    // THE OTHER HALF, and the fixture the first one cannot reach: a pager ON screen
+    // (history longer than a page) while the newest re-read fails. `page` is the
+    // newest atom here, so a pager reading its failure would say "Earlier posts
+    // didn’t load" about a read it never made — two controls, one of them lying.
+    // The slot names the failed read; the pager keeps offering what it can still do.
+    reset();
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-two", "two")],
+      nextCursor: "channel-a:backward:1",
+    });
+    const { ChannelView } = await import("./ChannelView");
+    const tree = await mount(CHANNEL_A);
+    expect(buttonLabels(tree)).toContain("Earlier posts");
+
+    answerFailure(CHANNEL_A, undefined, {
+      posts: [post(2, "p-two", "two")],
+      nextCursor: "channel-a:backward:1",
+    });
+    harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(buttonLabels(tree)).toContain("Newer posts didn’t load. Try again");
+    expect(buttonLabels(tree)).toContain("Earlier posts");
+    expect(buttonLabels(tree)).not.toContain("Earlier posts didn’t load. Try again");
+  });
+
   it("says the newest read failed while paged up, and retries THAT read", async () => {
     // Two atoms are mounted once the reader pages up, and every failure branch read
     // `page` — the pager's. The input: `latestPostAt` changes, the newest re-read

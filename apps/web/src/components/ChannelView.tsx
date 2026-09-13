@@ -418,14 +418,19 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // time live arrival was gated on the cursor as well, so nothing would have moved
   // again. A channel that silently stops mid-history with a control that lies about
   // being able to continue.
-  const pageFailed = AsyncResult.isFailure(page);
-  // THE NEWEST READ FAILS ON ITS OWN while the reader is paged up — it is a second
-  // atom there, and every other failure here is read over `page`. The input: a
-  // `latestPostAt` change after a page-up whose re-read fails. Nothing on screen
-  // said so, and the next `latestPostAt` change was the only retry. On the newest
-  // page the two atoms are one and `pageFailed` already covers it; the general
-  // failed-with-posts-on-screen notice is `t3_bot-ssz`'s.
-  const newestFailed = cursor !== undefined && AsyncResult.isFailure(newestPage);
+  //
+  // ONLY THE PAGER'S OWN READ. On the newest page `page` is the newest atom, and a
+  // failure there is the newest read's — the slot below says so with a retry that
+  // re-issues it. A pager that also read "Earlier posts didn’t load" for the same
+  // failure would name a read that was never made.
+  const pageFailed = cursor !== undefined && AsyncResult.isFailure(page);
+  // THE NEWEST READ FAILED, on whichever page the reader is. The input that made
+  // this unconditional: a channel whose history fits one page (no pager rendered)
+  // and a live re-read that fails — the pager's failed label was the only surface,
+  // and it was not on screen. `#48` surfaced the paged-up half and left this one
+  // to `t3_bot-ssz`. The general refusal (`PostsUnavailable`) still owns the
+  // no-posts case above.
+  const newestFailed = AsyncResult.isFailure(newestPage);
   // RETURNED INSTEAD OF THE SCROLL CONTAINER, the way `PostsUnavailable` is.
   // Found by rendering twice: inside that container the empty state cannot
   // centre, because `justify-end` is what puts posts above the composer and
