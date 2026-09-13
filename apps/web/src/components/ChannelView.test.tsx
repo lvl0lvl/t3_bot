@@ -259,6 +259,31 @@ const answerNothingYet = (channelId: ChannelId, cursor?: string) => {
   harness.results.set(requestKey(channelId, cursor), { waiting: true, _tag: "Initial" });
 };
 
+/**
+ * A read IN FLIGHT over an answer that already landed — a live re-read, or a retry.
+ *
+ * `Atom.swr` re-evaluates by returning `AsyncResult.waitingFrom(previous)`: the previous
+ * result copied with `waiting: true` and its `_tag` KEPT. So a re-read over a Success is
+ * a waiting Success still carrying the page, and a retry of a Failure is a waiting
+ * Failure still carrying its `previousSuccess`. The tag says what the LAST answer was;
+ * `waiting` says another is on its way. A mock that answered `Initial` here would put
+ * `arrived` at undefined and blank the screen a real atom keeps.
+ */
+const answerWaiting = (
+  channelId: ChannelId,
+  cursor: string | undefined,
+  previous: { posts: ReadonlyArray<unknown>; nextCursor: string | null },
+  over: "success" | "failure" = "success",
+) => {
+  const success = { waiting: false, _tag: "Success", value: previous };
+  harness.results.set(
+    requestKey(channelId, cursor),
+    over === "success"
+      ? { ...success, waiting: true }
+      : { waiting: true, _tag: "Failure", previousSuccess: Option.some(success) },
+  );
+};
+
 const bodies = (tree: ReactTestRenderer) =>
   tree.root
     .findAll((node) => node.type === "article")
@@ -747,6 +772,40 @@ describe("ChannelPostRegion", () => {
     expect(buttonLabels(tree)).toContain("Newer posts didn’t load. Try again");
     expect(buttonLabels(tree)).toContain("Earlier posts");
     expect(buttonLabels(tree)).not.toContain("Earlier posts didn’t load. Try again");
+  });
+
+  it("keeps offering the pager while the NEWEST read is in flight on the newest page", async () => {
+    // THE INPUT: a live re-read on the newest page with a pager on screen. `page` is the
+    // newest atom there, so a pager reading `page.waiting` said "Loading earlier posts…"
+    // and went disabled on every live re-read and every retry from the slot — a read it
+    // never made, the same claim its failure branch was stopped from making. A fixture
+    // with no pager, or one already paged up, agrees with both implementations.
+    reset();
+    const newest = { posts: [post(2, "p-two", "two")], nextCursor: "channel-a:backward:1" };
+    answer(CHANNEL_A, newest);
+    const { ChannelView } = await import("./ChannelView");
+    const tree = await mount(CHANNEL_A);
+    expect(buttonLabels(tree)).toContain("Earlier posts");
+
+    answerWaiting(CHANNEL_A, undefined, newest);
+    harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(buttonLabels(tree)).toContain("Earlier posts");
+    expect(buttonLabels(tree)).not.toContain("Loading earlier posts…");
+
+    // AND ITS OWN READ IS STILL ITS OWN. The click sets the cursor; while THAT page is
+    // in flight the pager says so. A gate that dropped the flight altogether would
+    // leave "Earlier posts" offered over a read already under way.
+    answerNothingYet(CHANNEL_A, "channel-a:backward:1");
+    const pager = tree.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      pager?.props.onClick?.();
+    });
+    expect(harness.asked.some((ask) => ask.cursor === "channel-a:backward:1")).toBe(true);
+    expect(buttonLabels(tree)).toContain("Loading earlier posts…");
+    expect(buttonLabels(tree)).not.toContain("Earlier posts");
   });
 
   it("says the newest read failed while paged up, and retries THAT read", async () => {

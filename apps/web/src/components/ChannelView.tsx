@@ -419,11 +419,16 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // again. A channel that silently stops mid-history with a control that lies about
   // being able to continue.
   //
-  // ONLY THE PAGER'S OWN READ. On the newest page `page` is the newest atom, and a
-  // failure there is the newest read's — the slot below says so with a retry that
-  // re-issues it. A pager that also read "Earlier posts didn’t load" for the same
-  // failure would name a read that was never made.
+  // ONLY THE PAGER'S OWN READ, its failure and its flight alike. On the newest page
+  // `page` is the newest atom, and a failure there is the newest read's — the slot
+  // below says so with a retry that re-issues it. A pager that also read "Earlier
+  // posts didn’t load" for the same failure would name a read that was never made.
+  // The input that put the flight under the same gate: a live re-read on the newest
+  // page with a pager on screen, which is `waiting` on that same atom — read off
+  // `page` alone, the pager said "Loading earlier posts…" and went disabled for
+  // every live re-read and every retry from the slot.
   const pageFailed = cursor !== undefined && AsyncResult.isFailure(page);
+  const pageWaiting = cursor !== undefined && page.waiting;
   // THE NEWEST READ FAILED, on whichever page the reader is. The input that made
   // this unconditional: a channel whose history fits one page (no pager rendered)
   // and a live re-read that fails — the pager's failed label was the only surface,
@@ -469,7 +474,7 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
               variant="ghost"
               size="sm"
               className="self-center"
-              disabled={page.waiting}
+              disabled={pageWaiting}
               onClick={() => {
                 if (pageFailed) {
                   refresh();
@@ -481,7 +486,7 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
                 }
               }}
             >
-              {page.waiting
+              {pageWaiting
                 ? "Loading earlier posts…"
                 : pageFailed
                   ? "Earlier posts didn’t load. Try again"
