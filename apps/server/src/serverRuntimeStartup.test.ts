@@ -502,6 +502,7 @@ it.effect("the hierarchy seed is pointed at the server's own workspace root", ()
     yield* ServerRuntimeStartup.seedHierarchyIfEnabled.pipe(
       Effect.provideService(ServerConfig.ServerConfig, {
         cwd: "/tmp/startup-project",
+        baseDir: "/tmp/startup-home",
         noSeedHierarchy: false,
       } as never),
       Effect.provideService(
