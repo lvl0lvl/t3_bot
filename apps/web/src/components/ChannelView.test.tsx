@@ -520,6 +520,9 @@ describe("ChannelPostRegion", () => {
       pager?.props.onClick?.();
     });
     expect(bodies(pagedUp)).toEqual(["one", "two"]);
+    // An OLDER page arriving is not a new post. A newest id read off the wrong end of
+    // the merged list lights the control here, over a reader who asked for history.
+    expect(buttonLabels(pagedUp)).not.toContain("New posts");
     const scrolledBeforeGrowth = harness.scrolls;
 
     // The newest page grows under a reader who is up in history.
@@ -533,6 +536,10 @@ describe("ChannelPostRegion", () => {
     });
     expect(bodies(pagedUp)).toEqual(["one", "two", "three"]);
     expect(buttonLabels(pagedUp)).toContain("New posts");
+    // AND NO PAGER: the newest page carries a cursor under a pager page that answered
+    // null. A newest merge that wrote `moreAbove` from its own cursor re-offers
+    // "Earlier posts" here, and the click no-ops on the pager page's null.
+    expect(buttonLabels(pagedUp)).not.toContain("Earlier posts");
     // NOT SCROLLED. A scroll here is the theft: the reader is up in history and a new
     // post pulled them to the present. A layout effect scrolling on every newest post,
     // whatever the cursor, is one line away and this is the assertion that sees it.
@@ -547,6 +554,19 @@ describe("ChannelPostRegion", () => {
     });
     expect(harness.scrolls).toBe(scrolledBeforeGrowth + 1);
     expect(buttonLabels(pagedUp)).not.toContain("New posts");
+
+    // `seen` IS A MARK, NOT A LATCH: one more post after the click is offered again. A
+    // "dismissed" flag set on the click hides every later post for the session.
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-two", "two"), post(3, "p-three", "three"), post(4, "p-four", "four")],
+      nextCursor: "channel-a:backward:1",
+    });
+    harness.latestPostAtForA = "2026-01-01T00:07:00.000Z";
+    await act(async () => {
+      pagedUp.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(bodies(pagedUp)).toEqual(["one", "two", "three", "four"]);
+    expect(buttonLabels(pagedUp)).toContain("New posts");
   });
 
   it("restarts at the newest page when it shares no post with what is held", async () => {
