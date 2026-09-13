@@ -406,7 +406,7 @@ function ChannelPost({
               key={wake.threadId}
               environmentId={environmentId}
               threadId={wake.threadId}
-              outcome={wake.outcome}
+              ended={wake.ended}
             />
           ))}
         </ul>
@@ -416,7 +416,8 @@ function ChannelPost({
 }
 
 /**
- * "Woke <thread> · <outcome>", as text. The thread is named by its shell title;
+ * "Woke <thread>", and " · <how it ended>" once the turn has settled, as text.
+ * The thread is named by its shell title;
  * a thread this client does not hold a shell for is named by its id, which is
  * still a fact and is the only one available.
  *
@@ -427,16 +428,17 @@ function ChannelPost({
 function ChannelPostWakeLine({
   environmentId,
   threadId,
-  outcome,
+  ended,
 }: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
-  readonly outcome: string;
+  readonly ended: string | null;
 }) {
   const shell = useThreadShell({ environmentId, threadId });
   return (
     <li className="wrap-break-word">
-      Woke <span className="text-foreground">{shell?.title ?? threadId}</span> · {outcome}
+      Woke <span className="text-foreground">{shell?.title ?? threadId}</span>
+      {ended === null ? null : ` · ${ended}`}
     </li>
   );
 }

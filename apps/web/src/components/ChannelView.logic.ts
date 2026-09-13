@@ -179,8 +179,8 @@ export function mergeChannelPosts<
 }
 
 /**
- * What a post's `wakes` say, as lines a reader can scan: which thread, and what
- * became of the turn — five words, one per wire outcome.
+ * What a post's `wakes` say, as lines a reader can scan: which thread, and — once
+ * the turn has settled — how it ended, one word per settled wire outcome.
  *
  * ABSENT IS NULL, NOT AN EMPTY LIST, and the pane must render NOTHING for it. Most
  * posts wake nobody, and the wire spells that as a missing field (an empty array is
@@ -197,17 +197,23 @@ export function mergeChannelPosts<
  * PAST TENSE, NEVER A CONTROL. The turn id a wake carries is provider-shaped: on
  * Claude a steered post has no turn of its own and reports the FOLDED turn's
  * outcome; on Codex the queued id is neither the active turn nor the one a cancel
- * acts on. So "running" here can describe a turn an operator is not looking at,
- * and an affordance that looks live would imply a cancellation the runtime ignores.
- * The lines are statements of what happened, and nothing on them is clickable.
+ * acts on. `running` is the one outcome that is not yet a fact, so it is not
+ * rendered: the wake is the past-tense fact, and the outcome becomes one when the
+ * turn settles. The pane re-reads its page only when a NEW post lands in the
+ * channel (`ChannelView.tsx`'s `latestPostAt` effect) or on reopen, so a settled
+ * outcome appears then and not the moment the turn ends (measured: after the turn
+ * row flipped, an open pane's line stayed byte-identical for 45 s; a reload showed
+ * the word). The lines are statements of what happened, and nothing on them is
+ * clickable.
  */
 export type ChannelPostWakeLine = {
   readonly threadId: OrchestrationChannelPostWake["threadId"];
-  readonly outcome: string;
+  /** How the turn ended; null while it is still running. */
+  readonly ended: string | null;
 };
 
-const WAKE_OUTCOME_WORDS: Record<OrchestrationChannelPostWake["outcome"], string> = {
-  running: "running",
+const WAKE_OUTCOME_WORDS: Record<OrchestrationChannelPostWake["outcome"], string | null> = {
+  running: null,
   completed: "completed",
   failed: "failed",
   cancelled: "cancelled",
@@ -222,6 +228,6 @@ export function describeChannelPostWakes(
   }
   return wakes.map((wake) => ({
     threadId: wake.threadId,
-    outcome: WAKE_OUTCOME_WORDS[wake.outcome],
+    ended: WAKE_OUTCOME_WORDS[wake.outcome],
   }));
 }

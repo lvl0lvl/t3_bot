@@ -220,9 +220,19 @@ describe("describeChannelPostWakes", () => {
     expect(describeChannelPostWakes(undefined)).toBeNull();
   });
 
-  it("names the thread and states the outcome for one wake", () => {
+  it("names the thread and says how the turn ended for one wake", () => {
     expect(describeChannelPostWakes([wake("t-1", "completed")])).toEqual([
-      { threadId: "t-1", outcome: "completed" },
+      { threadId: "t-1", ended: "completed" },
+    ]);
+  });
+
+  it("carries no ending for a wake whose turn is still running", () => {
+    // The input that distinguishes "render the word" from "render nothing": a
+    // map that spells `running` as "running" makes the pane state, as a fact, a
+    // thing that is not yet one — and the pane does not re-read when the turn
+    // settles, so the word would outlive the turn.
+    expect(describeChannelPostWakes([wake("t-1", "running")])).toEqual([
+      { threadId: "t-1", ended: null },
     ]);
   });
 
@@ -237,9 +247,9 @@ describe("describeChannelPostWakes", () => {
         wake("t-c", "completed"),
       ]),
     ).toEqual([
-      { threadId: "t-b", outcome: "running" },
-      { threadId: "t-a", outcome: "failed" },
-      { threadId: "t-c", outcome: "completed" },
+      { threadId: "t-b", ended: null },
+      { threadId: "t-a", ended: "failed" },
+      { threadId: "t-c", ended: "completed" },
     ]);
   });
 
@@ -248,16 +258,16 @@ describe("describeChannelPostWakes", () => {
     // or its id was recreated. The word has to be neither "failed" (it is not one)
     // nor an age (it is not that either).
     const [line] = describeChannelPostWakes([wake("t-1", "unknown")]) ?? [];
-    expect(line?.outcome).toBe("turn no longer on record");
-    expect(line?.outcome).not.toContain("fail");
+    expect(line?.ended).toBe("turn no longer on record");
+    expect(line?.ended).not.toContain("fail");
   });
 
   it("uses the reader's words for the two the projection spells differently", () => {
     // The wire already maps `error` → failed and `interrupted` → cancelled; the
     // pane must not reintroduce the projection's vocabulary.
     expect(describeChannelPostWakes([wake("t-1", "failed"), wake("t-2", "cancelled")])).toEqual([
-      { threadId: "t-1", outcome: "failed" },
-      { threadId: "t-2", outcome: "cancelled" },
+      { threadId: "t-1", ended: "failed" },
+      { threadId: "t-2", ended: "cancelled" },
     ]);
   });
 });
