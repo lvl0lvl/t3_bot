@@ -1211,7 +1211,9 @@ export const guardSweepCommand = Command.make(
             "not plain repo-relative, and this tool decides whether a row is measurable by " +
             "looking its file up in the output of `git status --porcelain`, which prints " +
             "`src/thing.ts`:\n  " +
-            nonNormal.map((row) => `${row.id}: ${row.file}`).join("\n  ") +
+            nonNormal
+              .map((row) => `${JSON.stringify(row.id)}: ${JSON.stringify(row.file)}`)
+              .join("\n  ") +
             "\nWrite it as git prints it — no leading `./`, no `.` or `..` segment, not absolute.",
         });
       }

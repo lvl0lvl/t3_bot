@@ -155,6 +155,24 @@ describe("a path git would print differently is refused", () => {
     }
   }, 60_000);
 
+  it("quotes the row it names, so a newline in the spelling cannot forge a second row", () => {
+    // The refusal prints `file` back at the operator. Rendered verbatim, this spelling printed
+    // as TWO rows under a count that said one, and the forged line was the one that looked
+    // like a real path.
+    const file = "./x\n  forged-row: src/forged.ts";
+    const { root, config, log } = scaffold([guardRow(file)]);
+    try {
+      const done = runSweep(root, config);
+      const output = `${done.stdout}${done.stderr}`;
+      expect(output).toContain("GuardSweepConfigError");
+      expect(output).toContain(`"the-row": ${JSON.stringify(file)}`);
+      expect(output).not.toContain("\n  forged-row: ");
+      expect(spawnsIn(log)).toBe(0);
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it("still sweeps the same file spelled as git prints it", () => {
     // THE CONTROL, and it is the half that keeps the refusal honest: the same file, the same
     // setupCommand, one spelling apart. Before this change this exited 3 with an accurate NOT RUN;
