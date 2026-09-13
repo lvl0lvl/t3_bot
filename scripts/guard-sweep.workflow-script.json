@@ -112,6 +112,14 @@
       "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
       "find": "      const truncated = stat.size > SCRIPT_BYTE_CAP;",
       "replace": "      const truncated = stat.size >= SCRIPT_BYTE_CAP;"
+    },
+    {
+      "id": "read-cap-dropped",
+      "guard": "readWorkflowScript/byte-cap",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "        const buffer = Buffer.alloc(Math.min(stat.size, SCRIPT_BYTE_CAP));",
+      "replace": "        const buffer = Buffer.alloc(stat.size);"
     }
   ]
 }
