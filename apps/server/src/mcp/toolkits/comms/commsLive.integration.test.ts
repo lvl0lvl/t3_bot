@@ -56,7 +56,12 @@ import {
 } from "../../../orchestration/testing/collidingRoster.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { refFromOperatorSession } from "@t3tools/contracts";
-import { ChannelGateway, type ChannelMemberRef, refFromMcpCredential } from "./channelGateway.ts";
+import {
+  type Channel,
+  ChannelGateway,
+  type ChannelMemberRef,
+  refFromMcpCredential,
+} from "./channelGateway.ts";
 import { ChannelGatewayLive } from "./channelGatewayLive.ts";
 import { CommsToolkitHandlersLive } from "./handlers.ts";
 import { CommsToolkit } from "./tools.ts";
@@ -65,6 +70,7 @@ const PROJECT_ID = ProjectId.make("project-comms-live");
 const BOSS3 = ThreadId.make("thread-boss3-live");
 const BOSS1 = ThreadId.make("thread-boss1-live");
 const CHANNEL_ID = ChannelId.make("channel-seniors-live");
+const decodeChannelId = Schema.decodeUnknownOption(ChannelId);
 const NOW = "2026-01-01T00:00:00.000Z";
 const ADMIN = { memberKind: "human", memberId: "human-walt" } as const;
 
@@ -1462,7 +1468,6 @@ describe("the comms toolkit on the live gateway", () => {
     "refuses a raw channel id at the type, so nothing can throw while being called",
     () =>
       Effect.gen(function* () {
-        yield* seed();
         const gateway = yield* ChannelGateway;
 
         // The seam used to take a bare string and `ChannelId.make` it, and a
@@ -1475,16 +1480,42 @@ describe("the comms toolkit on the live gateway", () => {
         // than pretending to.
         const raw: string = "not a channel id";
         // @ts-expect-error a bare string is not a ChannelId; decode at the door
-        const call = () => gateway.getPost(raw, "post-1");
-        expect(typeof call).toBe("function");
+        const post = () => gateway.getPost(raw, "post-1");
+        const create = () =>
+          gateway.createPost({
+            // @ts-expect-error a bare string is not a ChannelId; decode at the door
+            channelId: raw,
+            threadId: BOSS3,
+            body: "x",
+            mentions: [],
+            parentPostId: null,
+          });
+        const read = () =>
+          gateway.readPosts({
+            // @ts-expect-error a bare string is not a ChannelId; decode at the door
+            channelId: raw,
+            limit: 1,
+            direction: "forward",
+            cursor: undefined,
+          });
+        const channel: Channel = {
+          // @ts-expect-error a bare string is not a ChannelId; decode at the door
+          channelId: raw,
+          name: "seniors",
+          archivedAt: null,
+          members: [],
+        };
+        // Never called. The pin is the directive above each `channelId: raw`,
+        // one per typed site, since widening `CreatePostInput`, `ReadPostsInput`
+        // or `Channel` alone left `tsc` at 0 errors while only `getPost` was
+        // pinned. This line only keeps the four values used.
+        expect([post, create, read, channel]).toHaveLength(4);
 
         // The door's answer for the same string is a typed refusal - an
         // Option, not a throw - which is what a caller holding browser input
         // (`t3_bot-zuy`) does before it may reach this seam at all.
-        expect(Option.isNone(Schema.decodeUnknownOption(ChannelId)(raw))).toBe(true);
-        expect(Option.isSome(Schema.decodeUnknownOption(ChannelId)("channel-seniors-live"))).toBe(
-          true,
-        );
+        expect(Option.isNone(decodeChannelId(raw))).toBe(true);
+        expect(Option.isSome(decodeChannelId(CHANNEL_ID))).toBe(true);
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );
