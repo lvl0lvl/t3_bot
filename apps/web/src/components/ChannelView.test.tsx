@@ -1,7 +1,7 @@
 import { ChannelId, ChannelPostId, ChannelMemberHandle, EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { act } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 /**
@@ -173,6 +173,9 @@ vi.mock("../state/entities", () => ({
       : shell(CHANNEL_B, "bravo", "2026-01-01T00:00:02.000Z");
   },
   useChannelSupport: () => "supported",
+  /** The one thread this client holds a shell for; only `title` is read. */
+  useThreadShell: ({ threadId }: { readonly threadId: string }) =>
+    threadId === "thread-a" ? { title: "Alpha thread" } : null,
 }));
 
 const post = (sequence: number, id: string, body = id) => ({
@@ -250,6 +253,10 @@ const bodies = (tree: ReactTestRenderer) =>
  */
 const occurrences = (tree: ReactTestRenderer, phrase: string) =>
   JSON.stringify(tree.toJSON()).split(phrase).length - 1;
+
+/** A node's text as a reader sees it: its string children, in order, at every depth. */
+const text = (node: ReactTestInstance): string =>
+  node.children.map((child) => (typeof child === "string" ? child : text(child))).join("");
 
 const buttonLabels = (tree: ReactTestRenderer) =>
   tree.root
@@ -457,6 +464,45 @@ describe("ChannelPostRegion", () => {
     expect(bodies(tree)).toEqual(["one", "two"]);
     expect(buttonLabels(tree)).toContain("Earlier posts");
   });
+  it("says whom a post woke, and nothing at all under a post that woke nobody", async () => {
+    // `HIST-1`: the wake lines were reachable from no component test, so the
+    // block that renders them could be deleted with everything green. Three
+    // posts, because three implementations disagree on them: one with two
+    // wakes (a held shell, named by title and settled; an unheld one, named
+    // by id and still running, so no suffix), one with NO `wakes` key, and one
+    // whose turn row is gone.
+    //
+    // MUTANTS: deleting the `wakes === null ? null : <ul>…` block in `ChannelPost`
+    // reds the first and third assertions; rendering `[]` for an absent field
+    // (an empty `<ul>` under every post) reds the second.
+    reset();
+    answer(CHANNEL_A, {
+      posts: [
+        {
+          ...post(1, "p-woke-two", "woke two"),
+          wakes: [
+            { threadId: "thread-a", turnId: "turn-1", outcome: "completed" },
+            { threadId: "thread-b", turnId: "turn-2", outcome: "running" },
+          ],
+        },
+        post(2, "p-woke-none", "woke none"),
+        {
+          ...post(3, "p-woke-lost", "woke lost"),
+          wakes: [{ threadId: "thread-c", turnId: "turn-3", outcome: "unknown" }],
+        },
+      ],
+      nextCursor: null,
+    });
+    const tree = await mount(CHANNEL_A);
+    const [wokeTwo, wokeNone, wokeLost] = tree.root.findAll((node) => node.type === "article");
+    const lines = (article: ReactTestInstance | undefined) =>
+      (article?.findAll((node) => node.type === "li") ?? []).map(text);
+
+    expect(lines(wokeTwo)).toEqual(["Woke Alpha thread · completed", "Woke thread-b"]);
+    expect(wokeNone?.findAll((node) => node.type === "ul")).toEqual([]);
+    expect(lines(wokeLost)).toEqual(["Woke thread-c · turn no longer on record"]);
+  });
+
   it("says 'No posts yet' once, not in the header as well", async () => {
     // MEASURED IN A BROWSER AS TWO NODES in all four viewport/theme combinations:
     // the header's timestamp slot said "No posts yet" and the pane 60px below said

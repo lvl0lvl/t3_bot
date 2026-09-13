@@ -4,6 +4,7 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import type { ChannelSupport, EnvironmentChannelShell } from "@t3tools/client-runtime/state/shell";
+import type { OrchestrationChannelPostWake } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 /**
@@ -175,4 +176,66 @@ export function mergeChannelPosts<
   // channel. A tie-break here would be dead code hiding the fact that the old
   // comparator needed one.
   return [...byId.values()].sort((left, right) => left.sequence - right.sequence);
+}
+
+/**
+ * What a post's `wakes` say, as lines a reader can scan: which thread, and — once
+ * the turn has settled — how it ended, one word per settled wire outcome.
+ *
+ * ABSENT IS NULL, NOT AN EMPTY LIST, and the pane must render NOTHING for it. Most
+ * posts wake nobody, and the wire spells that as a missing field (an empty array is
+ * refused at the schema), so the rule most likely to rot is "a post that woke
+ * nobody looks exactly as it did before this existed". Returning `[]` would tempt a
+ * caller to render an empty container, which is a layout change for every post.
+ *
+ * "UNKNOWN" IS A WARNING, NOT AN AGE. Turn rows persist — the projection has no age
+ * sweep — so a link whose turn row is gone means the thread was reverted past that
+ * turn or its id was recreated, both facts a reader wants. What holds that: the two
+ * `DELETE FROM projection_turns` statements in
+ * `apps/server/src/persistence/Layers/ProjectionTurns.ts` (one matches only the
+ * pending placeholder, `turn_id IS NULL`; one is whole-thread, called from
+ * `thread.created` and `thread.reverted` in
+ * `apps/server/src/orchestration/Layers/ProjectionPipeline.ts`), and the test in
+ * `MentionWakeReactor.test.ts` that drives the whole-thread delete and asserts
+ * `unknown`. The word here says the turn is off the record, and does not call the
+ * wake a failure.
+ *
+ * PAST TENSE, NEVER A CONTROL. The turn id a wake carries is provider-shaped —
+ * which turn it names differs per adapter, and on neither is it one a cancel would
+ * act on; `OrchestrationChannelPostWake`'s docstring in `@t3tools/contracts`
+ * (`packages/contracts/src/orchestration.ts`) states the mechanism with adapter
+ * citations. The id is a fact about the past; nothing here is a control.
+ * `running` is the one outcome that is not yet a fact, so it is not
+ * rendered: the wake is the past-tense fact, and the outcome becomes one when the
+ * turn settles. The pane re-reads its page only when a NEW post lands in the
+ * channel (`ChannelView.tsx`'s `latestPostAt` effect) or on reopen, so a settled
+ * outcome appears then and not the moment the turn ends (measured: after the turn
+ * row flipped, an open pane's line stayed byte-identical for 45 s; a reload showed
+ * the word). The lines are statements of what happened, and nothing on them is
+ * clickable.
+ */
+export type ChannelPostWakeDescription = {
+  readonly threadId: OrchestrationChannelPostWake["threadId"];
+  /** How the turn ended; null while it is still running. */
+  readonly ended: string | null;
+};
+
+const WAKE_OUTCOME_WORDS: Record<OrchestrationChannelPostWake["outcome"], string | null> = {
+  running: null,
+  completed: "completed",
+  failed: "failed",
+  cancelled: "cancelled",
+  unknown: "turn no longer on record",
+};
+
+export function describeChannelPostWakes(
+  wakes: ReadonlyArray<OrchestrationChannelPostWake> | undefined,
+): ReadonlyArray<ChannelPostWakeDescription> | null {
+  if (wakes === undefined) {
+    return null;
+  }
+  return wakes.map((wake) => ({
+    threadId: wake.threadId,
+    ended: WAKE_OUTCOME_WORDS[wake.outcome],
+  }));
 }

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import type { OrchestrationChannelPostWake } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import {
   canSendChannelPost,
+  describeChannelPostWakes,
   mergeChannelPosts,
   resolveChannelComposerState,
   resolveChannelViewState,
@@ -203,5 +205,68 @@ describe("mergeChannelPosts", () => {
     // had would blank the channel at the moment the reader scrolled to its top.
     const merged = mergeChannelPosts({ existing: [post("p1", 1)], incoming: [] });
     expect(merged.map((entry) => entry.id)).toEqual(["p1"]);
+  });
+});
+
+describe("describeChannelPostWakes", () => {
+  const wake = (threadId: string, outcome: OrchestrationChannelPostWake["outcome"]) =>
+    ({ threadId, turnId: `turn-${threadId}`, outcome }) as OrchestrationChannelPostWake;
+
+  it("is null for a post that woke nobody, which is most posts", () => {
+    // `toBeNull`, NOT a falsy check: `[]` is truthy, and an implementation that
+    // returns [] for absent is the one that hands the pane an empty container
+    // under every post. "Absent means nothing rendered" is the claim most likely
+    // to rot, and this is the assertion that holds it.
+    expect(describeChannelPostWakes(undefined)).toBeNull();
+  });
+
+  it("names the thread and says how the turn ended for one wake", () => {
+    expect(describeChannelPostWakes([wake("t-1", "completed")])).toEqual([
+      { threadId: "t-1", ended: "completed" },
+    ]);
+  });
+
+  it("carries no ending for a wake whose turn is still running", () => {
+    // The input that distinguishes "render the word" from "render nothing": a
+    // map that spells `running` as "running" makes the pane state, as a fact, a
+    // thing that is not yet one — and the pane does not re-read when the turn
+    // settles, so the word would outlive the turn.
+    expect(describeChannelPostWakes([wake("t-1", "running")])).toEqual([
+      { threadId: "t-1", ended: null },
+    ]);
+  });
+
+  it("keeps every wake, in the wire's order, when a post woke several", () => {
+    // Three, in an order no sort would produce, because the field used to be ONE
+    // object and an implementation that takes the first — or one that sorts by
+    // outcome — passes the single-wake case above.
+    expect(
+      describeChannelPostWakes([
+        wake("t-b", "running"),
+        wake("t-a", "failed"),
+        wake("t-c", "completed"),
+      ]),
+    ).toEqual([
+      { threadId: "t-b", ended: null },
+      { threadId: "t-a", ended: "failed" },
+      { threadId: "t-c", ended: "completed" },
+    ]);
+  });
+
+  it("says a turn is off the record for `unknown`, not that the wake failed or is old", () => {
+    // Turn rows persist: an `unknown` means the thread was reverted past this turn
+    // or its id was recreated. `toBe` on the exact phrase is what refuses both
+    // "failed" and an age; a looser check would pass either.
+    const [line] = describeChannelPostWakes([wake("t-1", "unknown")]) ?? [];
+    expect(line?.ended).toBe("turn no longer on record");
+  });
+
+  it("uses the reader's words for the two the projection spells differently", () => {
+    // The wire already maps `error` → failed and `interrupted` → cancelled; the
+    // pane must not reintroduce the projection's vocabulary.
+    expect(describeChannelPostWakes([wake("t-1", "failed"), wake("t-2", "cancelled")])).toEqual([
+      { threadId: "t-1", ended: "failed" },
+      { threadId: "t-2", ended: "cancelled" },
+    ]);
   });
 });
