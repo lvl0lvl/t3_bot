@@ -64,8 +64,10 @@ describe("makeClientDispatch", () => {
         { origin, issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID } },
         { issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID } },
       ]);
-      // `toEqual` treats an `origin: undefined` key as equal to no key; the door
-      // without an origin must pass NONE, so the key set is asserted by name.
+      // `toEqual` treats an `origin: undefined` key as equal to no key. The
+      // compiler refuses `origin: undefined` under `exactOptionalPropertyTypes`
+      // (TS2379 on `{ origin, issuer }`), so the key set asserted by name is
+      // the runtime pin of the same shape.
       expect(Object.keys(calls[1]!.options as object)).toEqual(["issuer"]);
     }),
   );

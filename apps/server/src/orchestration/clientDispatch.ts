@@ -5,19 +5,29 @@
  * `issuer` is optional on the engine's dispatch options: the rule that a client
  * door must supply it lives in that option's docstring and in `requireCommandIssuer`,
  * which fails closed, and in no type. Measured before this module: ~50 dispatch call
- * sites in the server, three passing an issuer. Twice a door was wired without one —
- * `#14` widened `ClientOrchestrationCommand` and stamped the socket only, `#19` found
- * the HTTP twin passing nothing and stamped it inline — and both were found by review
- * executing the door, not by a test or the compiler. Two doors with two inline stamps
- * is the call-site count that produced the defect; a door that dispatches through
- * this one cannot forget, and a door that does not is visible at its own `dispatch`.
+ * sites in the server, four passing an issuer — the socket, HTTP, the seeder's
+ * `SEED_ISSUER`, and the MCP door's `thread` issuer in
+ * `mcp/toolkits/comms/channelGatewayLive.ts`. Once a door was wired without one:
+ * `#14` widened `ClientOrchestrationCommand` and stamped the socket only, leaving the
+ * HTTP twin passing nothing; review found it by executing the door, not by a test or
+ * the compiler, and `#19` stamped it inline. Two doors with two inline stamps is the
+ * call-site count that produced the defect; a door that dispatches THROUGH this
+ * helper cannot forget.
+ *
+ * WHAT THIS DOES NOT COVER is a door that hands the engine service itself to a
+ * helper. `ws.ts` provides `OrchestrationEngineService` to `importRecentAgentThreads`
+ * (the `agentSessionsImport` RPC: `thread.create`, `thread.history.import`) and to
+ * `linkCreatedPullRequest` (the `gitRunStackedAction` RPC: `thread.pull-request.link`),
+ * and both dispatch bare — no issuer, no origin, and no `dispatch` at the door to
+ * see. Neither command has an issuer invariant today, so nothing refuses; the first
+ * to grow one is refused inside that helper.
  *
  * THE STAMP IS UNCONDITIONAL. `requireCommandIssuer` ignores the field for every
  * command that has no issuer invariant, so stamping only channel commands would make
- * this the helper that remembers for the commands someone thought of.
- *
- * The seeder writes the same operator id into every channel's membership, so
- * `requireChannelAuthorIsMember` decides against a member that exists.
+ * this the helper that remembers for the commands someone thought of. The stamped
+ * operator can post because the seeder seats the same id in every channel's
+ * membership — so `requireChannelAuthorIsMember` decides against a member that
+ * exists.
  *
  * @module clientDispatch
  */

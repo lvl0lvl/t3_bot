@@ -95,8 +95,9 @@ const SHIPPED_BAD_INSTANCE_ID = "claude";
 /**
  * The human's member id, from the one place that defines it.
  *
- * It was a local constant here and is now shared with the WebSocket layer,
- * which stamps the same value as the issuer on every command a browser sends.
+ * It was a local constant here and is now shared with `makeClientDispatch`
+ * (`orchestration/clientDispatch.ts`), which stamps the same value as the
+ * issuer on every command a client door dispatches.
  * Two definitions would mean an operator who is a member of a channel they
  * cannot post to. Deliberately NOT a thread id: a human member carrying a
  * thread's id is the impersonation route `requireChannelMemberShape` exists to

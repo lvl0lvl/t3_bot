@@ -515,16 +515,8 @@ const makeWsRpcLayer = (
       const projectionChannels = yield* ProjectionChannelRepository;
       /**
        * Who this connection READS as: the member the channel shell stream is
-       * filtered by.
-       *
-       * ONE OF TWO VALUES, not one used on both sides. An earlier version of this
-       * paragraph said it was also "the issuer stamped on every command this
-       * connection dispatches", and argued that two values would be two ways to
-       * be wrong in opposite directions — an operator who can post to a channel
-       * they cannot see, or see one they cannot post to. That sentence outlived
-       * the code: the write identity is the operator issuer `makeClientDispatch`
-       * stamps below, because the two are not the same SET and a plain object
-       * satisfying both structurally is what hid the distinction.
+       * filtered by. The WRITE identity is `dispatchFromClient`'s below; why
+       * they are two values is that docstring's.
        *
        * What keeps them from drifting is that both constructors derive from
        * `HUMAN_OPERATOR_MEMBER_ID` and neither can be built from a request.
@@ -545,11 +537,16 @@ const makeWsRpcLayer = (
       /**
        * Every command from this connection, through the one stamp both client
        * doors share (`makeClientDispatch`): issued as the human operator, carrying
-       * this connection's origin when it has one. The WRITE identity that used
-       * to be built here as `connectionIssuer` is the helper's; `connectionMember`
-       * above stays the READ one, and the two are different SETS — `CommandIssuer`
-       * admits `system`, which is not a channel member kind — which is why one
-       * constant serving both jobs structurally is what hid the distinction.
+       * this connection's origin when it has one.
+       *
+       * The WRITE identity, not `connectionMember`. An earlier docstring said the
+       * read member was also "the issuer stamped on every command this connection
+       * dispatches", and argued that two values would be two ways to be wrong in
+       * opposite directions — an operator who can post to a channel they cannot
+       * see, or see one they cannot post to. The two are different SETS:
+       * `CommandIssuer` admits `system`, which is not a channel member kind, and
+       * one constant serving both jobs structurally is what hid the distinction
+       * (`packages/contracts/src/channelMemberRef.ts`, at `operatorCommandIssuer`).
        */
       const dispatchFromClient = makeClientDispatch(
         orchestrationEngine,

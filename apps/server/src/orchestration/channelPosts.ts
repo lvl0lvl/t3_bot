@@ -1,6 +1,9 @@
 /**
  * One page of a channel's posts, for every client door.
  *
+ * The write-side twin is `makeClientDispatch` (`clientDispatch.ts`): one issuer
+ * stamp for every command either door dispatches.
+ *
  * ONE HANDLER, TWO THIN TRANSPORTS, and that is the shape rather than a
  * preference. `#19` is the two-site divergence: `ClientOrchestrationCommand` is the
  * payload of both the WebSocket RPC and `POST /api/orchestration/dispatch`, and a
