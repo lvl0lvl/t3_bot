@@ -7,8 +7,8 @@ import type {
   OrchestrationChannelPost,
   ThreadId,
 } from "@t3tools/contracts";
-import { ArchiveIcon, HashIcon, SendIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ArchiveIcon, ChevronDownIcon, HashIcon, SendIcon } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { useChannel, useChannelSupport, useThreadShell } from "../state/entities";
 import * as Option from "effect/Option";
@@ -187,7 +187,7 @@ const CHANNEL_POST_PAGE_SIZE = 50;
  * does report in-flight reads and is what disables this button. A button asks once
  * and says what it is doing.
  *
- * `t3_bot-ef1` carries the scroll refinement, NOT `t3_bot-ajw`: ajw is the bead this
+ * `t3_bot-cdo` carries the scroll refinement, NOT `t3_bot-ajw`: ajw is the bead this
  * work closes, so a deferral parked on it would have been closed along with it.
  *
  * THE CURSOR IS OPAQUE HERE TOO. This component holds whatever `nextCursor` the
@@ -197,7 +197,8 @@ const CHANNEL_POST_PAGE_SIZE = 50;
 function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelShell }) {
   const { environmentId, id: channelId } = channel;
   // The cursor this region is currently asking with. `undefined` is the newest
-  // page, which is what opening a channel wants.
+  // page, which is what opening a channel wants; once set, the pager's request
+  // and the newest-page request below are two different atoms, both mounted.
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [posts, setPosts] = useState<ReadonlyArray<OrchestrationChannelPost>>([]);
   // The newest post this region has already asked about. NOT a "have I mounted"
@@ -219,6 +220,10 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // arrives the re-read's page is full and carries a cursor again. A latch would
   // have hidden the pager on that channel for the rest of the session.
   const [moreAbove, setMoreAbove] = useState<boolean | undefined>(undefined);
+  // The newest post the reader has been shown at the bottom; a newer one than this
+  // is what lights the "New posts" control.
+  const [seenNewestId, setSeenNewestId] = useState<string | undefined>(undefined);
+  const scroller = useRef<HTMLDivElement | null>(null);
   const bottom = useRef<HTMLDivElement | null>(null);
 
   const request = orchestrationEnvironment.channelPosts({
@@ -233,7 +238,26 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   const page = useAtomValue(request);
   const refresh = useAtomRefresh(request);
 
+  // THE NEWEST PAGE STAYS MOUNTED WHILE THE READER PAGES UP. It is the same atom as
+  // `request` until the first "Earlier posts" click, and after it the one the live
+  // arrival below keeps re-reading. Unmounting it was what killed live arrival for
+  // the rest of the instance: `setCursor` has one caller and nothing clears it.
+  //
+  // Clearing the cursor to "return" was the alternative, and it has two holes the
+  // atom's cache policy makes: `Atom.swr` re-reads on a remount only past its
+  // `staleTime`, so within it the effect would have to force the read, and past it
+  // the remount and the effect would BOTH read — the open-ran-twice defect the effect
+  // comment below was written to keep out. And the pager would then walk history the
+  // region already holds. Keeping the atom mounted costs one subscription and no read.
+  const newestRequest = orchestrationEnvironment.channelPosts({
+    environmentId,
+    input: { channelId, direction: "backward", limit: CHANNEL_POST_PAGE_SIZE },
+  });
+  const newestPage = useAtomValue(newestRequest);
+  const refreshNewest = useAtomRefresh(newestRequest);
+
   const arrived = Option.getOrUndefined(AsyncResult.value(page));
+  const newestArrived = Option.getOrUndefined(AsyncResult.value(newestPage));
 
   // LIVE ARRIVAL, from the shell rather than from a per-post event.
   //
@@ -244,23 +268,25 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // carrying the newer timestamp, so the event cannot carry a post and the
   // client has to re-read.
   //
-  // Only when the channel is showing its newest page. A reader who has paged
-  // upward is holding an older cursor, and re-reading under it would answer
-  // with the same old page while the new post sat unread below them; the next
-  // return to the bottom picks it up.
+  // ALWAYS THE NEWEST PAGE, whatever the pager is holding. This used to return
+  // early while the reader was paged up, with a comment saying "the next return
+  // to the bottom picks it up" — and there was no return to the bottom in the
+  // code, so one click on "Earlier posts" ended live arrival for good. The input
+  // that distinguishes: a `latestPostAt` change AFTER a page-up must still be
+  // answered with a read of the newest page.
   //
-  // AND ONLY ON A CHANGE. `cursor === undefined` is true on the FIRST commit too, so
-  // this fired on mount — while the atom was already fetching, because every query
-  // here goes through `Atom.swr({ revalidateOnMount: true })` and a manual refresh is
-  // forceful and always forwarded. Every channel open ran the read TWICE and pulled up
-  // to two pages over the socket, on the most frequent interaction in the feature.
+  // AND ONLY ON A CHANGE. On the FIRST commit the atom is already fetching, because
+  // every query here goes through `Atom.swr({ revalidateOnMount: true })` and a manual
+  // refresh is forceful and always forwarded. Firing here on mount ran every channel
+  // open TWICE and pulled up to two pages over the socket, on the most frequent
+  // interaction in the feature.
   useEffect(() => {
-    if (cursor !== undefined || readThrough.current === channel.latestPostAt) {
+    if (readThrough.current === channel.latestPostAt) {
       return;
     }
     readThrough.current = channel.latestPostAt;
-    refresh();
-  }, [channel.latestPostAt, cursor, refresh]);
+    refreshNewest();
+  }, [channel.latestPostAt, refreshNewest]);
 
   // DEPENDS ON `arrived` BY REFERENCE, which is only safe because the atom
   // memoises its value. A component test that handed back a fresh page object per
@@ -275,33 +301,138 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
     setPosts((existing) => mergeChannelPosts({ existing, incoming: arrived.posts }));
     setMoreAbove(arrived.nextCursor !== null);
   }, [arrived]);
+  // The newest page merges too, and says nothing about `moreAbove`: while the
+  // reader is paged up, "is there more above" is the PAGER's page's answer, and
+  // the newest page's cursor points at history the region already holds.
+  //
+  // UNLESS IT DOES NOT. The input: a socket outage while more than
+  // `CHANNEL_POST_PAGE_SIZE` posts land between two newest reads. That newest page
+  // shares no post with what is held and still carries a cursor, so the region no
+  // longer holds a continuous history — merged, the two runs render as one list
+  // with a hole nothing on screen can fetch. The region restarts at the newest
+  // page instead. The reader loses a paged-up position exactly when continuity
+  // was already lost; a seam fetch into the middle of the list would pretend it
+  // was not (PM ruling, board 201).
+  //
+  // `held` mirrors `posts` for this effect to read without depending on it: a
+  // dependency on `posts` re-runs the merge on its own result, and the merge
+  // returns a new array every time.
+  const held = useRef(posts);
+  useEffect(() => {
+    held.current = posts;
+  }, [posts]);
+  useEffect(() => {
+    if (newestArrived === undefined) {
+      return;
+    }
+    const existing = held.current;
+    const continuous =
+      existing.length === 0 ||
+      newestArrived.nextCursor === null ||
+      newestArrived.posts.some((post) => existing.some((heldPost) => heldPost.id === post.id));
+    if (!continuous) {
+      setPosts(newestArrived.posts);
+      setCursor(undefined);
+      setMoreAbove(newestArrived.nextCursor !== null);
+      return;
+    }
+    setPosts((existing) => mergeChannelPosts({ existing, incoming: newestArrived.posts }));
+  }, [newestArrived]);
 
   // ANCHORED ON THE NEWEST POST, not on every merge. Scrolling to the bottom
   // when an OLDER page arrives would throw the reader back to the present the
   // moment they paged up, which is the one thing paging upward must not do.
+  //
+  // AND NOT WHILE THE READER IS UP IN HISTORY. With live arrival no longer gated on
+  // the cursor, a new post can land while they are reading an older page, and
+  // scrolling them to it is the same theft as scrolling on an older page. The
+  // cursor is the proxy for "up in history" — there is no scroll handler yet
+  // (`t3_bot-cdo`) — so a reader who paged up and scrolled back down is offered the
+  // control instead of the jump; the control is one click and the jump is a theft.
+  //
+  // A LAYOUT EFFECT, so the scroll and the "seen" mark land before the paint. With a
+  // passive effect the frame between commit and effect shows the newest post
+  // unscrolled and the "New posts" control lit for a reader who is on the newest
+  // page — one frame, on every post, which is the flicker this app's users notice.
   const newestId = posts[posts.length - 1]?.id;
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (cursor !== undefined) {
+      return;
+    }
     bottom.current?.scrollIntoView({ block: "end" });
+    setSeenNewestId(newestId);
+  }, [cursor, newestId]);
+  // SEEN WHEN THE SENTINEL COMES INTO VIEW, not only on the click. The input that
+  // distinguishes: a reader who paged up, then wheeled back down to the newest post
+  // by hand — the layout effect above is gated on the cursor, so nothing else
+  // marked it seen and the control stayed lit over the post they were reading.
+  //
+  // The id is read through a ref at callback time. The observer is built once per
+  // scroller mount, so a callback that closed over `newestId` would mark every
+  // later post seen with the id of the one on screen when it was built.
+  const newestIdRef = useRef(newestId);
+  useEffect(() => {
+    newestIdRef.current = newestId;
   }, [newestId]);
+  // The two early returns below replace the scroller, sentinel included, and the
+  // first commit of an open can be one of them (`NoPostsYet` while `posts` is still
+  // `[]`) — an observer attached once on mount would then observe nothing.
+  const unreadable = AsyncResult.isFailure(page) && posts.length === 0;
+  const empty = posts.length === 0 && !page.waiting;
+  useEffect(() => {
+    if (unreadable || empty) {
+      return;
+    }
+    // react-test-renderer has no `IntersectionObserver`; the component tests that
+    // do not install one exercise the click alone.
+    if (typeof IntersectionObserver === "undefined") {
+      return;
+    }
+    const sentinel = bottom.current;
+    if (!sentinel) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setSeenNewestId(newestIdRef.current);
+        }
+      },
+      { root: scroller.current },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [unreadable, empty]);
+  // Not gated on the cursor a second time: on the newest page the effect above marks
+  // every newest post seen before paint, so the id comparison alone is the fact.
+  const unseenBelow = newestId !== undefined && newestId !== seenNewestId;
 
-  if (AsyncResult.isFailure(page) && posts.length === 0) {
+  if (unreadable) {
     return <PostsUnavailable onRetry={refresh} />;
   }
   // A FAILURE WITH POSTS ALREADY ON SCREEN IS NOT THE SAME STATE, and it used to be
   // reported as nothing at all: the guard above only fires while the channel has shown
   // nothing, so a page that failed after one had landed rendered the previous screen
   // unchanged. No error, and the pager back to "Earlier posts" as though ready —
-  // pressing it did nothing, because `arrived` is undefined over a Failure. Live
-  // arrival had stopped too, since `cursor` is no longer undefined. A channel that
-  // silently stops mid-history with a control that lies about being able to continue.
+  // pressing it did nothing, because `arrived` is undefined over a Failure. At the
+  // time live arrival was gated on the cursor as well, so nothing would have moved
+  // again. A channel that silently stops mid-history with a control that lies about
+  // being able to continue.
   const pageFailed = AsyncResult.isFailure(page);
+  // THE NEWEST READ FAILS ON ITS OWN while the reader is paged up — it is a second
+  // atom there, and every other failure here is read over `page`. The input: a
+  // `latestPostAt` change after a page-up whose re-read fails. Nothing on screen
+  // said so, and the next `latestPostAt` change was the only retry. On the newest
+  // page the two atoms are one and `pageFailed` already covers it; the general
+  // failed-with-posts-on-screen notice is `t3_bot-ssz`'s.
+  const newestFailed = cursor !== undefined && AsyncResult.isFailure(newestPage);
   // RETURNED INSTEAD OF THE SCROLL CONTAINER, the way `PostsUnavailable` is.
   // Found by rendering twice: inside that container the empty state cannot
   // centre, because `justify-end` is what puts posts above the composer and
   // `flex-1` on a child of the inner wrapper has nothing to stretch against. It
   // first arrived pinned to the composer, then 100px higher, and neither read as
   // an empty state. The container is right for posts and wrong for this.
-  if (posts.length === 0 && !page.waiting) {
+  if (empty) {
     return <NoPostsYet />;
   }
 
@@ -321,41 +452,90 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
     // My own render pass missed it because the channel had ONE post — which fits
     // the pane, so the property could not be exercised. `mt-auto` gives the same
     // bottom alignment for a short list and leaves the overflow scrollable.
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <div className="mt-auto flex flex-col gap-3 p-4">
-        {moreAbove ? (
-          // ONE CONTROL, whose action is what the reader needs next. On a failure it
-          // re-issues the SAME cursor through `refresh()` rather than advancing or
-          // resetting one: reverting to the newest page would silently undo the reader's
-          // own action and throw away their place in the history.
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div ref={scroller} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <div className="mt-auto flex flex-col gap-3 p-4">
+          {moreAbove ? (
+            // ONE CONTROL, whose action is what the reader needs next. On a failure it
+            // re-issues the SAME cursor through `refresh()` rather than advancing or
+            // resetting one: reverting to the newest page would silently undo the reader's
+            // own action and throw away their place in the history.
+            <Button
+              variant="ghost"
+              size="sm"
+              className="self-center"
+              disabled={page.waiting}
+              onClick={() => {
+                if (pageFailed) {
+                  refresh();
+                  return;
+                }
+                const next = arrived?.nextCursor;
+                if (next !== null && next !== undefined) {
+                  setCursor(next);
+                }
+              }}
+            >
+              {page.waiting
+                ? "Loading earlier posts…"
+                : pageFailed
+                  ? "Earlier posts didn’t load. Try again"
+                  : "Earlier posts"}
+            </Button>
+          ) : null}
+          {posts.map((post) => (
+            <ChannelPost key={post.id} environmentId={environmentId} post={post} />
+          ))}
+          <div ref={bottom} />
+        </div>
+      </div>
+      {newestFailed || unseenBelow ? (
+        // THE WAY BACK, for a reader who paged up while the channel moved on. It
+        // scrolls; it does not re-read or touch the cursor, because the posts are
+        // already merged in and the pager's place in history is theirs to keep.
+        //
+        // THE SAME SLOT SAYS WHEN THE NEWEST READ FAILED, and the failure takes
+        // precedence: a page that did not arrive has no new posts to go to, and
+        // the click re-issues the NEWEST read, not the pager's.
+        //
+        // THE CHAT PILL'S RECIPE (`ChatView`'s "Scroll to end"): the app's floating
+        // control is `glass`, `xs`, `rounded-full`, a chevron and a short label,
+        // positioned over the scroller rather than in its column. In the column it was a
+        // `secondary` fill — 3% white in dark, over post text — and its arrival
+        // and departure changed the scroll extent under the reader. Outside the
+        // scroller neither happens. `onPointerDown` keeps the composer's focus,
+        // as the sibling does.
+        //
+        // THE ONE INPUT THAT RESETS THE READER'S PLACE instead of offering this: a
+        // newest page that shares no post with what is held (an outage that dropped
+        // more than a page). The newest merge effect restarts at that page, because
+        // there is no continuous history left for this control to scroll through.
+        <div className="pointer-events-none absolute bottom-3 left-1/2 z-30 flex -translate-x-1/2 justify-center py-1.5">
           <Button
-            variant="ghost"
-            size="sm"
-            className="self-center"
-            disabled={page.waiting}
+            variant="glass"
+            size="xs"
+            className="pointer-events-auto gap-1.5 rounded-full px-3 text-muted-foreground hover:text-foreground"
+            onPointerDown={(event) => event.preventDefault()}
             onClick={() => {
-              if (pageFailed) {
-                refresh();
+              if (newestFailed) {
+                refreshNewest();
                 return;
               }
-              const next = arrived?.nextCursor;
-              if (next !== null && next !== undefined) {
-                setCursor(next);
-              }
+              bottom.current?.scrollIntoView({ block: "end" });
+              setSeenNewestId(newestId);
             }}
           >
-            {page.waiting
-              ? "Loading earlier posts…"
-              : pageFailed
-                ? "Earlier posts didn’t load. Try again"
-                : "Earlier posts"}
+            {newestFailed ? (
+              "Newer posts didn’t load. Try again"
+            ) : (
+              <>
+                <ChevronDownIcon className="size-3.5" />
+                New posts
+              </>
+            )}
           </Button>
-        ) : null}
-        {posts.map((post) => (
-          <ChannelPost key={post.id} environmentId={environmentId} post={post} />
-        ))}
-        <div ref={bottom} />
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }

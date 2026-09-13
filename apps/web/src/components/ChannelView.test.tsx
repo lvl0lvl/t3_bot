@@ -55,6 +55,19 @@ const harness = vi.hoisted(() => ({
   asked: [] as Array<{ channelId: string; direction: string; cursor?: string }>,
   refreshes: 0,
   /**
+   * WHICH request each refresh re-read, in order. `refreshes` alone cannot tell the
+   * newest-page atom from the pager's: a live-arrival effect that refreshed the
+   * PAGER's request while the reader was paged up counted the same +1 and re-read
+   * an older page instead of the newest one.
+   */
+  refreshed: [] as Array<{ channelId: string; direction: string; cursor?: string }>,
+  /**
+   * How many times the region scrolled its sentinel into view. Without a node behind
+   * the ref every `scrollIntoView` was a no-op on `null`, so the scroll — the theft
+   * paging upward exists to prevent — could move above its cursor gate unseen.
+   */
+  scrolls: 0,
+  /**
    * Channel A's `latestPostAt`, MUTABLE.
    *
    * The live-arrival effect fires on a CHANGE to this value, and the only fixture that
@@ -99,6 +112,7 @@ vi.mock("@effect/atom-react", async (importOriginal) => ({
     }
     const made = () => {
       harness.refreshes += 1;
+      harness.refreshed.push((atom as { __request: (typeof harness.asked)[number] }).__request);
     };
     harness.refreshers.set(key, made);
     return made;
@@ -217,17 +231,26 @@ const answer = (
 };
 
 /**
- * A read that FAILED, holding no previous success.
+ * A read that FAILED, holding no previous success unless one is given.
  *
  * `AsyncResult.value` of a Failure is `Option.map(previousSuccess, ...)`, so an absent
  * previous success is what makes `arrived` undefined — which is exactly the state in
- * which the old pager offered to fetch a page it had no cursor for.
+ * which the old pager offered to fetch a page it had no cursor for. A re-read that
+ * fails AFTER a page landed carries that page as its previous success, and the value
+ * stays on screen while the failure has to be said some other way.
  */
-const answerFailure = (channelId: ChannelId, cursor?: string) => {
+const answerFailure = (
+  channelId: ChannelId,
+  cursor?: string,
+  previous?: { posts: ReadonlyArray<unknown>; nextCursor: string | null },
+) => {
   harness.results.set(requestKey(channelId, cursor), {
     waiting: false,
     _tag: "Failure",
-    previousSuccess: Option.none(),
+    previousSuccess:
+      previous === undefined
+        ? Option.none()
+        : Option.some({ waiting: false, _tag: "Success", value: previous }),
   });
 };
 
@@ -258,18 +281,50 @@ const occurrences = (tree: ReactTestRenderer, phrase: string) =>
 const text = (node: ReactTestInstance): string =>
   node.children.map((child) => (typeof child === "string" ? child : text(child))).join("");
 
+// Each button's text at every depth, not its first string child: the "New posts"
+// pill's first child is a chevron, and a label read as `children[0]` is the icon.
 const buttonLabels = (tree: ReactTestRenderer) =>
-  tree.root
-    .findAll((node) => node.type === "button")
-    .flatMap((button) => button.findAll((node) => typeof node.children?.[0] === "string"))
-    .map((node) => String(node.children[0]));
+  tree.root.findAll((node) => node.type === "button").map(text);
+
+/**
+ * The observer the region puts on its bottom sentinel, replaced so a test can say
+ * "the sentinel is on screen": react-test-renderer has no layout, so nothing
+ * intersects anything unless a test reports it. After `lib/visibleAnimation.test.ts`.
+ * A test that installs it on `globalThis` removes it again — the others exercise the
+ * click alone, which is what the region does where there is no observer.
+ */
+const observers: TestIntersectionObserver[] = [];
+class TestIntersectionObserver {
+  constructor(private readonly callback: IntersectionObserverCallback) {
+    observers.push(this);
+  }
+
+  observe = vi.fn();
+  unobserve = vi.fn();
+  disconnect = vi.fn();
+
+  report(target: Element, isIntersecting: boolean) {
+    this.callback(
+      [{ target, isIntersecting } as IntersectionObserverEntry],
+      this as unknown as IntersectionObserver,
+    );
+  }
+}
 
 describe("ChannelPostRegion", () => {
   const mount = async (channelId: ChannelId) => {
     const { ChannelView } = await import("./ChannelView");
     let tree!: ReactTestRenderer;
     await act(async () => {
-      tree = create(<ChannelView environmentId={ENVIRONMENT} channelId={channelId} />);
+      tree = create(<ChannelView environmentId={ENVIRONMENT} channelId={channelId} />, {
+        // A node for every ref, so the region's sentinel exists to be observed and
+        // its scroll to be counted.
+        createNodeMock: () => ({
+          scrollIntoView() {
+            harness.scrolls += 1;
+          },
+        }),
+      });
     });
     return tree;
   };
@@ -279,6 +334,8 @@ describe("ChannelPostRegion", () => {
     harness.results.clear();
     harness.asked.length = 0;
     harness.refreshes = 0;
+    harness.refreshed.length = 0;
+    harness.scrolls = 0;
   };
 
   it("renders the page the server returned, in the server's order", async () => {
@@ -381,13 +438,304 @@ describe("ChannelPostRegion", () => {
     expect(harness.refreshes).toBe(1);
   });
 
+  it("keeps re-reading the newest page after the reader pages up", async () => {
+    // THE INPUT THAT DISTINGUISHES: a `latestPostAt` change AFTER a page-up. Before this
+    // change the live-arrival effect returned early whenever the cursor was set, and
+    // `setCursor` has one caller and nothing clears it — so one click on "Earlier posts"
+    // ended live arrival for the life of the instance. A change on the newest page
+    // (the test above) agrees with both implementations.
+    reset();
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-newest", "newest")],
+      nextCursor: "channel-a:backward:1",
+    });
+    answer(
+      CHANNEL_A,
+      { posts: [post(1, "p-older", "older")], nextCursor: null },
+      "channel-a:backward:1",
+    );
+    const { ChannelView } = await import("./ChannelView");
+    const tree = await mount(CHANNEL_A);
+
+    const pager = tree.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      pager?.props.onClick?.();
+    });
+    expect(bodies(tree)).toEqual(["older", "newest"]);
+    const before = harness.refreshes;
+
+    harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(harness.refreshes).toBe(before + 1);
+    // AND IT IS THE NEWEST PAGE that was re-read, not the pager's. Two atoms are
+    // mounted here; a refresh of the one holding the cursor would count identically
+    // and re-read the older page.
+    expect(harness.refreshed[harness.refreshed.length - 1]).toEqual({
+      channelId: CHANNEL_A,
+      direction: "backward",
+      limit: 50,
+    });
+    expect(harness.refreshed[harness.refreshed.length - 1]).not.toHaveProperty("cursor");
+  });
+
+  it("offers the way back to a post that landed while the reader was up in history", async () => {
+    // Two readers, one new post. The one on the newest page is scrolled to it and offered
+    // nothing; the one who paged up is NOT scrolled — that is the theft paging upward exists
+    // to prevent — and is offered a control that takes them there. An implementation that
+    // renders the control regardless of the cursor fails the first half; one that never
+    // renders it fails the second.
+    reset();
+    answer(CHANNEL_A, { posts: [post(1, "p-one", "one")], nextCursor: null });
+    const { ChannelView } = await import("./ChannelView");
+    const onNewest = await mount(CHANNEL_A);
+    const scrolledOnOpen = harness.scrolls;
+    answer(CHANNEL_A, {
+      posts: [post(1, "p-one", "one"), post(2, "p-two", "two")],
+      nextCursor: null,
+    });
+    harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
+    await act(async () => {
+      onNewest.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(bodies(onNewest)).toEqual(["one", "two"]);
+    expect(buttonLabels(onNewest)).not.toContain("New posts");
+    // Taken there, once, for the one post that landed.
+    expect(harness.scrolls).toBe(scrolledOnOpen + 1);
+
+    reset();
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-two", "two")],
+      nextCursor: "channel-a:backward:1",
+    });
+    answer(
+      CHANNEL_A,
+      { posts: [post(1, "p-one", "one")], nextCursor: null },
+      "channel-a:backward:1",
+    );
+    const pagedUp = await mount(CHANNEL_A);
+    const pager = pagedUp.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      pager?.props.onClick?.();
+    });
+    expect(bodies(pagedUp)).toEqual(["one", "two"]);
+    // An OLDER page arriving is not a new post. A newest id read off the wrong end of
+    // the merged list lights the control here, over a reader who asked for history.
+    expect(buttonLabels(pagedUp)).not.toContain("New posts");
+    const scrolledBeforeGrowth = harness.scrolls;
+
+    // The newest page grows under a reader who is up in history.
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-two", "two"), post(3, "p-three", "three")],
+      nextCursor: "channel-a:backward:1",
+    });
+    harness.latestPostAtForA = "2026-01-01T00:06:00.000Z";
+    await act(async () => {
+      pagedUp.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(bodies(pagedUp)).toEqual(["one", "two", "three"]);
+    expect(buttonLabels(pagedUp)).toContain("New posts");
+    // AND NO PAGER: the newest page carries a cursor under a pager page that answered
+    // null. A newest merge that wrote `moreAbove` from its own cursor re-offers
+    // "Earlier posts" here, and the click no-ops on the pager page's null.
+    expect(buttonLabels(pagedUp)).not.toContain("Earlier posts");
+    // NOT SCROLLED. A scroll here is the theft: the reader is up in history and a new
+    // post pulled them to the present. A layout effect scrolling on every newest post,
+    // whatever the cursor, is one line away and this is the assertion that sees it.
+    expect(harness.scrolls).toBe(scrolledBeforeGrowth);
+
+    // Taking it is one click — the one scroll — and the offer is withdrawn once taken.
+    const back = pagedUp.root
+      .findAll((node) => node.type === "button")
+      .find((button) => text(button).includes("New posts"));
+    await act(async () => {
+      back?.props.onClick?.();
+    });
+    expect(harness.scrolls).toBe(scrolledBeforeGrowth + 1);
+    expect(buttonLabels(pagedUp)).not.toContain("New posts");
+
+    // `seen` IS A MARK, NOT A LATCH: one more post after the click is offered again. A
+    // "dismissed" flag set on the click hides every later post for the session.
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-two", "two"), post(3, "p-three", "three"), post(4, "p-four", "four")],
+      nextCursor: "channel-a:backward:1",
+    });
+    harness.latestPostAtForA = "2026-01-01T00:07:00.000Z";
+    await act(async () => {
+      pagedUp.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(bodies(pagedUp)).toEqual(["one", "two", "three", "four"]);
+    expect(buttonLabels(pagedUp)).toContain("New posts");
+  });
+
+  it("restarts at the newest page when it shares no post with what is held", async () => {
+    // THE HISTORY HOLE. A paged-up reader whose socket dropped while more than a page
+    // of posts landed: the newest read answers posts none of which are held, and a
+    // cursor. Merging renders {1,2,3,4} then {60,61} as one list, "Earlier posts" is
+    // gone because the pager's page said null, and the "New posts" control scrolls
+    // through the hole as though 5..59 were on screen. The PM's ruling (board 201):
+    // restart at the newest page, since the paged-up position is already lost.
+    reset();
+    answer(CHANNEL_A, {
+      posts: [post(3, "p-three", "three"), post(4, "p-four", "four")],
+      nextCursor: "channel-a:backward:2",
+    });
+    answer(
+      CHANNEL_A,
+      { posts: [post(1, "p-one", "one"), post(2, "p-two", "two")], nextCursor: null },
+      "channel-a:backward:2",
+    );
+    const { ChannelView } = await import("./ChannelView");
+    const tree = await mount(CHANNEL_A);
+    const pager = tree.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      pager?.props.onClick?.();
+    });
+    expect(bodies(tree)).toEqual(["one", "two", "three", "four"]);
+    expect(buttonLabels(tree)).not.toContain("Earlier posts");
+
+    answer(CHANNEL_A, {
+      posts: [post(60, "p-sixty", "sixty"), post(61, "p-sixty-one", "sixty-one")],
+      nextCursor: "channel-a:backward:61",
+    });
+    harness.latestPostAtForA = "2026-01-01T00:06:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    // Only the newest page, and the pager back — pointing at the newest page's
+    // cursor, which is the one history this region can still walk continuously.
+    expect(bodies(tree)).toEqual(["sixty", "sixty-one"]);
+    expect(buttonLabels(tree)).toContain("Earlier posts");
+    // AND THE CURSOR IS CLEARED, which the label alone cannot show: a restart that
+    // replaced the posts but kept the old cursor still says "Earlier posts", and
+    // pressing it re-reads the OLD page (whose answer was null) — a control that lies,
+    // with "New posts" lit beside it. The pager's next ask must carry the newest
+    // page's cursor; the verifier's mutant that dropped `setCursor(undefined)`
+    // survived every assertion above this line.
+    expect(buttonLabels(tree)).not.toContain("New posts");
+    answer(
+      CHANNEL_A,
+      { posts: [post(59, "p-fifty-nine", "fifty-nine")], nextCursor: null },
+      "channel-a:backward:61",
+    );
+    const walk = tree.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      walk?.props.onClick?.();
+    });
+    // `some`, not `at(-1)`: both atoms ask on every render and the cursorless newest
+    // page asks last, so the last ask never carries a cursor. The walk is the ask that does.
+    expect(harness.asked.some((ask) => ask.cursor === "channel-a:backward:61")).toBe(true);
+    expect(bodies(tree)).toEqual(["fifty-nine", "sixty", "sixty-one"]);
+  });
+
+  it("withdraws the offer when the reader reaches the newest post by hand", async () => {
+    // THE INPUT THAT DISTINGUISHES: a paged-up reader who wheels down to the newest post
+    // without clicking. Only the click and the layout effect marked a post seen, and the
+    // layout effect is gated on the cursor — so the control stayed lit over the post
+    // they were reading, a label saying "new" about something on screen.
+    reset();
+    vi.stubGlobal("IntersectionObserver", TestIntersectionObserver);
+    try {
+      answer(CHANNEL_A, {
+        posts: [post(2, "p-two", "two")],
+        nextCursor: "channel-a:backward:1",
+      });
+      answer(
+        CHANNEL_A,
+        { posts: [post(1, "p-one", "one")], nextCursor: null },
+        "channel-a:backward:1",
+      );
+      const { ChannelView } = await import("./ChannelView");
+      const tree = await mount(CHANNEL_A);
+      const pager = tree.root.findAll((node) => node.type === "button")[0];
+      await act(async () => {
+        pager?.props.onClick?.();
+      });
+
+      answer(CHANNEL_A, {
+        posts: [post(2, "p-two", "two"), post(3, "p-three", "three")],
+        nextCursor: "channel-a:backward:1",
+      });
+      harness.latestPostAtForA = "2026-01-01T00:06:00.000Z";
+      await act(async () => {
+        tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+      });
+      expect(buttonLabels(tree)).toContain("New posts");
+
+      // The sentinel enters the scroller's viewport: no click.
+      const observer = observers[observers.length - 1]!;
+      const sentinel = observer.observe.mock.calls[0]?.[0] as Element;
+      await act(async () => {
+        observer.report(sentinel, true);
+      });
+      expect(buttonLabels(tree)).not.toContain("New posts");
+    } finally {
+      vi.unstubAllGlobals();
+      observers.length = 0;
+    }
+  });
+
+  it("says the newest read failed while paged up, and retries THAT read", async () => {
+    // Two atoms are mounted once the reader pages up, and every failure branch read
+    // `page` — the pager's. The input: `latestPostAt` changes, the newest re-read
+    // fails holding its previous page. Nothing on screen said so; the next change
+    // was the only retry. The general notice is `t3_bot-ssz`'s; this is the one
+    // path that PR opens, in the slot the "New posts" control already owns.
+    reset();
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-two", "two")],
+      nextCursor: "channel-a:backward:1",
+    });
+    answer(
+      CHANNEL_A,
+      { posts: [post(1, "p-one", "one")], nextCursor: null },
+      "channel-a:backward:1",
+    );
+    const { ChannelView } = await import("./ChannelView");
+    const tree = await mount(CHANNEL_A);
+    const pager = tree.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      pager?.props.onClick?.();
+    });
+    expect(bodies(tree)).toEqual(["one", "two"]);
+
+    answerFailure(CHANNEL_A, undefined, {
+      posts: [post(2, "p-two", "two")],
+      nextCursor: "channel-a:backward:1",
+    });
+    harness.latestPostAtForA = "2026-01-01T00:06:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    // The posts stay; the failure is said; nothing claims there are new posts to go to.
+    expect(bodies(tree)).toEqual(["one", "two"]);
+    expect(buttonLabels(tree)).toContain("Newer posts didn’t load. Try again");
+    expect(buttonLabels(tree)).not.toContain("New posts");
+
+    // Pressing it re-issues the NEWEST read — no cursor — and not the pager's.
+    const before = harness.refreshes;
+    const retry = tree.root
+      .findAll((node) => node.type === "button")
+      .find((button) => text(button).includes("Newer posts"));
+    await act(async () => {
+      retry?.props.onClick?.();
+    });
+    expect(harness.refreshes).toBe(before + 1);
+    expect(harness.refreshed[harness.refreshed.length - 1]).toEqual({
+      channelId: CHANNEL_A,
+      direction: "backward",
+      limit: 50,
+    });
+  });
+
   it("says a page failed, and the control retries it", async () => {
     // `BUG-25-02`. The failure branch is gated on `posts.length === 0`, so a page that
     // failed AFTER one had landed rendered the previous screen unchanged: no error, and
     // the pager back to "Earlier posts" as though ready. Pressing it did nothing —
-    // `arrived` is undefined over a Failure — and live arrival had already stopped,
-    // because `cursor` is no longer undefined. A channel that stops mid-history with a
-    // control that lies about being able to continue, and no way back without a reload.
+    // `arrived` is undefined over a Failure — and live arrival was then gated on the
+    // cursor as well. A channel that stops mid-history with a control that lies about
+    // being able to continue, and no way back without a reload.
     reset();
     // OPAQUE TO THE CLIENT, which hands it back verbatim and never decodes it —
     // so these are not defanged the way the server's fixtures were. They carry a
