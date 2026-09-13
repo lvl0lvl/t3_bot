@@ -98,14 +98,15 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
     // or add a post-door site to the list below. Only code counts: a comment
     // naming the call is not a brand site. The pin sees the literal
     // `TurnId.make(` only: a cast `as TurnId`, an aliased or destructured
-    // `make`, or a bracket access stays green (upstream writes none of these
-    // today; `vp fmt` normalises the whitespace forms into reach).
+    // `make`, a `.call`/`.apply`/`.bind` on it, or a bracket access stays
+    // green (upstream writes none of these today; `vp fmt` normalises the
+    // whitespace forms into reach).
     const source = NodeFS.readFileSync(
       NodePath.join(import.meta.dirname, "CodexSessionRuntime.ts"),
       "utf8",
     );
     const code = source.replace(/^\s*(?:\/\/|(?!.*\*\/[ \t]*\S)(?:\/\*|\*)).*$/gm, "");
-    assert.deepEqual(code.match(/TurnId\.make\([^)]*\)/g), [
+    assert.deepEqual(code.match(/TurnId[?!]?\.make\([^)]*\)/g), [
       "TurnId.make(notification.params.turn.id)",
       "TurnId.make(notification.params.turnId)",
       "TurnId.make(notification.params.turnId)",
