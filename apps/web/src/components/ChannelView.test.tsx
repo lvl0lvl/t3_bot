@@ -965,6 +965,59 @@ describe("ChannelPostRegion", () => {
     });
   });
 
+  it("says the failure over an unseen post, and the click retries rather than scrolls", async () => {
+    // THE ONE FIXTURE WITH BOTH LIT: a paged-up reader, a newest post that landed
+    // (`unseenBelow`), and then a re-read that failed. Every other failure fixture has
+    // nothing unseen, so a slot that let "New posts" win — or a click that scrolled
+    // and marked the post seen instead of retrying — passed them all; here the
+    // control would say one thing and do another.
+    reset();
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-two", "two")],
+      nextCursor: "channel-a:backward:1",
+    });
+    answer(
+      CHANNEL_A,
+      { posts: [post(1, "p-one", "one")], nextCursor: null },
+      "channel-a:backward:1",
+    );
+    const { ChannelView } = await import("./ChannelView");
+    const tree = await mount(CHANNEL_A);
+    const pager = tree.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      pager?.props.onClick?.();
+    });
+    const grown = {
+      posts: [post(2, "p-two", "two"), post(3, "p-three", "three")],
+      nextCursor: "channel-a:backward:1",
+    };
+    answer(CHANNEL_A, grown);
+    harness.latestPostAtForA = "2026-01-01T00:06:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(buttonLabels(tree)).toContain("New posts");
+
+    answerFailure(CHANNEL_A, undefined, grown);
+    harness.latestPostAtForA = "2026-01-01T00:07:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(buttonLabels(tree)).toContain("Newer posts didn’t load. Try again");
+    expect(buttonLabels(tree)).not.toContain("New posts");
+
+    const before = harness.refreshes;
+    const scrolledBefore = harness.scrolls;
+    const retry = tree.root
+      .findAll((node) => node.type === "button")
+      .find((button) => text(button).includes("Newer posts"));
+    await act(async () => {
+      retry?.props.onClick?.();
+    });
+    expect(harness.refreshes).toBe(before + 1);
+    expect(harness.scrolls).toBe(scrolledBefore);
+  });
+
   it("says a page failed, and the control retries it", async () => {
     // `BUG-25-02`. The failure branch is gated on `posts.length === 0`, so a page that
     // failed AFTER one had landed rendered the previous screen unchanged: no error, and
