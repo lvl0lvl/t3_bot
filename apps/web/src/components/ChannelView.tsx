@@ -417,9 +417,12 @@ function ChannelPost({
 
 /**
  * "Woke <thread>", and " · <how it ended>" once the turn has settled, as text.
- * The thread is named by its shell title;
- * a thread this client does not hold a shell for is named by its id, which is
- * still a fact and is the only one available.
+ * The thread is named by its shell title while the client holds an ACTIVE shell
+ * for it, and by its id otherwise. The shell snapshot carries active threads only
+ * (server: `listActiveThreadRows`); archived shells come from a separate
+ * `archivedShellSnapshot` read this pane does not issue. So a woken thread that
+ * was later archived — or deleted — is identified by its id here. Reading the
+ * archived snapshot from the pane is a payload decision left to a follow-up bead.
  *
  * NOT A LINK. The turn id behind this line is provider-shaped (see
  * `describeChannelPostWakes`), so a control here would act on a turn the reader
