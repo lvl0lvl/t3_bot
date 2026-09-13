@@ -10,6 +10,11 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import { decideOrchestrationCommand } from "./decider.ts";
+import {
+  COLLIDING_HUMAN_MEMBER,
+  COLLIDING_THREAD_MEMBER,
+  collidingReadModel,
+} from "./testing/collidingRoster.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const CHANNEL = ChannelId.make("channel-1");
@@ -402,26 +407,31 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // not decided here — so this test is what stops that decision being made
       // by accident.
       //
-      // Reachable as bug29 measured it: the human member was seated while no
-      // thread of that id existed, the thread was created, and this is the add
-      // that follows. `thread-pm` is a live thread, so the shape guard admits the
-      // thread row being added, and the human row it joins is not re-validated —
-      // the guard resolves a member's id at add time and never again.
+      // THE SHARED COLLISION (`collidingRoster.ts`), not a local spelling of it —
+      // this was the eighth, and collapsing it is what `t3_bot-46h` closed.
+      //
+      // TAKEN MID-ORDERING, after step 2 and before step 3, because step 3 being
+      // ADMITTED is the whole subject: the human is seated while no thread carries
+      // the id, the thread is created, and this is the add that follows. So the
+      // roster here holds the human half only and the test adds the thread half
+      // itself. `collidingReadModel` is the state AFTER step 3, which is why it is
+      // narrowed rather than used as-is; both halves and the id they share still
+      // come from the module.
+      const afterStepTwo = collidingReadModel({ now: NOW, first: "human" });
       const decided = yield* decideOrchestrationCommand({
         command: {
           type: "channel.member.add",
           commandId: CommandId.make("cmd-add-other-kind"),
-          channelId: CHANNEL,
-          member: {
-            handle: ChannelMemberHandle.make("twin"),
-            memberKind: "thread",
-            memberId: "thread-pm",
-          },
+          channelId: afterStepTwo.channels[0]!.id,
+          member: COLLIDING_THREAD_MEMBER,
         },
-        readModel: makeReadModel([
-          { handle: "boss1", memberKind: "thread", memberId: "thread-boss1" },
-          { handle: "walt", memberKind: "human", memberId: "thread-pm" },
-        ]),
+        readModel: {
+          ...afterStepTwo,
+          channels: afterStepTwo.channels.map((channel) => ({
+            ...channel,
+            members: [COLLIDING_HUMAN_MEMBER],
+          })),
+        },
         issuer: ADMIN,
       });
       const event = Array.isArray(decided) ? decided[0] : decided;
