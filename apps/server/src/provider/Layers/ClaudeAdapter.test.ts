@@ -6103,9 +6103,12 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect("starts a session whose resume cursor carries a thread id the brand refuses", () => {
-    // The cursor is a persisted row an operator can edit. Its threadId is
-    // a trace annotation; "" and "  " are the two values ThreadId.make
-    // treats differently ("" throws inside startSession, "  " is admitted).
+    // The cursor is a persisted row an operator can edit. Its threadId feeds
+    // only the `claude.resume.thread_id` span attribute. "  " is admitted by
+    // ThreadId.make and refused by decode: the one input whose behaviour the
+    // gate changes, so it runs first. "" is refused by both (the truthiness
+    // guard the gate replaced dropped it too); a guard that reaches `.make`
+    // with it dies here instead of failing an assertion.
     const harness = makeHarness();
     const spans: Array<Tracer.NativeSpan> = [];
     const tracer = Tracer.make({
