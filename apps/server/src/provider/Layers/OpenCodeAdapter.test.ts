@@ -6558,7 +6558,9 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const source = yield* fileSystem.readFileString(
         path.join(import.meta.dirname, "OpenCodeAdapter.ts"),
       );
-      const code = source.replace(/^\s*(?:\/\/|\/\*|\*).*$/gm, "");
+      // A line is a comment only when no code follows it: `/* note */ const x`
+      // keeps its code, so a call after a leading block comment still counts.
+      const code = source.replace(/^\s*(?:\/\/|\/\*(?!.*\*\/[ \t]*\S)|\*).*$/gm, "");
       NodeAssert.deepEqual(code.match(/TurnId\.make\([^)]*\)/g), [
         "TurnId.make(id)",
         "TurnId.make(`opencode-turn-${yield* randomUUIDv4}`)",
