@@ -675,13 +675,15 @@ export function requireThreadAbsent(input: {
  * that exists — but it runs at add time, against the threads that exist THEN.
  * Seat the human first and create the thread second, and both are admitted:
  * one channel holds one id under two kinds, and every by-id lookup on it must
- * compare the kind or answer for the wrong member (`t3_bot-46h` pinned seven of
- * them on both axes; `t3_bot-7iw` is the question of whether they should have
- * to). The seeder seats the operator at boot, so the whole route was ONE
- * `thread.create` with the operator's id, from a paired client, minting a
- * thread whose MCP credential presents as `("thread", "human-walt")`.
+ * compare the kind or answer for the wrong member (`t3_bot-46h` pinned every
+ * comparison in `scripts/guard-sweep.colliding-roster.json` on both axes;
+ * `t3_bot-7iw` asked whether they should have to, and they keep the clause for
+ * replay — last paragraph). The seeder seats the operator at boot, so the whole
+ * route was ONE `thread.create` with the operator's id, from a paired client,
+ * minting a thread whose MCP credential presents as `("thread", "human-walt")`.
  *
- * Two inputs, refused here, closed both orderings for commands:
+ * Two inputs, refused here, close the human-first ordering for commands (the
+ * shape guard already refuses thread-first):
  *
  *   - an id any channel holds as a HUMAN member's `memberId` — the seated
  *     case; every channel, archived or not, because a roster does not stop
@@ -698,7 +700,8 @@ export function requireThreadAbsent(input: {
  * would turn every deleted-then-recreated draft into a refusal.
  *
  * Replay is untouched. A row written before this guard reaches every lookup
- * as before, which is why the seven comparisons keep their kind clause.
+ * as before, which is why every membership comparison in
+ * `scripts/guard-sweep.colliding-roster.json` keeps its kind clause.
  */
 export function requireThreadIdIsNoHuman(input: {
   readonly readModel: OrchestrationReadModel;
