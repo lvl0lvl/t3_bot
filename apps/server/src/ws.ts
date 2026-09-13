@@ -757,10 +757,11 @@ const makeWsRpcLayer = (
           authorizeEffect(requiredScopeForRpcMethod(method), effect),
           traceAttributes,
         );
-      // A decider refusal keeps its tag on the way out, beside the prose it
-      // already carried; the HTTP door answers the same input with the same
-      // tag on `EnvironmentCommandRefusedError` (`t3_bot-nqf`). Every other
-      // cause is a failure and folds as before.
+      // A refusal the decider tagged keeps its tag on the way out, beside the
+      // prose it already carried; the HTTP door answers the same input with
+      // the same tag on `EnvironmentCommandRefusedError` (`t3_bot-nqf`). Every
+      // other cause - an untagged refusal such as a blocked settle, or a
+      // failure - folds to message-only as before.
       const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
         isOrchestrationDispatchCommandError(cause)
           ? cause
