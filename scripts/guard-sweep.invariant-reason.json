@@ -1,0 +1,127 @@
+{
+  "testCommand": [
+    "pnpm",
+    "exec",
+    "vp",
+    "test",
+    "run",
+    "apps/server/src/orchestration/decider.channels.test.ts",
+    "apps/server/src/orchestration/decider.issuer.test.ts",
+    "apps/server/src/mcp/toolkits/comms/commsLive.integration.test.ts"
+  ],
+  "setupCommand": ["pnpm", "install", "--frozen-lockfile"],
+  "mutations": [
+    {
+      "id": "reason-dropped-archived",
+      "guard": "requireChannelNotArchived/reason",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      { _tag: \"channel-archived\" },\n",
+      "replace": ""
+    },
+    {
+      "id": "reason-dropped-author",
+      "guard": "requireChannelAuthorIsMember/reason",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "    invariantError(input.command.type, `Author is not a member of channel '${input.channel.id}'.`, {\n      _tag: \"author-not-member\",\n    }),",
+      "replace": "    invariantError(input.command.type, `Author is not a member of channel '${input.channel.id}'.`),"
+    },
+    {
+      "id": "reason-dropped-mentions",
+      "guard": "requireChannelMentionsResolve/reason",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      { _tag: \"mentions-unresolved\", handles: unresolved },\n",
+      "replace": ""
+    },
+    {
+      "id": "reason-mentions-all",
+      "guard": "requireChannelMentionsResolve/reason.handles",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      { _tag: \"mentions-unresolved\", handles: unresolved },\n",
+      "replace": "      { _tag: \"mentions-unresolved\", handles: input.mentions },\n"
+    },
+    {
+      "id": "reason-added-channel-missing",
+      "guard": "requireChannel/reason",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      `Channel '${input.channelId}' does not exist for command '${input.command.type}'.`,\n    ),",
+      "replace": "      `Channel '${input.channelId}' does not exist for command '${input.command.type}'.`,\n      { _tag: \"author-not-member\" },\n    ),"
+    },
+    {
+      "id": "reason-added-issuer-author",
+      "guard": "requireIssuerCanAuthor/reason",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      `A '${input.issuer.memberKind}' issuer has no handle and cannot author a channel post.`,\n    ),",
+      "replace": "      `A '${input.issuer.memberKind}' issuer has no handle and cannot author a channel post.`,\n      { _tag: \"author-not-member\" },\n    ),"
+    },
+    {
+      "id": "reason-added-issuer-missing",
+      "guard": "requireCommandIssuer/reason",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      `Command '${input.command.type}' arrived without an issuer and cannot be authorized.`,\n    ),",
+      "replace": "      `Command '${input.command.type}' arrived without an issuer and cannot be authorized.`,\n      { _tag: \"author-not-member\" },\n    ),"
+    },
+    {
+      "id": "gateway-ignores-reason",
+      "guard": "createPost/mapError",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "if (error._tag === \"OrchestrationCommandInvariantError\" && error.reason !== undefined) {",
+      "replace": "if (error._tag === \"OrchestrationCommandInvariantError\" && error.reason === undefined) {"
+    },
+    {
+      "id": "gateway-author-to-conflict",
+      "guard": "createPost/mapError author-not-member",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "                case \"author-not-member\":\n                  return new ChannelMembershipRevoked();\n",
+      "replace": "                case \"author-not-member\":\n                  break;\n"
+    },
+    {
+      "id": "gateway-mentions-to-conflict",
+      "guard": "createPost/mapError mentions-unresolved",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "                case \"mentions-unresolved\":\n                  return new ChannelMentionUnresolvable({ handles: error.reason.handles });\n",
+      "replace": "                case \"mentions-unresolved\":\n                  break;\n"
+    },
+    {
+      "id": "gateway-archived-to-conflict",
+      "guard": "createPost/mapError channel-archived",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "                case \"channel-archived\":\n                  return new ChannelArchived();\n",
+      "replace": "                case \"channel-archived\":\n                  break;\n"
+    },
+    {
+      "id": "gateway-echoes-caller-mentions",
+      "guard": "createPost/mapError mentions-unresolved",
+      "axis": "wider",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "return new ChannelMentionUnresolvable({ handles: error.reason.handles });",
+      "replace": "return new ChannelMentionUnresolvable({ handles: input.mentions });"
+    },
+    {
+      "id": "gateway-every-refusal-revoked",
+      "guard": "createPost/mapError",
+      "axis": "wider",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "if (error._tag === \"OrchestrationCommandInvariantError\" && error.reason !== undefined) {",
+      "replace": "if (error._tag === \"OrchestrationCommandInvariantError\") {\n              if (error.reason === undefined) return new ChannelMembershipRevoked();"
+    },
+    {
+      "id": "gateway-arms-swapped",
+      "guard": "createPost/mapError",
+      "axis": "wider",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "                case \"author-not-member\":\n                  return new ChannelMembershipRevoked();\n                case \"mentions-unresolved\":\n                  return new ChannelMentionUnresolvable({ handles: error.reason.handles });\n                case \"channel-archived\":\n                  return new ChannelArchived();\n",
+      "replace": "                case \"author-not-member\":\n                  return new ChannelArchived();\n                case \"mentions-unresolved\":\n                  return new ChannelMembershipRevoked();\n                case \"channel-archived\":\n                  return new ChannelMentionUnresolvable({ handles: [] });\n"
+    }
+  ]
+}

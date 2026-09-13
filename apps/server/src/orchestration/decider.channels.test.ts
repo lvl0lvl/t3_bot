@@ -137,6 +137,10 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // satisfy the _tag and the test would survive deleting the one it names.
       if (error._tag === "OrchestrationCommandInvariantError") {
         expect(error.detail).toContain("Author is not a member");
+        // The tag the live gateway classifies from, since it must not read
+        // the line above: drop it at this site and the agent is told "the
+        // channel refused the post" instead of that its membership went.
+        expect(error.reason).toEqual({ _tag: "author-not-member" });
       }
     }),
   );
@@ -201,6 +205,10 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // satisfy the _tag and the test would survive deleting the one it names.
       if (error._tag === "OrchestrationCommandInvariantError") {
         expect(error.detail).toContain("Mentions do not resolve");
+        // THE HANDLES THAT DID NOT RESOLVE, and only those: the gateway echoes
+        // this list to the agent, so a reason that carried every mention
+        // would tell it a member was missing who is there.
+        expect(error.reason).toEqual({ _tag: "mentions-unresolved", handles: ["nobody"] });
       }
     }),
   );
@@ -217,6 +225,9 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // satisfy the _tag and the test would survive deleting the one it names.
       if (error._tag === "OrchestrationCommandInvariantError") {
         expect(error.detail).toContain("does not exist");
+        // UNTAGGED: a `reason` here would tell a direct caller of the live
+        // gateway "you were removed" for "no such channel".
+        expect(error.reason).toBeUndefined();
       }
     }),
   );

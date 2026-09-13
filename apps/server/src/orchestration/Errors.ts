@@ -1,4 +1,4 @@
-import { ThreadId } from "@t3tools/contracts";
+import { ChannelMemberHandle, ThreadId } from "@t3tools/contracts";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as Schema from "effect/Schema";
 
@@ -28,11 +28,35 @@ export class OrchestrationCommandDecodeError extends Schema.TaggedError<Orchestr
   }
 }
 
+/**
+ * WHICH invariant refused, for a caller that acts differently per cause and
+ * must not read `detail` to find out.
+ *
+ * `detail` is prose for a log line. It names the channel by its internal id,
+ * and the one caller that needed to classify a refusal (`channelGatewayLive`)
+ * could either match that English or forward it - and forwarding it handed an
+ * agent "Author is not a member of channel 'channel-seniors-t'", an id the
+ * tool surface never otherwise exposes (`t3_bot-dnz`). So the refusals a
+ * caller tells apart carry a tag here, and the prose stays a log line.
+ *
+ * Only refusals a caller acts on differently have a member; every other
+ * invariant is "this command can never apply" and one shape serves them. A
+ * member carries what the caller has to SAY and nothing about the channel:
+ * the unresolved handles are the caller's own input, echoed back.
+ */
+export const CommandInvariantRefusal = Schema.Union([
+  Schema.TaggedStruct("channel-archived", {}),
+  Schema.TaggedStruct("author-not-member", {}),
+  Schema.TaggedStruct("mentions-unresolved", { handles: Schema.Array(ChannelMemberHandle) }),
+]);
+export type CommandInvariantRefusal = typeof CommandInvariantRefusal.Type;
+
 export class OrchestrationCommandInvariantError extends Schema.TaggedError<OrchestrationCommandInvariantError>()(
   "OrchestrationCommandInvariantError",
   {
     commandType: Schema.String,
     detail: Schema.String,
+    reason: Schema.optional(CommandInvariantRefusal),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

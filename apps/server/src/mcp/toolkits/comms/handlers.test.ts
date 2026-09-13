@@ -54,7 +54,6 @@ interface GatewayFailures {
   readonly getPost?: ChannelGateway.ChannelStoreUnavailable;
   readonly readPosts?: ChannelGateway.ChannelStoreUnavailable;
   readonly createPost?:
-    | ChannelGateway.ChannelStoreUnavailable
     | ChannelGateway.ChannelWriteConflict
     | ChannelGateway.ChannelMembershipRevoked
     | ChannelGateway.ChannelMentionUnresolvable
@@ -905,6 +904,28 @@ describe("comms toolkit gateway failure mapping", () => {
     }),
   );
 
+  it.effect("tells the agent not to retry a post whose channel read hit a store failure", () =>
+    Effect.gen(function* () {
+      // THE WRITE PATH'S store failure lands on the membership read, not on
+      // the append: `createPost` performs no read of its own. It is told as a
+      // post failure, and not retryable — a mapping hardcoded to `true` here
+      // was pinned by nothing once `createPost` stopped declaring the tag.
+      const harness = yield* makeHarness({
+        failures: {
+          getChannel: new ChannelGateway.ChannelStoreUnavailable({ detail: "no store" }),
+        },
+      });
+      const error = yield* harness
+        .call("comms_post", { channel: "seniors", body: "x" })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "CommsPostFailedError",
+        detail: "no store",
+        retryable: false,
+      });
+    }),
+  );
+
   it.effect("carries the refusal's own retryability rather than deciding it", () =>
     Effect.gen(function* () {
       // RETRYABILITY IS A PROPERTY OF THE REFUSAL, not of the tag. The layer
@@ -923,16 +944,6 @@ describe("comms toolkit gateway failure mapping", () => {
         .call("comms_post", { channel: "seniors", body: "x" })
         .pipe(Effect.flip);
       expect(retryable).toMatchObject({ _tag: "CommsPostFailedError", retryable: true });
-
-      const unavailable = yield* makeHarness({
-        failures: {
-          createPost: new ChannelGateway.ChannelStoreUnavailable({ detail: "no store" }),
-        },
-      });
-      const terminal = yield* unavailable
-        .call("comms_post", { channel: "seniors", body: "x" })
-        .pipe(Effect.flip);
-      expect(terminal).toMatchObject({ _tag: "CommsPostFailedError", retryable: false });
 
       // The same tag, the other way: a conflict the layer knows is permanent
       // must not tell the agent to try again. Without this the mapping could

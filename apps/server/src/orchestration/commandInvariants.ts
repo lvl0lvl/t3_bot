@@ -22,12 +22,19 @@ import {
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Effect from "effect/Effect";
 
-import { OrchestrationCommandInvariantError } from "./Errors.ts";
+import { type CommandInvariantRefusal, OrchestrationCommandInvariantError } from "./Errors.ts";
 
-function invariantError(commandType: string, detail: string): OrchestrationCommandInvariantError {
+// `reason` only where a caller tells refusals apart; `detail` is a log line
+// and the one thing a caller must never classify from.
+function invariantError(
+  commandType: string,
+  detail: string,
+  reason?: CommandInvariantRefusal,
+): OrchestrationCommandInvariantError {
   return new OrchestrationCommandInvariantError({
     commandType,
     detail,
+    reason,
   });
 }
 
@@ -249,6 +256,7 @@ export function requireChannelNotArchived(input: {
     invariantError(
       input.command.type,
       `Channel '${input.channel.id}' is archived and cannot handle command '${input.command.type}'.`,
+      { _tag: "channel-archived" },
     ),
   );
 }
@@ -509,7 +517,9 @@ export function requireChannelAuthorIsMember(input: {
     return Effect.succeed(author);
   }
   return Effect.fail(
-    invariantError(input.command.type, `Author is not a member of channel '${input.channel.id}'.`),
+    invariantError(input.command.type, `Author is not a member of channel '${input.channel.id}'.`, {
+      _tag: "author-not-member",
+    }),
   );
 }
 
@@ -532,6 +542,7 @@ export function requireChannelMentionsResolve(input: {
     invariantError(
       input.command.type,
       `Mentions do not resolve to members of channel '${input.channel.id}': ${unresolved.join(", ")}.`,
+      { _tag: "mentions-unresolved", handles: unresolved },
     ),
   );
 }

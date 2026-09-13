@@ -182,8 +182,6 @@ const make = Effect.gen(function* () {
   // post to.
   const onCreateFailure = (channelName: string) =>
     ({
-      ChannelStoreUnavailable: (error: ChannelGateway.ChannelStoreUnavailable) =>
-        Effect.fail(new CommsPostFailedError({ detail: error.detail, retryable: false })),
       ChannelWriteConflict: (error: ChannelGateway.ChannelWriteConflict) =>
         // Carried through, not decided here. Whether a retry could work is
         // known where the failure happened; this layer would be guessing.
