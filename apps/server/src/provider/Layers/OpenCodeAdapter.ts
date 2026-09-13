@@ -478,21 +478,24 @@ const toRequestError = (cause: OpenCodeRuntimeError): ProviderAdapterRequestErro
 
 // An assistant message's id from `session.messages` is outside input that
 // becomes a TurnId. `TurnId.make` on an empty id throws inside the reader,
-// a Die no caller's catchTags sees; the decode fails as the same request
-// error a bad `session.messages` response already does, naming the id.
-const decodeMessageTurnId = Schema.decodeUnknownEffect(TurnId);
+// a Die no caller's catchTags sees; the gate refuses it (and the
+// whitespace-only id `.make` admits as garbage) as the same request error a
+// bad `session.messages` response already does, naming the id. What passes
+// is branded RAW, not decoded: the decoder trims, and a trimmed id sent to
+// `session.revert` names a message OpenCode never minted, so a padded
+// " msg_x " rolled back nothing and reported Success. The `.make` after the
+// gate cannot die; the gate refused everything it throws on.
+const decodeMessageTurnId = Schema.decodeUnknownOption(TurnId);
 const decodeAssistantMessageId = (id: string) =>
-  decodeMessageTurnId(id).pipe(
-    Effect.mapError(
-      (cause) =>
+  Option.isNone(decodeMessageTurnId(id))
+    ? Effect.fail(
         new ProviderAdapterRequestError({
           provider: PROVIDER,
           method: "session.messages",
           detail: `OpenCode returned an assistant message whose id ${JSON.stringify(id)} is not a turn id.`,
-          cause,
         }),
-    ),
-  );
+      )
+    : Effect.succeed(TurnId.make(id));
 
 /**
  * Map a `Cause.squash`-ed failure into a `ProviderAdapterProcessError`. The

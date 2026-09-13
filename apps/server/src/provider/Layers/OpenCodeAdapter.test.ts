@@ -6459,6 +6459,47 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       }),
   );
 
+  it.effect("carries a padded assistant id untrimmed and echoes it to session.revert", () =>
+    Effect.gen(function* () {
+      // The brand's decoder trims. The id the adapter sends back to
+      // `session.revert` must be the one OpenCode minted, byte for byte: a
+      // trimmed "assistant-2" names no message, and the revert is a no-op
+      // that reports Success.
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-padded-message-id");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      runtimeMock.state.messages = [
+        { info: { id: "user-1", role: "user" }, parts: [] },
+        {
+          info: { id: "assistant-1", role: "assistant" },
+          parts: [{ id: "part-1", type: "text", text: "first answer" }],
+        },
+        { info: { id: "user-2", role: "user" }, parts: [] },
+        {
+          info: { id: " assistant-2 ", role: "assistant" },
+          parts: [{ id: "part-2", type: "text", text: "second answer" }],
+        },
+      ];
+
+      NodeAssert.deepEqual(
+        (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
+        ["assistant-1", " assistant-2 "],
+      );
+      const snapshot = yield* adapter.rollbackThread(threadId, 1);
+      NodeAssert.equal(runtimeMock.state.revertCalls.length, 1);
+      NodeAssert.equal(runtimeMock.state.revertCalls[0]?.messageID, " assistant-2 ");
+      NodeAssert.deepEqual(
+        snapshot.turns.map((turn) => turn.id),
+        ["assistant-1"],
+      );
+    }),
+  );
+
   it.effect("classifies a confirmed not-found across the shapes the SDK/runtime can produce", () =>
     Effect.sync(() => {
       // The real production shape: runOpenCodeSdk wraps the thrown Error
