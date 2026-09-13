@@ -105,6 +105,10 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
       NodePath.join(import.meta.dirname, "CodexSessionRuntime.ts"),
       "utf8",
     );
+    // A line is a comment only when no code follows its `*/`: `/* note */ const x`
+    // and a block closed as ` */ const x` both keep their code, so a call after
+    // either still counts. The runtime names `TurnId.make(` in no comment today;
+    // the strip's subject is the comment a sync maintainer will write.
     const code = source.replace(/^\s*(?:\/\/|(?!.*\*\/[ \t]*\S)(?:\/\*|\*)).*$/gm, "");
     assert.deepEqual(code.match(/TurnId[?!]?\.make\([^)]*\)/g), [
       "TurnId.make(notification.params.turn.id)",
