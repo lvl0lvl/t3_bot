@@ -438,11 +438,17 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // at the live edge — the padding grows below the fold and `scrollTop` does not
   // follow, so the line stays behind the pill unless this keeps them at the edge.
   // A reader mid-page is NOT pulled: that is the theft #48 named.
+  //
+  // THE SCROLLER'S END, NOT THE SENTINEL. The sentinel is the column's last child
+  // and sits ABOVE the column's bottom padding, so on a column taller than the pane
+  // `scrollIntoView({ block: "end" })` aligned the sentinel's bottom to the fold and
+  // left the 56px below it — measured: max 2117→2157, `scrollTop` 2102, the pill
+  // still over 14 of the line's 17px. The scroller's own `scrollHeight` is the padded end.
   useLayoutEffect(() => {
     if (!newestFailed || !atLiveEdge.current) {
       return;
     }
-    bottom.current?.scrollIntoView({ block: "end" });
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
   }, [newestFailed]);
 
   if (unreadable) {

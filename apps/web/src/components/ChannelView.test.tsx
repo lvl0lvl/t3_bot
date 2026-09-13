@@ -68,6 +68,13 @@ const harness = vi.hoisted(() => ({
    */
   scrolls: 0,
   /**
+   * How many times the region scrolled its SCROLLER to its end. A separate count from
+   * `scrolls`: the sentinel sits above the column's bottom padding, so a scroll that
+   * targets it leaves the failed-read pill's clearance below the fold on a column
+   * taller than the pane — and a test counting "some scroll" read that as green.
+   */
+  scrollsToEnd: 0,
+  /**
    * Channel A's `latestPostAt`, MUTABLE.
    *
    * The live-arrival effect fires on a CHANGE to this value, and the only fixture that
@@ -348,6 +355,9 @@ describe("ChannelPostRegion", () => {
           scrollIntoView() {
             harness.scrolls += 1;
           },
+          scrollTo() {
+            harness.scrollsToEnd += 1;
+          },
         }),
       });
     });
@@ -361,6 +371,7 @@ describe("ChannelPostRegion", () => {
     harness.refreshes = 0;
     harness.refreshed.length = 0;
     harness.scrolls = 0;
+    harness.scrollsToEnd = 0;
   };
 
   it("renders the page the server returned, in the server's order", async () => {
@@ -867,7 +878,9 @@ describe("ChannelPostRegion", () => {
     // that padding alone cannot handle: a newest page taller than the pane with the
     // reader at the bottom — the padding grows below the fold and `scrollTop` stays,
     // so the region has to keep them at the edge. Whether they were there is what the
-    // sentinel's observer last said. Padding is markup and is not asserted; the scroll is.
+    // sentinel's observer last said. Padding is markup and is not asserted; the scroll is
+    // — and WHICH scroll: the sentinel sits above the padding, so scrolling it into
+    // view leaves the clearance below the fold. The scroller's end is the target.
     reset();
     vi.stubGlobal("IntersectionObserver", TestIntersectionObserver);
     try {
@@ -881,6 +894,7 @@ describe("ChannelPostRegion", () => {
         observer.report(sentinel, true);
       });
       const scrolledBefore = harness.scrolls;
+      const toEndBefore = harness.scrollsToEnd;
 
       answerFailure(CHANNEL_A, undefined, previous);
       harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
@@ -888,7 +902,8 @@ describe("ChannelPostRegion", () => {
         atEdge.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
       });
       expect(buttonLabels(atEdge)).toContain("Newer posts didn’t load. Try again");
-      expect(harness.scrolls).toBe(scrolledBefore + 1);
+      expect(harness.scrollsToEnd).toBe(toEndBefore + 1);
+      expect(harness.scrolls).toBe(scrolledBefore);
 
       // A READER MID-PAGE IS NOT PULLED — that is the theft #48 named. They were at
       // the edge and wheeled up: the observer's LAST report is the one that counts,
@@ -903,7 +918,7 @@ describe("ChannelPostRegion", () => {
         later.report(laterSentinel, true);
         later.report(laterSentinel, false);
       });
-      const scrolledBeforeMidPage = harness.scrolls;
+      const toEndBeforeMidPage = harness.scrollsToEnd;
 
       answerFailure(CHANNEL_A, undefined, previous);
       harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
@@ -911,7 +926,7 @@ describe("ChannelPostRegion", () => {
         midPage.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
       });
       expect(buttonLabels(midPage)).toContain("Newer posts didn’t load. Try again");
-      expect(harness.scrolls).toBe(scrolledBeforeMidPage);
+      expect(harness.scrollsToEnd).toBe(toEndBeforeMidPage);
     } finally {
       vi.unstubAllGlobals();
       observers.length = 0;
