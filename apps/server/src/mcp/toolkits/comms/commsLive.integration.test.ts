@@ -26,7 +26,9 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -734,10 +736,15 @@ describe("the comms toolkit on the live gateway", () => {
         // THE DECIDER'S OWN REFUSAL is permanent for this input. Retrying the
         // same post refuses identically, forever, and "try again" is then an
         // instruction to loop with nothing else to act on.
+        //
+        // NO `reason`: this pins the arm the gateway takes when the refusal is
+        // untagged - the arm `gateway-every-refusal-revoked` mutates. The
+        // prose is an untagged site's; a mention refusal always carries
+        // `mentions-unresolved` now and would be routed by tag, not here.
         const rejected = yield* attempt(
           new OrchestrationCommandInvariantError({
             commandType: "channel.post.create",
-            detail: "Mentions do not resolve to members of channel 'x': ghost.",
+            detail: "Channel 'x' does not exist for command 'channel.post.create'.",
           }),
         );
         expect(rejected).toMatchObject({ _tag: "ChannelWriteConflict", retryable: false });
@@ -1528,8 +1535,16 @@ describe("the comms toolkit on the live gateway", () => {
             parentPostId: null,
           })
           .pipe(Effect.exit);
-        expect(blankHandle._tag).toBe("Failure");
-        expect(String(blankHandle)).toContain("ChannelWriteConflict");
+        // The one UNTAGGED refusal that reaches the live gateway through the
+        // real decider, so this is where the `reason`-absent arm is pinned
+        // over real state: a gateway hardcoded to `retryable: true` reds here.
+        expect(Exit.isFailure(blankHandle)).toBe(true);
+        if (Exit.isFailure(blankHandle)) {
+          expect(Cause.squash(blankHandle.cause)).toMatchObject({
+            _tag: "ChannelWriteConflict",
+            retryable: false,
+          });
+        }
         expect(String(blankHandle)).not.toContain("SchemaIssue");
       }).pipe(Effect.provide(TestLayer)),
     30_000,
