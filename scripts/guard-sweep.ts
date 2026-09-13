@@ -46,6 +46,25 @@
  *    survives that untouched, and only a wider mutation finds it. A sweep with
  *    no `wider` rows has measured one half of the question.
  *
+ * 6. It refuses a `file` spelled other than as git prints it. Like 1 this refuses
+ *    the whole config before the baseline, and for the same reason: it is
+ *    knowable from the config alone. `moved` is the Set of paths `git status
+ *    --porcelain -z` names, and the setup-written guard asks it with the row's
+ *    `file` as written, so a row spelled `./src/thing.ts` is absent from it. git
+ *    NORMALIZES a pathspec, so every other site accepted that spelling — measured:
+ *    `ls-files --error-unmatch` passes and `checkout --` succeeds — which is how
+ *    the row came to be measured on a tree `setupCommand` had dirtied and its
+ *    restore reverted setup's write rather than the mutation. The NEXT row was
+ *    then credited with killing a test that reddened for that reason: exit 0,
+ *    every row `confirmed`. THE REFUSED SET, stated once here and pointed at by
+ *    `NORMAL_REPO_PATH` and the refusal's message: an absolute path, the empty
+ *    path, any segment that is `.`, `..` or empty (`./x`, `a/./b`, `a/../b`,
+ *    `a//b`, a trailing `/`), and any control byte (a lookahead's `.*` stops at
+ *    a newline, so `x\n/../y` passed the `..` check written as one). Admitted:
+ *    a DOTFILE path, because `.github/workflows/ci.yml` is a real target, and
+ *    whitespace anywhere in the name, because `-z` prints it as written where
+ *    the line form quoted it.
+ *
  * ITS EXIT CODE IS A VERDICT: 0 all killed, 2 a survivor, 3 something NOT RUN,
  * 1 the tool or config failed. Every outcome used to be 0 and only a crash was
  * non-zero, which made the code an anti-signal — 0 for the healthy state and 0
@@ -165,6 +184,45 @@ export type SweepConfig = typeof SweepConfig.Type;
  * a decode error.
  */
 const decodeSweepConfig = Schema.decodeUnknownEffect(Schema.fromJsonString(SweepConfig));
+
+/**
+ * Rows whose `file` is not a normal repo-relative path, which is a CONFIG defect and the only
+ * thing standing between a spelling and a false kill.
+ *
+ * TWO checks are defeated, and every other site is what makes it dangerous. `moved` comes from
+ * `git status --porcelain -z`, which prints `src/thing.ts`, and the row loop's setup-written
+ * guard and the pre-flight's skip both ask a Set built from that — neither finds
+ * `./src/thing.ts`. git itself NORMALIZES a pathspec, so `git ls-files --error-unmatch
+ * ./src/thing.ts` passes and `git checkout -- ./src/thing.ts` succeeds: the row is measured on
+ * a tree `setupCommand` dirtied, and its restore reverts setup's write instead of the mutation.
+ * A LATER row is then credited with killing a test that reddened for that reason — exit 0,
+ * reported `confirmed`, on the one verdict that gates a merge. Both halves measured, the second
+ * because a count of "places keyed on the string" is not a count of places that behave wrongly.
+ *
+ * REFUSED HERE RATHER THAN NORMALIZED AT THE LOOKUPS. Normalizing the two keys would fix one
+ * spelling at a time; refusing at the one place a config enters means any future check keyed
+ * on the string inherits the refusal rather than the trap. It also keeps the report's text
+ * identical to the config's: a normalizer would print `src/x.ts` in the table for an author
+ * who wrote `./src/x.ts`, in a tool whose entire job is that its quotations match the file.
+ *
+ * The refused set is stated ONCE, in refusal 6 of the header. This asks about path SEGMENTS
+ * rather than about a leading dot because a dotfile path is normal: `.github/workflows/ci.yml`
+ * is a real target.
+ */
+// One part per member of refusal 6's set, in order. Each names the input it refuses:
+//   `(?!\/)`                        an absolute path, `/etc/passwd`
+//   `(?!.*(?:^|\/)\.\.?(?:\/|$))`    a `.` or `..` segment anywhere: `./x`, `a/./b`, `a/../b`, `..`
+//   `(?!.*\/\/)` and `(?!.*\/$)`     an empty segment: `a//b`, and a trailing `/`
+//   `[^\0-\x1f\x7f]+`                the empty path, and any control byte — `x\n/../y` walks past
+//                                    the segment lookahead, whose `.*` stops at the newline
+const NORMAL_REPO_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))(?!.*\/\/)(?!.*\/$)[^\0-\x1f\x7f]+$/u;
+
+export const nonNormalMutationPaths = (
+  mutations: ReadonlyArray<{ readonly id: string; readonly file: string }>,
+): ReadonlyArray<{ readonly id: string; readonly file: string }> =>
+  mutations
+    .filter((mutation) => !NORMAL_REPO_PATH.test(mutation.file))
+    .map((mutation) => ({ id: mutation.id, file: mutation.file }));
 
 /**
  * Distinct `id`s, because `id` is the report's ONLY row identity.
@@ -637,14 +695,14 @@ export class GuardSweepProcessError extends Schema.TaggedError<GuardSweepProcess
  * Runs a command and reports EVERYTHING it observed: stdout, stderr, exit code.
  *
  * IT USED TO RETURN STDOUT ALONE, having awaited the exit code and thrown it
- * away, with stderr piped to `"ignore"`. That made two of this tool's five
- * refusals properties of git SUCCEEDING rather than properties of the tool. Point
- * the sweep at a directory that is not a git repository: `git status --porcelain`
- * exits 128, writes its complaint to the discarded stderr, and leaves stdout
- * empty — so the dirty-tree check read `""` as clean, the sweep mutated an
- * uncommitted file, the restore failed silently under `Effect.ignore`, and the
- * run exited 0 reporting a survivor with the content gone. Two review lanes
- * reproduced that independently.
+ * away, with stderr piped to `"ignore"`. That made refusals 3 and 4 — the
+ * dirty-tree checks — properties of git SUCCEEDING rather than properties of
+ * the tool. Point the sweep at a directory that is not a git repository:
+ * `git status --porcelain` exits 128, writes its complaint to the discarded
+ * stderr, and leaves stdout empty — so the dirty-tree check read `""` as
+ * clean, the sweep mutated an uncommitted file, the restore failed silently
+ * under `Effect.ignore`, and the run exited 0 reporting a survivor with the
+ * content gone. Two review lanes reproduced that independently.
  *
  * It does NOT fail on a non-zero exit, and must not: the test command is
  * expected to exit non-zero, because a killed mutant is a failing suite. The
@@ -699,24 +757,32 @@ const mustSucceed = Effect.fn("guardSweep.mustSucceed")(function* (
 }, Effect.scoped);
 
 /**
- * The tracked paths a `git status --porcelain` line names.
+ * The tracked paths `git status --porcelain -z` names.
  *
  * Used to refuse a mutation whose target the tree has already moved: the restore is
  * `git checkout -- <file>`, which returns it to HEAD, so a file `setupCommand` wrote into
  * cannot be restored to what the BASELINE was measured on. Nothing else writes to a
  * scratch worktree between its creation and the first row.
  *
- * A rename reads `R  old -> new`, and the new name is the one a mutation could target.
+ * `-z` AND NOT THE LINE FORM, because the line form quotes: a space or a non-ASCII byte in
+ * the name prints as ` M "src/a b.ts"`, the Set then holds the spelling with the quotes, and
+ * the row's `file` is never found — the setup-written guard passes, the restore reverts
+ * setup's write, and the NEXT row is credited with the red. `-z` prints the path raw and
+ * NUL-terminates it. A rename is `R  new\0old\0`, the reverse of the line form's `old -> new`;
+ * the old name is skipped because no mutation can target it.
  */
 export const statusPaths = (status: string): ReadonlySet<string> => {
   const paths = new Set<string>();
-  for (const line of status.split("\n")) {
-    if (line.trim() === "") {
+  const entries = status.split("\0");
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    if (entry === "") {
       continue;
     }
-    const named = line.slice(3).trim();
-    const arrow = named.indexOf(" -> ");
-    paths.add(arrow === -1 ? named : named.slice(arrow + 4));
+    paths.add(entry.slice(3));
+    if (entry[0] === "R" || entry[0] === "C" || entry[1] === "R" || entry[1] === "C") {
+      index += 1;
+    }
   }
   return paths;
 };
@@ -761,7 +827,7 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
   // be about the sweep's own writes rather than about what it inherited. Empty on
   // `--in-place`, where the handler has already refused a dirty tree; on the worktree
   // path the only writer between `git worktree add` and here is `setupCommand`.
-  const moved = statusPaths(yield* mustSucceed(["git", "status", "--porcelain"], root));
+  const moved = statusPaths(yield* mustSucceed(["git", "status", "--porcelain", "-z"], root));
 
   // PRE-FLIGHT, BEFORE THE BASELINE, because an anchor that does not resolve exactly once
   // is a property of the CONFIG and is knowable without running anything. It used to be
@@ -1142,6 +1208,24 @@ export const guardSweepCommand = Command.make(
           detail:
             `two mutations share an id (${duplicated.join(", ")}), and the report ` +
             "identifies every row by it",
+        });
+      }
+      // BEFORE THE SET LOOKUPS THAT DECIDE WHETHER A ROW IS MEASURABLE. `git status
+      // --porcelain` prints `src/thing.ts`, so a row spelled `./src/thing.ts` is absent from the
+      // setup-written guard while git accepts the spelling everywhere else, and the run ends in a
+      // confirmed false kill at exit 0.
+      const nonNormal = nonNormalMutationPaths(parsed.mutations);
+      if (nonNormal.length > 0) {
+        return yield* new GuardSweepConfigError({
+          detail:
+            `${nonNormal.length} ${nonNormal.length === 1 ? "mutation names" : "mutations name"} a path that is ` +
+            "not normal repo-relative, and this tool decides whether a row is measurable by " +
+            "looking its file up in the output of `git status --porcelain`:\n  " +
+            nonNormal
+              .map((row) => `${JSON.stringify(row.id)}: ${JSON.stringify(row.file)}`)
+              .join("\n  ") +
+            "\nWrite it as git prints it: not absolute, not empty, no `.`, `..` or empty segment, " +
+            "no control byte.",
         });
       }
       // RESOLVED ONCE, and `mustSucceed`: a report that quietly names no commit

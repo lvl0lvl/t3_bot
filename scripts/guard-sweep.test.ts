@@ -15,6 +15,7 @@ import {
   exitCodeFor,
   formatReport,
   judge,
+  nonNormalMutationPaths,
   readVitestJson,
   statusPaths,
   type Mutation,
@@ -553,22 +554,114 @@ describe("duplicateMutationIds", () => {
   });
 });
 
-describe("statusPaths", () => {
-  it("reads the path out of a porcelain line", () => {
-    expect([...statusPaths(" M src/a.ts\n?? src/b.ts\n")]).toEqual(["src/a.ts", "src/b.ts"]);
+describe("nonNormalMutationPaths", () => {
+  const row = (id: string, file: string) => ({ id, file });
+
+  it("names a row whose path git would print without the `./`", () => {
+    // The spelling that caused the false kill. `git status --porcelain` prints
+    // `src/thing.ts`, so a row spelled `./src/thing.ts` is absent from the Set the
+    // setup-written guard asks, while git accepts that spelling everywhere else.
+    expect(nonNormalMutationPaths([row("a", "./src/thing.ts")])).toEqual([
+      { id: "a", file: "./src/thing.ts" },
+    ]);
   });
 
-  it("takes the NEW name of a rename", () => {
-    // `R  old -> new` is the form a hand-written parser gets wrong, and the new name is the
-    // one a mutation could target — a mutation aimed at the old name cannot resolve at all.
-    expect([...statusPaths("R  src/old.ts -> src/new.ts\n")]).toEqual(["src/new.ts"]);
+  it("names a `.`, `..` or empty segment anywhere in the path, and an absolute path", () => {
+    // The single-dot segment is here because the pattern could be narrowed to `..` alone and
+    // still pass every other case, while `src/./thing.ts` is the same defect: porcelain prints
+    // `src/thing.ts` for it too. So is the empty segment: `git ls-files src//thing.ts` and
+    // `git checkout -- src//thing.ts` both succeed, and porcelain prints `src/thing.ts`.
+    expect(
+      nonNormalMutationPaths([
+        row("dot-inside", "src/./thing.ts"),
+        row("dotdot-inside", "src/../src/thing.ts"),
+        row("dotdot-leading", "../sibling/thing.ts"),
+        row("empty-inside", "src//thing.ts"),
+        row("empty-trailing", "src/thing.ts/"),
+        // A newline before the `..` segment: `.*` in a lookahead stops at one, so a segment
+        // check written as a lookahead is blind past it while git lists `src/thing.ts`.
+        row("dotdot-after-newline", "src/x\n/../thing.ts"),
+        row("absolute", "/etc/passwd"),
+      ]).map((offender) => offender.id),
+    ).toEqual([
+      "dot-inside",
+      "dotdot-inside",
+      "dotdot-leading",
+      "empty-inside",
+      "empty-trailing",
+      "dotdot-after-newline",
+      "absolute",
+    ]);
+  });
+
+  it("ADMITS a dotfile path, which is what separates this from a leading-dot check", () => {
+    // `.github/workflows/ci.yml` is a real mutation target — a check keyed on "starts with a
+    // dot" refuses a config nobody could then write, and the two readings agree on every
+    // other input. This is the test that distinguishes them.
+    expect(
+      nonNormalMutationPaths([
+        row("workflow", ".github/workflows/ci.yml"),
+        row("hidden-file", "src/.hidden.ts"),
+        row("hidden-dir", "src/.cache/thing.ts"),
+        row("dots-in-name", "src/..thing.ts"),
+        row("plain", "src/thing.ts"),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("names a path that is only dots, and the empty path", () => {
+    // `.` and `..` reach `path.join(root, file)` as the repo root and its parent, and the
+    // empty string reaches it as the root itself — none of them is a file to mutate.
+    expect(
+      nonNormalMutationPaths([row("dot", "."), row("dotdot", ".."), row("empty", "")]).map(
+        (offender) => offender.id,
+      ),
+    ).toEqual(["dot", "dotdot", "empty"]);
+  });
+
+  it("names only the offending rows, in config order, carrying each row's own spelling", () => {
+    // The refusal is read by someone editing a config: a message that names a row which is
+    // fine costs them an edit, and one that drops a row costs them a second run.
+    expect(
+      nonNormalMutationPaths([
+        row("fine-first", "src/a.ts"),
+        row("bad-second", "./src/b.ts"),
+        row("fine-third", "src/c.ts"),
+        row("bad-fourth", "src/../src/d.ts"),
+      ]),
+    ).toEqual([
+      { id: "bad-second", file: "./src/b.ts" },
+      { id: "bad-fourth", file: "src/../src/d.ts" },
+    ]);
+  });
+});
+
+describe("statusPaths", () => {
+  it("reads the path out of a porcelain -z entry, unquoted", () => {
+    // The line form prints `"src/a b.ts"` with the quotes for a space or a non-ASCII byte, and
+    // a Set keyed on that spelling never finds the row's `file`; `-z` prints the path raw.
+    expect([...statusPaths(" M src/a.ts\0?? src/b.ts\0 M src/a b.ts\0")]).toEqual([
+      "src/a.ts",
+      "src/b.ts",
+      "src/a b.ts",
+    ]);
+  });
+
+  it("takes the NEW name of a rename and skips the old name that follows it", () => {
+    // `-z` reverses the line form's `old -> new` into `new\0old\0`: the entry after a rename
+    // is the old name, which no mutation can target, and it carries no status of its own.
+    expect([...statusPaths("R  src/new.ts\0src/old.ts\0 M src/c.ts\0")]).toEqual([
+      "src/new.ts",
+      "src/c.ts",
+    ]);
+    // A rename detected against the worktree puts the `R` in the second column.
+    expect([...statusPaths(" R src/f.ts\0src/e.ts\0")]).toEqual(["src/f.ts"]);
   });
 
   it("is empty for a clean tree", () => {
     // The `--in-place` path relies on this: the handler has already refused a dirty tree, so
     // every row must pass the moved-target check rather than be refused by an empty string.
     expect([...statusPaths("")]).toEqual([]);
-    expect([...statusPaths("\n")]).toEqual([]);
   });
 });
 

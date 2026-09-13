@@ -94,7 +94,7 @@ describe("the pre-flight refuses before the suite is spawned", () => {
     const { root, config, log } = scaffold("if (this anchor is not in the file) {");
     try {
       const done = runSweep(root, config);
-      expect(done.status).not.toBe(0);
+      expect(done.status).toBe(1);
       expect(`${done.stdout}${done.stderr}`).toContain("GuardSweepConfigError");
       // THE DISCRIMINATING ASSERTION. A pre-flight placed after the baseline produces the
       // same status and the same tag, and would pass every line above this one.
