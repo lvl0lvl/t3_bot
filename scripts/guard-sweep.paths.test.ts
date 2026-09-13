@@ -117,8 +117,10 @@ describe("a path git would print differently is refused", () => {
       try {
         const done = runSweep(root, config);
         const output = `${done.stdout}${done.stderr}`;
-        expect(done.status).not.toBe(0);
+        // 1 is the header's "the tool or config failed"; 2 and 3 are verdicts on a measurement.
+        expect(done.status).toBe(1);
         expect(output).toContain("GuardSweepConfigError");
+        expect(output).toContain("output of `git status --porcelain`");
         expect(output).toContain("1 mutation names a path");
         // NAMES THE ROW AND THE SPELLING, because the operator has to fix the config and the
         // only actionable thing is which row and what is wrong with it. The row list follows
@@ -146,8 +148,9 @@ describe("a path git would print differently is refused", () => {
     try {
       const done = runSweep(root, config);
       const output = `${done.stdout}${done.stderr}`;
-      expect(done.status).not.toBe(0);
+      expect(done.status).toBe(1);
       expect(output).toContain("GuardSweepConfigError");
+      expect(output).toContain("output of `git status --porcelain`");
       expect(output).toContain("the-row");
       // The row that is FINE is not named: an operator told two rows are wrong edits two.
       expect(output).not.toContain("row-two-elsewhere");
