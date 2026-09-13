@@ -213,6 +213,13 @@ export class EnvironmentInternalError extends Schema.TaggedError<EnvironmentInte
  * it lacks - `insufficient_scope` is the 403 here. `message` is the decider's
  * prose, the same sentence the socket door forwards; `refusal` is the tag a
  * caller branches on, when the decider gave one.
+ *
+ * A non-member WRITE answers `author-not-member` where a non-member read
+ * answers `channel_not_found` (below). The read rule protects readers from
+ * enumerating channels; it does not extend here, because the write door's
+ * caller holds operate scope and named the channel itself, the socket door
+ * has answered a non-member write with distinguishing prose since #40, and
+ * the tag is what the comms gateway classifies on.
  */
 export class EnvironmentCommandRefusedError extends Schema.TaggedError<EnvironmentCommandRefusedError>()(
   "EnvironmentCommandRefusedError",
