@@ -12,6 +12,11 @@ const root = NodePath.join(NodeOS.homedir(), ".claude", "projects", "__wf_script
 NodeFS.mkdirSync(root, { recursive: true });
 const scriptPath = NodePath.join(root, "run.js");
 NodeFS.writeFileSync(scriptPath, "export const meta = {};\n");
+// A non-js file that EXISTS, under the root. A name that is never created
+// fails on realpath with "not-found" whether or not the extension gate is
+// there, so it cannot tell the gate from its absence (`t3_bot-jaq`).
+const nonJsPath = NodePath.join(root, "run.ts");
+NodeFS.writeFileSync(nonJsPath, "export const meta = {};\n");
 const outside = NodePath.join(NodeOS.tmpdir(), "wf-outside.js");
 NodeFS.writeFileSync(outside, "evil\n");
 const link = NodePath.join(root, "sneaky.js");
@@ -39,14 +44,23 @@ describe("readWorkflowScript containment", () => {
     }),
   );
 
-  effectIt.effect("rejects relative and non-js paths", () =>
+  effectIt.effect("rejects relative and non-js paths before touching the filesystem", () =>
     Effect.gen(function* () {
-      const relative = yield* Effect.exit(readWorkflowScript({ scriptPath: "run.js" }));
-      assert.equal(relative._tag, "Failure");
-      const nonJs = yield* Effect.exit(
-        readWorkflowScript({ scriptPath: scriptPath.replace(".js", ".ts") }),
-      );
-      assert.equal(nonJs._tag, "Failure");
+      // By REASON, not by `Exit._tag === "Failure"`: six reasons and a defect
+      // all read as Failure, so that assertion held with the extension half of
+      // the gate deleted — the file was never created, realpath said
+      // "not-found", and the test was green over a gate that was not there.
+      // `Effect.flip` also lets a defect fail the test instead of counting as
+      // a refusal.
+      const relative = yield* readWorkflowScript({ scriptPath: "run.js" }).pipe(Effect.flip);
+      assert.equal(relative.reason, "invalid-path");
+      // The file exists and is under the root, so the only thing that can
+      // refuse it as "invalid-path" is the extension check on the REQUEST.
+      // With that half deleted the request reaches realpath and the later
+      // check on the resolved path refuses it as "not-js" instead — a
+      // different reason, and a filesystem probe that should never have run.
+      const nonJs = yield* readWorkflowScript({ scriptPath: nonJsPath }).pipe(Effect.flip);
+      assert.equal(nonJs.reason, "invalid-path");
     }),
   );
 
@@ -54,8 +68,9 @@ describe("readWorkflowScript containment", () => {
     "rejects paths outside the root and symlink escapes",
     () =>
       Effect.gen(function* () {
-        const escaped = yield* Effect.exit(readWorkflowScript({ scriptPath: outside }));
-        assert.equal(escaped._tag, "Failure");
+        // A real file outside the root: refused on containment, by reason.
+        const escaped = yield* readWorkflowScript({ scriptPath: outside }).pipe(Effect.flip);
+        assert.equal(escaped.reason, "outside-root");
         // A symlink INSIDE the root pointing outside must fail specifically on
         // realpath re-containment — a "not-found" would mean the link was
         // never exercised and the assertion proves nothing.
