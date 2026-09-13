@@ -6552,7 +6552,9 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const source = yield* fileSystem.readFileString(
         path.join(import.meta.dirname, "OpenCodeAdapter.ts"),
       );
-      NodeAssert.deepEqual(source.match(/TurnId\.make\([^)]*\)/g), [
+      // Only code counts: a comment naming the call is not a brand site.
+      const code = source.replace(/^\s*(?:\/\/|\/\*|\*).*$/gm, "");
+      NodeAssert.deepEqual(code.match(/TurnId\.make\([^)]*\)/g), [
         "TurnId.make(id)",
         "TurnId.make(`opencode-turn-${yield* randomUUIDv4}`)",
       ]);
