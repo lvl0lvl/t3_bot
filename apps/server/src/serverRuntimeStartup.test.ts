@@ -231,6 +231,7 @@ it.effect.each([
         readonly workspaceRoot?: unknown;
       }>
     >([]);
+    const rootsRead = yield* Ref.make<ReadonlyArray<string>>([]);
     const targets = yield* ServerRuntimeStartup.resolveAutoBootstrapWelcomeTargets.pipe(
       Effect.provide(ServerSettings.layerTest({ defaultModelSelection: machineSelection })),
       // A baseDir that is NOT the cwd: the state directory is the one other
@@ -250,20 +251,22 @@ it.effect.each([
         getSnapshotSequence: () => Effect.die("unused"),
         getCounts: () => Effect.die("unused"),
         getEventReplayStats: () => Effect.die("unused"),
-        getActiveProjectByWorkspaceRoot: () =>
-          Effect.succeed(
-            existing
-              ? Option.some({
-                  id: ProjectId.make("existing-project"),
-                  title: "Startup Project",
-                  workspaceRoot: "/tmp/startup-project",
-                  defaultModelSelection: projectSelection,
-                  scripts: [],
-                  createdAt: "2026-01-01T00:00:00.000Z",
-                  updatedAt: "2026-01-01T00:00:00.000Z",
-                  deletedAt: null,
-                })
-              : Option.none(),
+        getActiveProjectByWorkspaceRoot: (workspaceRoot) =>
+          Ref.update(rootsRead, (roots) => [...roots, workspaceRoot]).pipe(
+            Effect.as(
+              existing
+                ? Option.some({
+                    id: ProjectId.make("existing-project"),
+                    title: "Startup Project",
+                    workspaceRoot: "/tmp/startup-project",
+                    defaultModelSelection: projectSelection,
+                    scripts: [],
+                    createdAt: "2026-01-01T00:00:00.000Z",
+                    updatedAt: "2026-01-01T00:00:00.000Z",
+                    deletedAt: null,
+                  })
+                : Option.none(),
+            ),
           ),
         getProjectShellById: () => Effect.die("unused"),
         getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
@@ -305,6 +308,7 @@ it.effect.each([
       assert.equal("defaultModelSelection" in commands[0]!, false);
       assert.equal(commands[0]?.workspaceRoot, "/tmp/startup-project");
     }
+    assert.deepStrictEqual(yield* Ref.get(rootsRead), ["/tmp/startup-project"]);
     assert.deepStrictEqual(
       commands.at(-1)?.modelSelection,
       projectSelection ??
