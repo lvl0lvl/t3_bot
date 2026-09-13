@@ -6539,6 +6539,35 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("brands a turn id from the SDK only behind the id gate", () =>
+    Effect.gen(function* () {
+      // Upstream's rewind rewrite (efccda9ac, #11358) builds a snapshot with
+      // `TurnId.make(entry.info.id)` over a forked session's messages and
+      // merges past `admitMessageTurnId` with no conflict, so the class #49
+      // closed comes back silently. OpenCodeAdapter.ts may brand a turn id at
+      // two sites: the raw string the gate admitted and the uuid it mints. A
+      // third `TurnId.make(` is a merge landing outside the gate: route the
+      // SDK value through `admitMessageTurnId`, or add a self-minted call to
+      // the list below. Only code counts: a comment naming the call is not a
+      // brand site. The pin sees the literal `TurnId.make(` only: a cast
+      // `as TurnId`, an aliased or destructured `make`, or a bracket access
+      // stays green (upstream writes none of these today; `vp fmt` normalises
+      // the whitespace forms into reach).
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const source = yield* fileSystem.readFileString(
+        path.join(import.meta.dirname, "OpenCodeAdapter.ts"),
+      );
+      // A line is a comment only when no code follows it: `/* note */ const x`
+      // keeps its code, so a call after a leading block comment still counts.
+      const code = source.replace(/^\s*(?:\/\/|\/\*(?!.*\*\/[ \t]*\S)|\*).*$/gm, "");
+      NodeAssert.deepEqual(code.match(/TurnId\.make\([^)]*\)/g), [
+        "TurnId.make(id)",
+        "TurnId.make(`opencode-turn-${yield* randomUUIDv4}`)",
+      ]);
+    }),
+  );
+
   it.effect("classifies a confirmed not-found across the shapes the SDK/runtime can produce", () =>
     Effect.sync(() => {
       // The real production shape: runOpenCodeSdk wraps the thrown Error
