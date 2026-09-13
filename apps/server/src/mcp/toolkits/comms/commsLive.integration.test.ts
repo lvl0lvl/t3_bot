@@ -1408,24 +1408,23 @@ describe("the comms toolkit on the live gateway", () => {
         // overturned on #24 — it is reachable by ordering, so criterion 5 holds
         // without needing a replay-only path to justify the fixture.
         //
-        // THREAD FIRST, on purpose: `some` stops at the first match, so for the
-        // human ref the wrong row has to come first or an id-only comparison
-        // passes. The module's default is human-first (the aggregate's order);
-        // this test wants the other one and says so.
-        yield* channels.replaceMembers({
-          channelId: CHANNEL_ID,
-          members: collidingMembers({
-            humanHandle: ChannelMemberHandle.make("walt"),
-            threadHandle: ChannelMemberHandle.make("ghost"),
-            first: "thread",
-          }),
+        // ORDER IS NOT THE MEASUREMENT HERE. `getChannelForMember` is a boolean
+        // `some` over the roster and returns the channel, never the row, so with
+        // both rows seated either order answers Some for both refs under an
+        // id-only comparison too. The measurement is the impostor phase below:
+        // the thread row ALONE, asked about by the human ref. Delete that phase
+        // and the id-only mutant survives.
+        const roster = collidingMembers({
+          humanHandle: ChannelMemberHandle.make("walt"),
+          threadHandle: ChannelMemberHandle.make("ghost"),
+          first: "thread",
         });
+        yield* channels.replaceMembers({ channelId: CHANNEL_ID, members: roster });
 
         const gateway = yield* ChannelGateway;
-        // The HUMAN resolves for the human ref and the THREAD for the thread
-        // ref, and both must be the channel - a comparison on memberId alone
-        // returns whichever row `some` reaches first for BOTH, which is a post
-        // attributed to the wrong member on a call that returns success.
+        // Both kinds are seated, so both refs must resolve to the channel: the
+        // admit side, which an inert comparison fails and which the negative
+        // below cannot prove on its own.
         const asHuman = yield* gateway.getChannelForMember("seniors", COLLIDING_HUMAN_REF);
         const asThread = yield* gateway.getChannelForMember("seniors", COLLIDING_THREAD_REF);
         expect(Option.isSome(asHuman)).toBe(true);
@@ -1436,11 +1435,7 @@ describe("the comms toolkit on the live gateway", () => {
         // matches, so an id-only check admits a member that is not there.
         yield* channels.replaceMembers({
           channelId: CHANNEL_ID,
-          members: collidingMembers({
-            humanHandle: ChannelMemberHandle.make("walt"),
-            threadHandle: ChannelMemberHandle.make("ghost"),
-            first: "thread",
-          }).filter((member) => member.memberKind === "thread"),
+          members: roster.filter((member) => member.memberKind === "thread"),
         });
         const impostor = yield* gateway.getChannelForMember("seniors", COLLIDING_HUMAN_REF);
         expect(Option.isNone(impostor)).toBe(true);
