@@ -6129,8 +6129,7 @@ describe("ClaudeAdapterLive", () => {
     });
     const lastStartSessionThreadIdAttribute = () =>
       spans
-        .filter((span) => span.name === "startSession")
-        .at(-1)
+        .findLast((span) => span.name === "startSession")
         ?.attributes.get("claude.resume.thread_id");
 
     return Effect.gen(function* () {
