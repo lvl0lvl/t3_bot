@@ -730,8 +730,11 @@ describe("ChannelPostRegion", () => {
     expect(buttonLabels(tree)).not.toContain("New posts");
     expect(buttonLabels(tree)).not.toContain("Earlier posts didn’t load. Try again");
 
-    // The retry re-issues the read that failed: the newest page, no cursor.
+    // The retry re-issues the read that failed: the newest page, no cursor. AND IT
+    // DOES NOT SCROLL: a reader who wheeled up within a long newest page is pulled
+    // to the bottom by a click that falls through to the "New posts" branch.
     const before = harness.refreshes;
+    const scrolledBefore = harness.scrolls;
     const retry = tree.root
       .findAll((node) => node.type === "button")
       .find((button) => text(button).includes("Newer posts"));
@@ -744,6 +747,7 @@ describe("ChannelPostRegion", () => {
       direction: "backward",
       limit: 50,
     });
+    expect(harness.scrolls).toBe(scrolledBefore);
   });
 
   it("does not let the pager claim the newest read's failure as its own", async () => {
