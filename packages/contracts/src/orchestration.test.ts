@@ -111,6 +111,23 @@ it.effect("decodes a dispatch error that carries the decider's refusal", () =>
   }),
 );
 
+it.effect("refuses a dispatch error whose refusal tag it does not know", () =>
+  Effect.gen(function* () {
+    // A fourth member of `CommandInvariantRefusal` reaching a client built
+    // before it: the whole error fails to decode, which is why adding one is
+    // a client-breaking change. A fallback member in the union greens this.
+    const exit = yield* Effect.exit(
+      decodeDispatchCommandError({
+        _tag: "OrchestrationDispatchCommandError",
+        message: "Orchestration command invariant failed (channel.post.create): unknown.",
+        refusal: { _tag: "unknown" },
+      }),
+    );
+
+    assert.isTrue(Exit.isFailure(exit));
+  }),
+);
+
 it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeTurnDiffInput({

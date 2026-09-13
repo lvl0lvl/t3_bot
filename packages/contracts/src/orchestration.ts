@@ -2927,7 +2927,11 @@ export class OrchestrationGetSnapshotError extends Schema.TaggedError<Orchestrat
  * It lives here rather than beside the decider because both dispatch doors
  * put it on the wire (`t3_bot-nqf`): the socket in
  * `OrchestrationDispatchCommandError.refusal`, HTTP in
- * `EnvironmentCommandRefusedError.refusal`.
+ * `EnvironmentCommandRefusedError.refusal`. On the wire it is a CLOSED union:
+ * an older client handed a tag it does not know fails to decode the whole
+ * error, and `RpcClient` turns that into a defect in place of the refusal
+ * (`orDie`). Adding a member is a client-breaking change; it ships after the
+ * clients know the tag.
  */
 export const CommandInvariantRefusal = Schema.Union([
   Schema.TaggedStruct("channel-archived", {}),
