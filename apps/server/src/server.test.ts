@@ -34,6 +34,7 @@ import {
   type OrchestrationEvent,
   ORCHESTRATION_WS_METHODS,
   type PreviewEvent,
+  PositiveInt,
   ProjectId,
   type ProviderAuthState,
   ProviderDriverKind,
@@ -6143,6 +6144,155 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("imports agent sessions over websocket rpc as the human operator", () =>
+    Effect.gen(function* () {
+      // A DOOR THAT HANDS THE ENGINE TO A HELPER. `agentSessionsImport` does not
+      // dispatch itself: it provides `OrchestrationEngineService` to
+      // `importRecentAgentThreads`, which dispatches `thread.create` and
+      // `thread.history.import`. With the raw engine both went out with no issuer
+      // and no origin, and nothing at the door showed it — the same omission #14
+      // left at the HTTP door, one layer down. The whole options object is
+      // recorded so a hand-off that stops stamping reads as `undefined` here.
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const codexHome = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-agent-import-issuer-codex-",
+      });
+      const workspaceRoot = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-agent-import-issuer-workspace-",
+      });
+      const transcriptDirectory = path.join(codexHome, "sessions", "2026", "08", "31");
+      const transcriptPath = path.join(transcriptDirectory, "rollout-importable.jsonl");
+      yield* fileSystem.makeDirectory(transcriptDirectory, { recursive: true });
+      yield* fileSystem.writeFileString(
+        transcriptPath,
+        [
+          encodeTestJson({
+            timestamp: "2026-08-31T12:00:00.000Z",
+            type: "session_meta",
+            payload: { id: "rpc-importable-session", cwd: workspaceRoot },
+          }),
+          encodeTestJson({
+            timestamp: "2026-08-31T12:00:01.000Z",
+            type: "event_msg",
+            payload: { type: "user_message", message: "Fix the bug" },
+          }),
+        ].join("\n") + "\n",
+      );
+      // The harness clock sits at the epoch: a transcript newer than "now" is
+      // not recent, so the file is dated to the clock, as the skip-count test is.
+      yield* fileSystem.utimes(transcriptPath, 0, 0);
+
+      const projectId = ProjectId.make("agent-import-issuer-project");
+      const project = {
+        id: projectId,
+        title: "Agent import issuer",
+        workspaceRoot,
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: "2026-08-31T12:00:00.000Z",
+        updatedAt: "2026-08-31T12:00:00.000Z",
+      } as const;
+      const dispatched: Array<{ readonly type: string; readonly options: unknown }> = [];
+      yield* buildAppUnderTest({
+        layers: {
+          serverSettings: {
+            getSettings: Effect.succeed({
+              ...DEFAULT_SERVER_SETTINGS,
+              providerInstances: {
+                [ProviderInstanceId.make("codex")]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  config: { homePath: codexHome },
+                },
+                [ProviderInstanceId.make("claudeAgent")]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  enabled: false,
+                  config: {},
+                },
+              },
+            }),
+          },
+          projectionSnapshotQuery: {
+            getProjectShellById: (requestedProjectId) =>
+              Effect.succeed(
+                requestedProjectId === projectId ? Option.some(project) : Option.none(),
+              ),
+            getImportedAgentSessionSources: () => Effect.succeed([]),
+            getThreadDetailById: () => Effect.succeed(Option.none()),
+          },
+          providerSessionDirectory: {
+            upsert: () => Effect.void,
+            recordImportedTranscript: () => Effect.void,
+            getBinding: () => Effect.succeed(Option.none()),
+          },
+          orchestrationEngine: {
+            dispatch: (command, options) =>
+              Effect.sync(() => {
+                dispatched.push({ type: command.type, options });
+                return { sequence: dispatched.length };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            // The import reads the scan's candidates; a scan first, as a client does.
+            yield* client[WS_METHODS.agentSessionsScan]({});
+            return yield* client[WS_METHODS.agentSessionsImport]({ projectId });
+          }),
+        ),
+      );
+
+      assert.deepEqual(result, { importedCount: 1, skippedCount: 0 });
+      assert.deepStrictEqual(dispatched, [
+        {
+          type: "thread.create",
+          options: { issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID } },
+        },
+        {
+          type: "thread.history.import",
+          options: { issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID } },
+        },
+      ]);
+
+      // The same import from a socket that carries a surface. The bare socket
+      // above cannot tell the connection's bound engine from one bound without
+      // its origin (`withClientDispatch(engine, makeClientDispatch(engine))`):
+      // both stamp `{ issuer }` alone. Nothing here records an import, so the
+      // second connection imports the same transcript again.
+      const surfacedWsUrl = yield* getWsServerUrl("/ws?clientSurface=web&clientAppVersion=1.2.3");
+      const surfacedResult = yield* Effect.scoped(
+        withWsRpcClient(surfacedWsUrl, (client) =>
+          Effect.gen(function* () {
+            yield* client[WS_METHODS.agentSessionsScan]({});
+            return yield* client[WS_METHODS.agentSessionsImport]({ projectId });
+          }),
+        ),
+      );
+
+      assert.deepEqual(surfacedResult, { importedCount: 1, skippedCount: 0 });
+      assert.deepStrictEqual(dispatched.slice(2), [
+        {
+          type: "thread.create",
+          options: {
+            origin: { surface: "web", appVersion: "1.2.3" },
+            issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+          },
+        },
+        {
+          type: "thread.history.import",
+          options: {
+            origin: { surface: "web", appVersion: "1.2.3" },
+            issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+          },
+        },
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("uploads Codex thread feedback through websocket rpc", () =>
     Effect.gen(function* () {
       const input = {
@@ -8917,6 +9067,83 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
         yield* Deferred.await(localRefreshStarted);
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("links a created pull request over websocket rpc as the human operator", () =>
+    Effect.gen(function* () {
+      // THE OTHER HAND-OFF: `gitRunStackedAction` provides the engine service to
+      // `linkCreatedPullRequest` for the `thread.pull-request.link` a created PR
+      // produces. Same shape as the import door above; the socket here carries a
+      // surface, so the origin must ride along with the issuer.
+      const threadId = ThreadId.make("thread-pr-link");
+      const dispatched: Array<{ readonly type: string; readonly options: unknown }> = [];
+      yield* buildAppUnderTest({
+        layers: {
+          vcsDriver: {
+            isInsideWorkTree: () => Effect.succeed(true),
+          },
+          gitManager: {
+            invalidateLocalStatus: () => Effect.void,
+            invalidateRemoteStatus: () => Effect.void,
+            invalidateStatus: () => Effect.void,
+            runStackedAction: () =>
+              Effect.succeed({
+                action: "create_pr" as const,
+                branch: { status: "skipped_not_requested" as const },
+                commit: { status: "skipped_not_requested" as const },
+                push: { status: "skipped_not_requested" as const },
+                pr: {
+                  status: "created" as const,
+                  url: "https://github.com/lvl0lvl/t3_bot/pull/7",
+                  number: PositiveInt.make(7),
+                },
+                toast: {
+                  title: "Opened PR #7",
+                  cta: { kind: "none" as const },
+                },
+              }),
+          },
+          projectionSnapshotQuery: {
+            getThreadShellById: (requested) =>
+              Effect.succeed(
+                requested === threadId
+                  ? Option.some(makeDefaultOrchestrationThreadShell({ id: threadId }))
+                  : Option.none(),
+              ),
+            getProjectShellById: () => Effect.succeed(Option.none()),
+          },
+          orchestrationEngine: {
+            dispatch: (command, options) =>
+              Effect.sync(() => {
+                dispatched.push({ type: command.type, options });
+                return { sequence: dispatched.length };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws?clientSurface=web&clientAppVersion=1.2.3");
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.gitRunStackedAction]({
+            actionId: "action-pr",
+            cwd: "/tmp/repo",
+            action: "create_pr",
+            threadId,
+          }).pipe(Stream.runCollect),
+        ),
+      );
+
+      assert.deepStrictEqual(dispatched, [
+        {
+          type: "thread.pull-request.link",
+          options: {
+            origin: { surface: "web", appVersion: "1.2.3" },
+            issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+          },
+        },
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("routes websocket rpc orchestration methods", () =>

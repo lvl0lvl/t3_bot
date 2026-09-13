@@ -14,14 +14,17 @@
  * call-site count that produced the defect; a door that dispatches THROUGH this
  * helper cannot forget.
  *
- * WHAT THIS DOES NOT COVER is a door that hands the engine service itself to a
- * helper. `ws.ts` provides `OrchestrationEngineService` to `importRecentAgentThreads`
- * (the `agentSessionsImport` RPC: `thread.create`, `thread.history.import`) and to
+ * A DOOR THAT HANDS THE ENGINE SERVICE TO A HELPER is a door too. `ws.ts` provides
+ * `OrchestrationEngineService` to `importRecentAgentThreads` (the
+ * `agentSessionsImport` RPC: `thread.create`, `thread.history.import`) and to
  * `linkCreatedPullRequest` (the `gitRunStackedAction` RPC: `thread.pull-request.link`),
- * and both dispatch bare — no issuer, no origin, and no `dispatch` at the door to
- * see. Neither command has an issuer invariant today, so nothing refuses; the first
- * to grow one is refused inside that helper. Rewiring both through this helper is
- * `t3_bot-y7q`.
+ * and with the raw engine both dispatched bare — no issuer, no origin, and no
+ * `dispatch` at the door to see; the absence sat at a `provideService`. What those
+ * RPCs provide now is `withClientDispatch`: the same service with its `dispatch`
+ * replaced by the door's bound one, so a helper cannot dispatch as anyone but the
+ * connection's operator. The input that breaks a raw hand-off: the first of those
+ * commands to grow an issuer invariant, refused inside the helper with nothing at
+ * the door to point at.
  *
  * THE STAMP IS UNCONDITIONAL. `requireCommandIssuer` ignores the field for every
  * command that has no issuer invariant, so stamping only channel commands would make
@@ -33,6 +36,7 @@
  * @module clientDispatch
  */
 import { operatorCommandIssuer, type OrchestrationClientOrigin } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
 
@@ -64,3 +68,43 @@ export const makeClientDispatch = (
       issuer,
     });
 };
+
+/**
+ * The engine as a door hands it to a helper: every member the helper could reach,
+ * with `dispatch` replaced by the door's bound one. A helper's own dispatch
+ * options are refused, not merged: the door's stamp is the only one.
+ *
+ * NOT A SPREAD. The members are named one by one because `streamDomainEvents` is
+ * a getter that opens a fresh subscription on every access
+ * (`Layers/OrchestrationEngine.ts`), which `{ ...engine }` would read once at the
+ * hand-off. A member added to the shape is a `tsc` error here because this listing
+ * omits it; a spread would copy it and compile.
+ */
+export const withClientDispatch = (
+  engine: OrchestrationEngineShape,
+  dispatch: ClientDispatch,
+): OrchestrationEngineShape => ({
+  readEvents: engine.readEvents,
+  readThreadEvents: engine.readThreadEvents,
+  getThreadReplayStats: engine.getThreadReplayStats,
+  // The shape's `dispatch` takes `(command, options?)`, so a helper passing its
+  // own `{ issuer }` or `{ origin }` compiles against the handed engine. Called
+  // through to the bound dispatch, that call reaches the store as the door's
+  // origin and the operator issuer — a silently rewritten identity, the class of
+  // omission this module exists to make visible. The die is the guard's whole
+  // job: a helper that wants its own issuer needs a different door (the comms
+  // MCP toolkit stamps a `thread` issuer), not this one.
+  dispatch: (command, options) =>
+    options === undefined
+      ? dispatch(command)
+      : Effect.die(
+          new Error(
+            "a helper below a client door dispatches as the connection; its own issuer/origin are refused, not merged",
+          ),
+        ),
+  subscribeDomainEvents: engine.subscribeDomainEvents,
+  get streamDomainEvents() {
+    return engine.streamDomainEvents;
+  },
+  latestSequence: engine.latestSequence,
+});
