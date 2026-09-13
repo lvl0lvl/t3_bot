@@ -191,14 +191,13 @@ export const collidingReadModel = (input: {
   snapshotSequence: 0,
   projects: [],
   threads: [
-    ...(input.extra?.threads ?? []),
     {
       id: COLLIDING_THREAD_ID,
       deletedAt: null,
     } as unknown as OrchestrationReadModel["threads"][number],
+    ...(input.extra?.threads ?? []),
   ],
   channels: [
-    ...(input.extra?.channels ?? []),
     {
       id: input.channelId ?? COLLIDING_CHANNEL_ID,
       name: input.channelName ?? COLLIDING_CHANNEL_NAME,
@@ -211,6 +210,7 @@ export const collidingReadModel = (input: {
       createdAt: input.now,
       updatedAt: input.now,
     },
+    ...(input.extra?.channels ?? []),
   ],
   updatedAt: input.now,
 });
