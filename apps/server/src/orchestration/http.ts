@@ -185,7 +185,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
                   error.cause !== undefined
                     ? failEnvironmentInternal("orchestration_dispatch_failed", error)
                     : failEnvironmentCommandRefused({
-                        commandType: error.commandType,
+                        commandType: normalizedCommand.type,
                         message: error.message,
                         ...(error.reason !== undefined ? { refusal: error.reason } : {}),
                       }),
