@@ -451,11 +451,14 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // A FAILURE WITH POSTS ALREADY ON SCREEN IS NOT THE SAME STATE, and it used to be
   // reported as nothing at all: the guard above only fires while the channel has shown
   // nothing, so a page that failed after one had landed rendered the previous screen
-  // unchanged. No error, and the pager back to "Earlier posts" as though ready —
-  // pressing it did nothing, because `arrived` is undefined over a Failure. At the
-  // time live arrival was gated on the cursor as well, so nothing would have moved
-  // again. A channel that silently stops mid-history with a control that lies about
-  // being able to continue.
+  // unchanged. No error, and the pager back to "Earlier posts" as though ready.
+  // `AsyncResult.value` of a Failure is its previous success's value, so `arrived` is
+  // undefined only on the FIRST read of a cursor — and that is where pressing it did
+  // nothing: no cursor to advance to. Over a re-read `arrived` is the page that
+  // already landed, which is what keeps it on screen below. At the time live arrival
+  // was gated on the cursor as well, so nothing would have moved again. A channel
+  // that silently stops mid-history with a control that lies about being able to
+  // continue.
   //
   // ONLY THE PAGER'S OWN READ, its failure and its flight alike. On the newest page
   // `page` is the newest atom, and a failure there is the newest read's — the slot
@@ -497,10 +500,11 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
       <div ref={scroller} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <div className={cn("mt-auto flex flex-col gap-3 p-4", newestFailed && "pb-14")}>
           {moreAbove ? (
-            // ONE CONTROL, whose action is what the reader needs next. On a failure it
-            // re-issues the SAME cursor through `refresh()` rather than advancing or
-            // resetting one: reverting to the newest page would silently undo the reader's
-            // own action and throw away their place in the history.
+            // ONE CONTROL, whose action is what the reader needs next. On ITS OWN failure
+            // (`pageFailed`) it re-issues the SAME cursor through `refresh()` rather than
+            // advancing or resetting one: reverting to the newest page would silently undo
+            // the reader's own action and throw away their place in the history. On the
+            // newest page a failure of `page` is the newest read's, and the click advances.
             <Button
               variant="ghost"
               size="sm"

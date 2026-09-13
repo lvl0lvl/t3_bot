@@ -969,8 +969,8 @@ describe("ChannelPostRegion", () => {
     // Two atoms are mounted once the reader pages up, and every failure branch read
     // `page` — the pager's. The input: `latestPostAt` changes, the newest re-read
     // fails holding its previous page. Nothing on screen said so; the next change
-    // was the only retry. The general notice is `t3_bot-ssz`'s; this is the one
-    // path that PR opens, in the slot the "New posts" control already owns.
+    // was the only retry. `#48` opened this paged-up path, in the slot the "New
+    // posts" control already owns, and left the newest-page half to `t3_bot-ssz`.
     reset();
     answer(CHANNEL_A, {
       posts: [post(2, "p-two", "two")],
