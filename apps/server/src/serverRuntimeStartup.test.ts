@@ -234,12 +234,12 @@ it.effect.each([
     const rootsRead = yield* Ref.make<ReadonlyArray<string>>([]);
     const targets = yield* ServerRuntimeStartup.resolveAutoBootstrapWelcomeTargets.pipe(
       Effect.provide(ServerSettings.layerTest({ defaultModelSelection: machineSelection })),
-      // A baseDir that is NOT the cwd: the state directory is the one other
-      // path the startup has to hand, and a project rooted there instead of
-      // the repo left the whole suite green (t3_bot-v2m).
+      // A baseDir (the T3 home the state directory derives from) that is NOT
+      // the cwd: another root the startup's ServerConfig carries, and a project
+      // rooted there instead of the repo left the whole suite green (`t3_bot-v2m`).
       Effect.provideService(ServerConfig.ServerConfig, {
         cwd: "/tmp/startup-project",
-        baseDir: "/tmp/startup-state",
+        baseDir: "/tmp/startup-home",
         autoBootstrapProjectFromCwd: true,
       } as never),
       Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
@@ -306,6 +306,7 @@ it.effect.each([
     );
     if (!existing) {
       assert.equal("defaultModelSelection" in commands[0]!, false);
+      // WHICH root: the :224 dispatch; the baseDir fixture above is the path it would otherwise carry.
       assert.equal(commands[0]?.workspaceRoot, "/tmp/startup-project");
     }
     assert.deepStrictEqual(yield* Ref.get(rootsRead), ["/tmp/startup-project"]);
