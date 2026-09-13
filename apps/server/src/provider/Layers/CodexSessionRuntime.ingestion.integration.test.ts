@@ -40,6 +40,7 @@ type Script = {
   readonly holdTurnOpen?: boolean;
   readonly completeTurnOnServerResponse?: boolean;
   readonly turnIds?: ReadonlyArray<string>;
+  readonly threadReadTurns?: ReadonlyArray<string>;
   readonly serverRequests?: ReadonlyArray<{
     readonly id: number;
     readonly method: string;
@@ -294,6 +295,72 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
       const failure = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
       assert.instanceOf(failure, CodexErrors.CodexAppServerProtocolParseError);
       assert.equal(failure.method, "turn/start");
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("fails readThread and rollbackThread typed when a snapshot's turn id is refused", () =>
+    Effect.gen(function* () {
+      // The other response path: a thread snapshot carries every turn's id.
+      // Whitespace again, so a `.make` at that site succeeds and the test
+      // sees a snapshot instead of the typed failure.
+      const scriptPath = yield* writeScript("refused-snapshot-turn-id", {
+        rootThreadId: ROOT,
+        recordRequests: false,
+        threadReadTurns: ["turn-kept", " "],
+        notifications: [],
+      });
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-ingestion-refused-snapshot-turn-id"),
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
+        runtimeMode: "full-access",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      });
+      yield* runtime.start();
+      yield* runtime.sendTurn({ input: "then read the thread back" });
+
+      for (const [method, read] of [
+        ["thread/read", runtime.readThread],
+        ["thread/rollback", runtime.rollbackThread(1)],
+      ] as const) {
+        const exit = yield* read.pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(exit), `${method} succeeded over a refused turn id`);
+        const failure = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
+        assert.instanceOf(failure, CodexErrors.CodexAppServerProtocolParseError);
+        assert.equal(failure.method, method);
+      }
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("returns a snapshot whose turn ids all decode", () =>
+    Effect.gen(function* () {
+      const scriptPath = yield* writeScript("admitted-snapshot-turn-id", {
+        rootThreadId: ROOT,
+        recordRequests: false,
+        threadReadTurns: ["turn-one", "turn-two"],
+        notifications: [],
+      });
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-ingestion-admitted-snapshot-turn-id"),
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
+        runtimeMode: "full-access",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      });
+      yield* runtime.start();
+      yield* runtime.sendTurn({ input: "then read the thread back" });
+
+      const snapshot = yield* runtime.readThread;
+      assert.deepEqual(
+        snapshot.turns.map((turn) => turn.id),
+        ["turn-one", "turn-two"],
+      );
 
       yield* runtime.close;
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
