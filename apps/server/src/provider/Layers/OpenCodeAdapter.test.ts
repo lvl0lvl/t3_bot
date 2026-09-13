@@ -6462,6 +6462,29 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
           ["assistant-1", "assistant-2"],
         );
+
+        // The admit side. A user message's id is never branded, so a refused
+        // one beside well-formed assistants is not the reader's business.
+        runtimeMock.state.messages[0] = { info: { id: "", role: "user" }, parts: [] };
+        NodeAssert.deepEqual(
+          (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
+          ["assistant-1", "assistant-2"],
+        );
+        // The revert boundary is compared raw and reached before the gate: a
+        // refused id AT the boundary ends the read with the turns before it.
+        runtimeMock.state.messages = [
+          { info: { id: "user-1", role: "user" }, parts: [] },
+          {
+            info: { id: "assistant-1", role: "assistant" },
+            parts: [{ id: "part-1", type: "text", text: "first answer" }],
+          },
+          { info: { id: " ", role: "assistant" }, parts: [] },
+        ];
+        runtimeMock.state.revertMessageID = " ";
+        NodeAssert.deepEqual(
+          (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
+          ["assistant-1"],
+        );
       }),
   );
 
