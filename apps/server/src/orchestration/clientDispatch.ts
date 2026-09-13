@@ -4,10 +4,10 @@
  * ONE STAMP, TWO THIN TRANSPORTS — the write-side twin of `readChannelPostPage`.
  * `issuer` is optional on the engine's dispatch options: the rule that a client
  * door must supply it lives in that option's docstring and in `requireCommandIssuer`,
- * which fails closed, and in no type. Measured before this module: ~50 dispatch call
- * sites in the server, four passing an issuer — the socket, HTTP, the seeder's
- * `SEED_ISSUER`, and the MCP door's `thread` issuer in
- * `mcp/toolkits/comms/channelGatewayLive.ts`. Once a door was wired without one:
+ * which fails closed, and in no type. Measured: ~50 dispatch call sites in the
+ * server, five passing an issuer — the socket, HTTP, the seeder's `SEED_ISSUER`,
+ * and the two MCP doors' `thread` issuer (`mcp/toolkits/comms/channelGatewayLive.ts`,
+ * `mcp/toolkits/pullRequests/handlers.ts`). Once a door was wired without one:
  * `#14` widened `ClientOrchestrationCommand` and stamped the socket only, leaving the
  * HTTP twin passing nothing; review found it by executing the door, not by a test or
  * the compiler, and `#19` stamped it inline. Two doors with two inline stamps is the
