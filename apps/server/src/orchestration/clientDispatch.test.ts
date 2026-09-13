@@ -5,7 +5,9 @@ import {
   ProjectId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
 
 import { makeClientDispatch, withClientDispatch } from "./clientDispatch.ts";
@@ -106,6 +108,45 @@ describe("makeClientDispatch", () => {
       void handed.streamDomainEvents;
       expect(streamReads).toBe(2);
       expect(yield* handed.latestSequence).toBe(0);
+    }),
+  );
+});
+
+describe("withClientDispatch", () => {
+  it.effect("refuses a helper's own options rather than rewriting them", () =>
+    Effect.gen(function* () {
+      // THE INPUT THAT BREAKS A PASS-THROUGH: a helper handing `{ issuer }` of
+      // its own. The shape's `dispatch(command, options?)` accepts it at `tsc`;
+      // a hand-off that forwards to the bound dispatch regardless reaches the
+      // recorder as the door's operator, with nothing saying the helper's
+      // issuer was dropped.
+      const { calls, engine: recorder } = recording();
+      const engine: OrchestrationEngineShape = {
+        ...recorder,
+        readEvents: () => Stream.empty,
+        readThreadEvents: () => Stream.empty,
+        getThreadReplayStats: () => Effect.die("unused"),
+        subscribeDomainEvents: Effect.succeed(Stream.empty),
+        get streamDomainEvents() {
+          return Stream.empty;
+        },
+        latestSequence: Effect.succeed(0),
+      };
+      const handed = withClientDispatch(engine, makeClientDispatch(engine));
+      const exit = yield* Effect.exit(
+        handed.dispatch(command, { issuer: { memberKind: "system", memberId: "seeder" } }),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        expect(Cause.hasDies(exit.cause)).toBe(true);
+        expect(String(Cause.squash(exit.cause))).toContain("refused, not merged");
+      }
+      expect(calls).toEqual([]);
+      // The same command without options is the door's stamp, as before.
+      yield* handed.dispatch(command);
+      expect(calls.map((call) => call.options)).toEqual([
+        { issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID } },
+      ]);
     }),
   );
 });

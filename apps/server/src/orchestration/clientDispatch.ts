@@ -36,6 +36,7 @@
  * @module clientDispatch
  */
 import { operatorCommandIssuer, type OrchestrationClientOrigin } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
 
@@ -70,7 +71,8 @@ export const makeClientDispatch = (
 
 /**
  * The engine as a door hands it to a helper: every member the helper could reach,
- * with `dispatch` replaced by the door's bound one.
+ * with `dispatch` replaced by the door's bound one. A helper's own dispatch
+ * options are refused, not merged: the door's stamp is the only one.
  *
  * NOT A SPREAD. `streamDomainEvents` is a getter that opens a fresh subscription on
  * every access (`Layers/OrchestrationEngine.ts`); `{ ...engine }` would read it
@@ -85,7 +87,21 @@ export const withClientDispatch = (
   readEvents: engine.readEvents,
   readThreadEvents: engine.readThreadEvents,
   getThreadReplayStats: engine.getThreadReplayStats,
-  dispatch,
+  // The shape's `dispatch` takes `(command, options?)`, so a helper passing its
+  // own `{ issuer }` or `{ origin }` compiles against the handed engine. Called
+  // through to the bound dispatch, that call reaches the store as the door's
+  // origin and the operator issuer — a silently rewritten identity, the class of
+  // omission this module exists to make visible. The die is the guard's whole
+  // job: a helper that wants its own issuer needs a different door (the MCP
+  // toolkits stamp a `thread` issuer), not this one.
+  dispatch: (command, options) =>
+    options === undefined
+      ? dispatch(command)
+      : Effect.die(
+          new Error(
+            "a helper below a client door dispatches as the connection; its own issuer/origin are refused, not merged",
+          ),
+        ),
   subscribeDomainEvents: engine.subscribeDomainEvents,
   get streamDomainEvents() {
     return engine.streamDomainEvents;
