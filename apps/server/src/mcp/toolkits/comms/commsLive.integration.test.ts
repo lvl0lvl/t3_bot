@@ -803,9 +803,12 @@ describe("the comms toolkit on the live gateway", () => {
         // The toolkit resolved "boss1" against a roster that still had them.
         // The decider's list of what did NOT resolve is what the agent is
         // shown - the same list, and only that list, the decider computed.
+        // "boss3" still resolves: a gateway echoing the caller's mentions
+        // instead would show both, and `toMatchObject` on an array wants
+        // equal length.
         const error = yield* call(
           "comms_post",
-          { channel: "seniors", body: "still there?", mentions: ["boss1"] },
+          { channel: "seniors", body: "still there?", mentions: ["boss1", "boss3"] },
           BOSS3,
         ).pipe(Effect.flip);
         expect(error).toMatchObject({ _tag: "CommsMemberNotFoundError", handles: ["boss1"] });

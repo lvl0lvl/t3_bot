@@ -76,6 +76,14 @@
       "replace": "                case \"channel-archived\":\n                  break;\n"
     },
     {
+      "id": "gateway-echoes-caller-mentions",
+      "guard": "createPost/mapError mentions-unresolved",
+      "axis": "wider",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "return new ChannelMentionUnresolvable({ handles: error.reason.handles });",
+      "replace": "return new ChannelMentionUnresolvable({ handles: input.mentions });"
+    },
+    {
       "id": "gateway-every-refusal-revoked",
       "guard": "createPost/mapError",
       "axis": "wider",
