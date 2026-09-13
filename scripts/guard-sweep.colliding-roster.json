@@ -140,6 +140,14 @@
       "file": "apps/server/src/persistence/Layers/ProjectionChannels.ts",
       "find": "        WHERE m.member_kind = ${member.memberKind} AND m.member_id = ${member.memberId}",
       "replace": "        WHERE m.member_kind != ${member.memberKind} AND m.member_id = ${member.memberId}"
+    },
+    {
+      "id": "budget-reset-by-roster-lookup",
+      "guard": "MentionWakeReactor/resetIfHuman",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/Layers/MentionWakeReactor.ts",
+      "find": "  const resetIfHuman = (event: PostCreated) =>\n    event.payload.authorRef.memberKind === \"human\"\n      ? budget.clear({ channelId: event.payload.channelId })\n      : Effect.void;",
+      "replace": "  const resetIfHuman = (event: PostCreated) =>\n    Effect.gen(function* () {\n      const channel = yield* channels.getChannelById(event.payload.channelId);\n      const author = Option.isSome(channel)\n        ? channel.value.members.find((member) => member.memberId === event.payload.authorRef.memberId)\n        : undefined;\n      if (author?.memberKind === \"human\") {\n        yield* budget.clear({ channelId: event.payload.channelId });\n      }\n    });"
     }
   ]
 }
