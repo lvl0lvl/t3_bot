@@ -71,7 +71,7 @@ import {
   COLLIDING_THREAD_HANDLE,
   COLLIDING_THREAD_ID,
   COLLIDING_THREAD_ISSUER,
-  seedCollidingRoster,
+  appendCollidingRoster,
 } from "../testing/collidingRoster.ts";
 import { MentionWakeBudgetRepository } from "../../persistence/Services/MentionWakeBudget.ts";
 import { ChannelPostWakeRepository } from "../../persistence/Services/ChannelPostWakes.ts";
@@ -220,15 +220,16 @@ const channelMissing = Layer.effect(
  *
  * This used to be built by dispatching one `channel.member.add` naming an
  * existing thread's id. That one-command form is refused since `t3_bot-8i2`
- * added `requireChannelMemberShape`; the ROW is still reachable, by ordering —
- * seat the human while no thread carries the id, then create the thread
- * (`../testing/collidingRoster.ts` spells the three commands) — and a
- * `channel.member-added` accepted before 8i2 landed replays into the
- * projection the same way. So the reactor's `memberKind` filter is not dead
- * code and this test is not theatre.
+ * added `requireChannelMemberShape`, and the ordering that got around it —
+ * seat the human while no thread carries the id, then create the thread — is
+ * refused since `t3_bot-7iw` (`requireThreadIdIsNoHuman`). The ROW is still
+ * reachable: a `channel.member-added` accepted before either guard landed
+ * replays into the projection untouched, which is what
+ * `../testing/collidingRoster.ts` models with three appended events. So the
+ * reactor's `memberKind` filter is not dead code and this test is not theatre.
  *
- * The projection is overridden here because this test wants the row without
- * the engine's three dispatches, not because the engine refuses it.
+ * The projection is overridden here because this test wants the row without a
+ * database restart, not because the row is unreachable.
  */
 const mentionedMemberAsHuman = Layer.effect(
   ProjectionChannelRepository,
@@ -965,9 +966,9 @@ describe("MentionWakeReactor", () => {
 
   it("does not wake a thread because a HUMAN member carries its id", async () => {
     const { directory, databasePath } = await makeDatabasePath();
-    // The membership the aggregate admits by ordering (`collidingRoster.ts`)
-    // and a database written before `t3_bot-8i2` holds by replay, written to
-    // the projection directly. See `mentionedMemberAsHuman`.
+    // The membership a database written before `t3_bot-8i2` / `t3_bot-7iw`
+    // holds by replay (`collidingRoster.ts`), written to the projection
+    // directly. See `mentionedMemberAsHuman`.
     const system = await makeSystem(databasePath, { channels: mentionedMemberAsHuman });
     try {
       await seedChannel(system);
@@ -989,20 +990,19 @@ describe("MentionWakeReactor", () => {
 
   it("wakes a thread mentioned by the HUMAN who shares its id", async () => {
     const { directory, databasePath } = await makeDatabasePath();
-    const system = await makeSystem(databasePath);
+    let system = await makeSystem(databasePath);
     try {
       await seedChannel(system);
-      // THE COLLIDING ROSTER, through the aggregate rather than a fake row:
-      // one id, a human under it and a thread under it, seated in the only
-      // order the shape guard admits (`collidingRoster.ts`).
+      // THE COLLIDING ROSTER, as EVENTS: one id, a human under it and a thread
+      // under it, the rows a database written before `t3_bot-7iw` holds. The
+      // aggregate refuses the ordering now, so the events are appended and the
+      // engine restarted over them — the engine loads its read model at start
+      // (`collidingRoster.ts`).
       await system.run(
-        seedCollidingRoster({
-          engine: system.engine,
-          projectId: PROJECT_ID,
-          issuer: WALT,
-          now: NOW,
-        }),
+        appendCollidingRoster({ events: system.events, projectId: PROJECT_ID, now: NOW }),
       );
+      await system.dispose();
+      system = await makeSystem(databasePath);
       await system.startReactor();
 
       // THE HUMAN POSTS, MENTIONING THE TWIN. The author exclusion reads
@@ -2446,7 +2446,7 @@ describe("MentionWakeReactor wake budget", () => {
   // THE COLLIDING ROSTER IS SHARED (`../testing/collidingRoster.ts`). This file
   // held its own spelling — a channel id, a twin id, an issuer — and so did the
   // other files that compare memberships; the module names them, and carries
-  // the reason it exists and the ordering that makes the collision constructible.
+  // the reason it exists and the path by which the collision still arrives.
 
   /** A second channel with the same roster, to prove the budget is per channel. */
   const seedOtherChannel = async (system: System) => {
@@ -2735,22 +2735,18 @@ describe("MentionWakeReactor wake budget", () => {
 
   it("is not reset by a thread member sharing the human member's id", async () => {
     const { directory, databasePath } = await makeDatabasePath();
-    const system = await makeSystem(databasePath);
+    let system = await makeSystem(databasePath);
     try {
       await seedChannel(system);
 
-      // THE COLLIDING ROSTER, seeded by the shared fixture: human seated first,
-      // the thread of that id created after, the thread member added last. The
-      // ordering and the reason it is the ONLY order the aggregate admits are on
-      // `collidingRoster.ts`; this test's claim is what the budget does with it.
+      // THE COLLIDING ROSTER, appended as the shared fixture's three events and
+      // the engine restarted over them; why it is events and not commands is on
+      // `collidingRoster.ts`. This test's claim is what the budget does with it.
       await system.run(
-        seedCollidingRoster({
-          engine: system.engine,
-          projectId: PROJECT_ID,
-          issuer: WALT,
-          now: NOW,
-        }),
+        appendCollidingRoster({ events: system.events, projectId: PROJECT_ID, now: NOW }),
       );
+      await system.dispose();
+      system = await makeSystem(databasePath);
       // Plus the woken thread, which the budget test needs on the roster and the
       // shared fixture does not carry: it is this file's member, not the
       // collision's.

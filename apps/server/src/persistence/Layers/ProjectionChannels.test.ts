@@ -446,8 +446,8 @@ layer("ProjectionChannelRepository", (it) => {
       // The input is the shared collision's HUMAN half seated alone, asked
       // about by both of the module's refs — made by the contract's own
       // constructors, so this is the ref production hands the query. The
-      // thread half is reachable through the aggregate by ordering (the module
-      // says how); this is the read path it would then arrive on.
+      // thread half arrives by replay of rows written before `t3_bot-7iw`
+      // (the module says how); this is the read path it then arrives on.
       const repo = yield* ProjectionChannelRepository;
       yield* repo.upsertChannel(
         channelWithMembers(ChannelId.make("kind-only"), "kind-only", [COLLIDING_HUMAN_MEMBER]),

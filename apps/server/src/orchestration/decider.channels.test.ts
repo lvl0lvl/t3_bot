@@ -474,10 +474,11 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // The fixture said that and did not do it until a review lane measured
       // it: `human-walt` beside `thread-pm` differs in BOTH fields, which is
       // the exact shape `t3_bot-46h` was filed about. It collides now. The
-      // roster is reachable by ordering — a human member added while no thread
-      // of that id exists, then the thread — and `makeReadModel` builds the
-      // read model directly in any case, which is why the pair is expressible
-      // here and refused at an `add` command.
+      // roster was reachable by ordering — a human member added while no thread
+      // of that id exists, then the thread — until `t3_bot-7iw` refused the
+      // thread; a database written before that still holds it, and
+      // `makeReadModel` builds the read model directly in any case, which is
+      // why the pair is expressible here and refused at an `add` command.
       const decided = yield* decideOrchestrationCommand({
         command: {
           type: "channel.member.remove",

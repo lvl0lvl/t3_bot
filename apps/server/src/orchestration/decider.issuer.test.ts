@@ -898,12 +898,12 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
         //   3. `channel.member.add` with a THREAD member naming "thread-agent" — accepted,
         //      the thread is live now.
         //
-        // Four ordinary commands, all as the human operator, no replay. This is
-        // `t3_bot-46h`'s criterion 4, already answered REACHABLE by PR #24, and
-        // `decider.channels.test.ts` in this tree says it too: "the roster is reachable by
-        // ordering — a human member added while no thread of that id exists, then the thread".
-        // `MentionWakeReactor.test.ts` builds the same roster. This file used to assert the
-        // opposite of all three.
+        // Four ordinary commands, all as the human operator, no replay. That was
+        // `t3_bot-46h`'s criterion 4, answered REACHABLE by PR #24 — and closed by
+        // `t3_bot-7iw`: step 2 is refused now (`requireThreadIdIsNoHuman`, the human is
+        // seated), so both orderings are refused for commands and the roster arrives by
+        // replay only. `MentionWakeReactor.test.ts` builds it from appended events. This
+        // file used to assert the opposite of the reachability, then the opposite again.
         //
         // WHAT IS TRUE ABOUT THE SHAPE GUARD is narrower than what I claimed: it refuses the
         // second member AT THE MOMENT OF THE ADD, and never re-validates a member already on
@@ -912,10 +912,10 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
         // covers a roster that only replay produces, and both are states the lookup can be
         // handed.
         //
-        // Which makes this guard a LIVE defence on a reachable impersonation rather than a
-        // last-ditch check on legacy rows. The fixture below is still a read model rather
-        // than a command sequence, because a unit test of the decider takes one; the shape it
-        // holds is one the aggregate will produce.
+        // Which made this guard a LIVE defence on a reachable impersonation; since 7iw it
+        // is the check on rows the aggregate no longer produces but a database may hold. The
+        // fixture below is a read model rather than a command sequence, because a unit test
+        // of the decider takes one, and because no command sequence produces it any more.
         //
         // The two fixtures above spend their collision proving the SHAPE guard (both assert
         // "is a thread id"), so neither can prove this one.
@@ -982,8 +982,8 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
         // AGENT's post is found against the human row and stored under a human's handle. In the
         // channel where agents read their instructions, a post that appears to come from Walt is
         // the worse direction of the two.
-        // THE SHARED ROSTER, human FIRST: the order the aggregate reaches, and the
-        // order that makes the WRONG row first for a thread author.
+        // THE SHARED ROSTER, human FIRST: the order the aggregate reached before
+        // `t3_bot-7iw`, and the order that makes the WRONG row first for a thread author.
         const colliding = collidingReadModel({
           now: NOW,
           channelId: CHANNEL,
