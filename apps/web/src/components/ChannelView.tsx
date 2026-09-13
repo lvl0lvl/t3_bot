@@ -187,7 +187,7 @@ const CHANNEL_POST_PAGE_SIZE = 50;
  * does report in-flight reads and is what disables this button. A button asks once
  * and says what it is doing.
  *
- * `t3_bot-ef1` carries the scroll refinement, NOT `t3_bot-ajw`: ajw is the bead this
+ * `t3_bot-cdo` carries the scroll refinement, NOT `t3_bot-ajw`: ajw is the bead this
  * work closes, so a deferral parked on it would have been closed along with it.
  *
  * THE CURSOR IS OPAQUE HERE TOO. This component holds whatever `nextCursor` the
@@ -414,9 +414,10 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // reported as nothing at all: the guard above only fires while the channel has shown
   // nothing, so a page that failed after one had landed rendered the previous screen
   // unchanged. No error, and the pager back to "Earlier posts" as though ready —
-  // pressing it did nothing, because `arrived` is undefined over a Failure. Live
-  // arrival had stopped too, since `cursor` is no longer undefined. A channel that
-  // silently stops mid-history with a control that lies about being able to continue.
+  // pressing it did nothing, because `arrived` is undefined over a Failure. At the
+  // time live arrival was gated on the cursor as well, so nothing would have moved
+  // again. A channel that silently stops mid-history with a control that lies about
+  // being able to continue.
   const pageFailed = AsyncResult.isFailure(page);
   // THE NEWEST READ FAILS ON ITS OWN while the reader is paged up — it is a second
   // atom there, and every other failure here is read over `page`. The input: a

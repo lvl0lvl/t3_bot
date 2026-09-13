@@ -672,9 +672,9 @@ describe("ChannelPostRegion", () => {
     // `BUG-25-02`. The failure branch is gated on `posts.length === 0`, so a page that
     // failed AFTER one had landed rendered the previous screen unchanged: no error, and
     // the pager back to "Earlier posts" as though ready. Pressing it did nothing —
-    // `arrived` is undefined over a Failure — and live arrival had already stopped,
-    // because `cursor` is no longer undefined. A channel that stops mid-history with a
-    // control that lies about being able to continue, and no way back without a reload.
+    // `arrived` is undefined over a Failure — and live arrival was then gated on the
+    // cursor as well. A channel that stops mid-history with a control that lies about
+    // being able to continue, and no way back without a reload.
     reset();
     // OPAQUE TO THE CLIENT, which hands it back verbatim and never decodes it —
     // so these are not defanged the way the server's fixtures were. They carry a
