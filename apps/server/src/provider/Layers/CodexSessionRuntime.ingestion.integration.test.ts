@@ -28,7 +28,6 @@ import { makeCodexSessionRuntime } from "./CodexSessionRuntime.ts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 const ROOT = wireFixture.rootThreadId;
-const scriptPath = NodePath.join(import.meta.dirname, "../testFixtures/.ingestion-script.json");
 const peerPath = NodePath.join(
   import.meta.dirname,
   `../testFixtures/codexCollabMockPeer.${HostProcessPlatform.defaultValue() === "win32" ? "cmd" : "sh"}`,
@@ -48,8 +47,14 @@ type Script = {
   }>;
 };
 
-const writeScript = (script: Script) =>
+// One script per test: a test that times out tears its script down while
+// the next test's peer is still reading it.
+const writeScript = (name: string, script: Script) =>
   Effect.gen(function* () {
+    const scriptPath = NodePath.join(
+      import.meta.dirname,
+      `../testFixtures/.ingestion-${name}.json`,
+    );
     // @effect-diagnostics-next-line preferSchemaOverJson:off
     NodeFS.writeFileSync(scriptPath, JSON.stringify(script), "utf8");
     NodeFS.rmSync(`${scriptPath}.responses`, { force: true });
@@ -59,6 +64,7 @@ const writeScript = (script: Script) =>
         NodeFS.rmSync(`${scriptPath}.responses`, { force: true });
       }),
     );
+    return scriptPath;
   });
 
 const summarize = (event: ProviderEvent) => `${event.kind}:${event.method}:${event.turnId ?? "-"}`;
@@ -78,7 +84,7 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
 
   it.effect("reports an empty turn id as a codex error and keeps delivering", () =>
     Effect.gen(function* () {
-      yield* writeScript({
+      const scriptPath = yield* writeScript("empty-turn-id", {
         rootThreadId: ROOT,
         recordRequests: false,
         notifications: [
@@ -119,11 +125,11 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
       assert.include(refusal.message, "Codex sent turn/started");
       assert.include(refusal.message, 'turn.id ""');
       assert.include(refusal.message, "which is not an id; the message was dropped.");
-      // No event was built from the refused id, and the later valid
+      // The only turn/started delivered is the peer's own; the refused one
+      // produced no event, no handler failure, and the later valid
       // notification arrived — the consumer outlived the bad one.
-      assert.isFalse(
-        events.some((event) => event.method === "turn/started" && event.turnId === ""),
-      );
+      assert.equal(events.filter((event) => event.method === "turn/started").length, 1);
+      assert.equal(events.filter((event) => event.method === "codex/handler-failed").length, 0);
       assert.equal(events[events.length - 1]?.turnId, "turn-after");
 
       yield* runtime.close;
@@ -135,7 +141,7 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
       // A delta is routed by `readRouteFields`, which `.make`s both the turn id
       // and the item id — the queue consumer's site, not a direct handler's.
       // Same door, same answer.
-      yield* writeScript({
+      const scriptPath = yield* writeScript("empty-item-id", {
         rootThreadId: ROOT,
         recordRequests: false,
         notifications: [
@@ -176,7 +182,10 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
         refusal.message,
         'turnId " ", itemId "", which are not ids; the message was dropped.',
       );
-      assert.isFalse(events.some((event) => event.method === "item/agentMessage/delta"));
+      // The refused delta reached no handler: no handler failure was reported
+      // and the peer's own turn/started is the only one delivered.
+      assert.equal(events.filter((event) => event.method === "codex/handler-failed").length, 0);
+      assert.equal(events.filter((event) => event.method === "turn/started").length, 1);
       assert.equal(events[events.length - 1]?.method, "turn/completed");
 
       yield* runtime.close;
@@ -191,7 +200,7 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
         // for the approval forever and so does the turn; a `.make` throw in the
         // handler left exactly that. The door answers it with invalidParams and
         // reports it, and the peer completes the turn on the response.
-        yield* writeScript({
+        const scriptPath = yield* writeScript("empty-request-turn-id", {
           rootThreadId: ROOT,
           recordRequests: false,
           holdTurnOpen: true,
@@ -245,9 +254,10 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
         // @effect-diagnostics-next-line preferSchemaOverJson:off
         const recorded = JSON.parse(
           NodeFS.readFileSync(`${scriptPath}.responses`, "utf8").trim().split("\n")[0]!,
-        ) as { id: number; result?: unknown; error?: { message?: string } };
+        ) as { id: number; result?: unknown; error?: { code?: number; message?: string } };
         assert.equal(recorded.id, 41);
         assert.isUndefined(recorded.result);
+        assert.equal(recorded.error?.code, -32602);
         assert.include(recorded.error?.message ?? "", "an id T3 Code refuses");
         assert.equal(events[events.length - 1]?.method, "turn/completed");
 
@@ -261,7 +271,7 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
       // mints the turn id from its script; whitespace is the value `.make`
       // admits and the decoder refuses, so a `.make` here succeeds and hands
       // a garbage id to the session where the decoder fails typed.
-      yield* writeScript({
+      const scriptPath = yield* writeScript("refused-response-turn-id", {
         rootThreadId: ROOT,
         recordRequests: false,
         turnIds: [" "],
@@ -295,7 +305,7 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
       // and the response written back over stdin. A 1 MiB id copied into all
       // three at full size is the input this bounds.
       const oversized = " ".repeat(1024 * 1024);
-      yield* writeScript({
+      const scriptPath = yield* writeScript("oversized-turn-id", {
         rootThreadId: ROOT,
         recordRequests: false,
         holdTurnOpen: true,
@@ -355,7 +365,7 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
       // The admit side. `null` is the protocol's spelling of "no turn
       // context" on the hook notifications; a door that reads it as a
       // refused value drops every session-start hook.
-      yield* writeScript({
+      const scriptPath = yield* writeScript("null-hook-turn-id", {
         rootThreadId: ROOT,
         recordRequests: false,
         notifications: [
@@ -412,11 +422,63 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("delivers a padded turn id untrimmed", () =>
+    Effect.gen(function* () {
+      // The door checks with the brand's decoder, which trims, and the
+      // handlers brand the raw wire string, which does not: " turn-pad " is
+      // admitted and carried as sent. A door that handed the decoded value
+      // to the handlers would deliver "turn-pad" here instead.
+      const scriptPath = yield* writeScript("padded-turn-id", {
+        rootThreadId: ROOT,
+        recordRequests: false,
+        notifications: [
+          {
+            method: "turn/started",
+            params: { threadId: ROOT, turn: { id: " turn-pad ", status: "inProgress", items: [] } },
+          },
+          {
+            method: "turn/completed",
+            params: { threadId: ROOT, turn: { id: " turn-pad ", status: "completed", items: [] } },
+          },
+        ],
+      });
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-ingestion-padded-turn-id"),
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
+        runtimeMode: "full-access",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      });
+      const collected = yield* runtime.events.pipe(
+        Stream.takeUntil((event) => event.method === "turn/completed"),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* runtime.start();
+      yield* runtime.sendTurn({ input: "a padded turn id follows" });
+      const events = Array.from(yield* Fiber.join(collected));
+
+      assert.equal(
+        events.filter((event) => event.method === "codex/malformed-id").length,
+        0,
+        events.map(summarize).join("\n"),
+      );
+      assert.equal(
+        events.filter((event) => event.method === "turn/started" && event.turnId === " turn-pad ")
+          .length,
+        1,
+      );
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("raises an elicitation whose turnId is null and answers it with a result", () =>
     Effect.gen(function* () {
       // The request door's admit side. MCP models an elicitation as a
       // standalone request, so its turnId is null outside a turn.
-      yield* writeScript({
+      const scriptPath = yield* writeScript("null-elicitation-turn-id", {
         rootThreadId: ROOT,
         recordRequests: false,
         holdTurnOpen: true,
