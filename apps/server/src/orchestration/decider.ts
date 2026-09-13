@@ -2057,7 +2057,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       yield* Effect.forEach(members, (member) =>
         requireChannelMemberShape({ readModel, command, member }),
       );
-      yield* requireChannelMembersUnique({ command, members });
+      yield* requireChannelMembersUnique({ command, seated: [], adding: members });
       const name = yield* requireCanonicalChannelName({ command, name: command.name });
       yield* requireChannelNameAvailable({ readModel, command, name });
       return {
@@ -2183,7 +2183,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       yield* requireChannelMemberShape({ readModel, command, member });
       yield* requireChannelMembersUnique({
         command,
-        members: [...channel.members, member],
+        seated: channel.members,
+        adding: [member],
       });
       const occurredAt = yield* nowIso;
       return {

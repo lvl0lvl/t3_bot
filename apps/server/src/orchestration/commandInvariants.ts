@@ -393,6 +393,20 @@ export function requireCanonicalChannelMember(input: {
 }
 
 /**
+ * The uniqueness key for a member: the pair, as a tuple rather than `${kind}:${id}`.
+ *
+ * Not because the separator is reachable today — `memberKind` is a closed two-value
+ * literal union, so no kind can contain a colon and the forged-separator collision
+ * cannot happen — but because the tuple is free and stays correct if `memberKind` ever
+ * becomes operator-supplied text, which is when a string key would start silently
+ * merging refs. One function so the seated rows and the added rows cannot be keyed
+ * differently.
+ */
+function refKey(member: ChannelMember): string {
+  return JSON.stringify([member.memberKind, member.memberId]);
+}
+
+/**
  * TWO KEYS, BOTH UNIQUE PER CHANNEL: the handle and the member ref.
  *
  * A handle is the mention key, so duplicates would make a mention ambiguous and
@@ -403,22 +417,40 @@ export function requireCanonicalChannelMember(input: {
  * `(memberKind, memberId)` is the AUTHORIZATION key — every decision in the
  * system resolves a member by it, and `requireChannelAuthorIsMember` returns the
  * FIRST row that matches. Two rows with one ref under two handles were legal, and
- * then the handle a post is stored under, and the `@handle` a wake prompt carries,
- * were decided by array position: `find` -> `findLast` changed the answer and no
- * test could see it, and the position is not even stable, since the projector
- * appends in memory and reloads `ORDER BY handle ASC`. Removing one of the two
- * handles also reported success and evicted nobody, because the remove path keys
- * by handle while access keys by the ref (`t3_bot-1ez`, `t3_bot-s4l`).
+ * then `authorHandle` — the handle a post is STORED under — was decided by array
+ * position: `find` -> `findLast` changed the answer and no test could see it, and
+ * the position is not even stable, since the projector appends in memory and
+ * reloads `ORDER BY handle ASC`. Mentions are NOT affected and it is worth being
+ * exact: they resolve by handle, and the wake reactor collects memberIds into a
+ * Set, so two handles for one thread still wake it once. Removing one of the two
+ * handles DID report success and evict nobody, because the remove path keys by
+ * handle while access keys by the ref (`t3_bot-1ez`, `t3_bot-s4l`).
  *
  * ONE ID UNDER TWO KINDS STAYS LEGAL. That is a different collision, it is why
  * the author lookup compares both fields, and whether a channel may hold it at
  * all is `t3_bot-7iw`. Keying this on `memberId` alone would refuse it.
+ *
+ * THE PROPERTY IS OVER THE DELTA, NOT THE ROSTER: after this command, no two
+ * seated handles name one ref. `adding` is checked against itself and against
+ * `seated`; `seated` is NOT checked against itself, because a command answers for
+ * the rows it admits and not for rows written before this invariant existed.
+ * Re-validating the whole roster made a legacy duplicate block every later
+ * `member.add` with an error naming a member the operator had not mentioned —
+ * a wall where a diagnosis belongs, and the repair of that population is a
+ * command of its own (`t3_bot-uw9`, `t3_bot-z7u`).
+ *
+ * The handle half narrows the same way and loses nothing: the projector keys
+ * `channel_members` by handle as a SQL primary key, so `seated` cannot hold two
+ * rows with one handle and that comparison was always vacuous.
  */
 export function requireChannelMembersUnique(input: {
   readonly command: OrchestrationCommand;
-  readonly members: ReadonlyArray<ChannelMember>;
+  /** Rows already on the roster. Not compared against each other. */
+  readonly seated: ReadonlyArray<ChannelMember>;
+  /** Rows this command seats. Compared against each other and against `seated`. */
+  readonly adding: ReadonlyArray<ChannelMember>;
 }): Effect.Effect<void, OrchestrationCommandInvariantError> {
-  const handles = new Set<string>();
+  const handles = new Set<string>(input.seated.map((member) => member.handle));
   // Keyed by a tuple rather than `${kind}:${id}`. Not because the separator is
   // reachable today — `memberKind` is a closed two-value literal union, so no kind can
   // contain a colon and the forged-separator collision cannot happen — but because the
@@ -426,8 +458,10 @@ export function requireChannelMembersUnique(input: {
   // text, which is when the string key would start silently merging refs. The value is
   // the HANDLE rather than a bare Set membership, because the operator who reads this
   // refusal has to act on it and did not type the id.
-  const refs = new Map<string, string>();
-  for (const member of input.members) {
+  const refs = new Map<string, string>(
+    input.seated.map((member) => [refKey(member), member.handle] as const),
+  );
+  for (const member of input.adding) {
     if (handles.has(member.handle)) {
       return Effect.fail(
         invariantError(
@@ -437,7 +471,7 @@ export function requireChannelMembersUnique(input: {
       );
     }
     handles.add(member.handle);
-    const ref = JSON.stringify([member.memberKind, member.memberId]);
+    const ref = refKey(member);
     const seated = refs.get(ref);
     if (seated !== undefined) {
       return Effect.fail(
@@ -445,8 +479,8 @@ export function requireChannelMembersUnique(input: {
           input.command.type,
           `Handles '${seated}' and '${member.handle}' are the same member ` +
             `('${member.memberKind}' '${member.memberId}') in one channel. One member is one ` +
-            `row: the author of a post and the target of a mention are resolved by that pair, ` +
-            `so a second handle for it makes both depend on row order.`,
+            `row: a post's author is resolved by that pair and stored under whichever handle ` +
+            `is found first, so a second handle for it decides authorship by row order.`,
         ),
       );
     }

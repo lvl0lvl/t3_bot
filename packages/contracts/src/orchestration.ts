@@ -1412,7 +1412,14 @@ const ChannelMemberAddCommand = Schema.Struct({
   member: ChannelMember,
 });
 
-/** Keyed by handle: handle is unique within a channel, memberId is not. */
+/**
+ * Keyed by handle. `memberId` alone is still not unique — a thread member and a human
+ * member can share one (`t3_bot-46h`) — but since `t3_bot-1ez` the PAIR is unique per
+ * channel, so keying by `(memberKind, memberId)` would also be well defined. The handle
+ * stays because it is what the projector keys rows by and what an operator names. That
+ * the removal resolves by handle while every authorization decision resolves by the pair
+ * is the mismatch `t3_bot-s4l` is about, not a constraint.
+ */
 const ChannelMemberRemoveCommand = Schema.Struct({
   type: Schema.Literal("channel.member.remove"),
   commandId: CommandId,

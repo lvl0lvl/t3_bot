@@ -222,7 +222,8 @@ describe("comms toolkit against the real aggregate invariants", () => {
       expect(
         (yield* requireChannelMembersUnique({
           command: { type: "channel.create" } as never,
-          members: MEMBERS as never,
+          seated: [],
+          adding: MEMBERS as never,
         }).pipe(Effect.result))._tag,
       ).toBe("Success");
 
@@ -297,7 +298,8 @@ describe("comms toolkit against the real aggregate invariants", () => {
       );
       const verdict = yield* requireChannelMembersUnique({
         command: { type: "channel.create" } as never,
-        members: members as never,
+        seated: [],
+        adding: members as never,
       }).pipe(Effect.result);
       expect(verdict._tag).toBe("Failure");
     }),
@@ -318,7 +320,8 @@ describe("comms toolkit against the real aggregate invariants", () => {
       expect(
         (yield* requireChannelMembersUnique({
           command: { type: "channel.create" } as never,
-          members: members as never,
+          seated: [],
+          adding: members as never,
         }).pipe(Effect.result))._tag,
       ).toBe("Success");
 

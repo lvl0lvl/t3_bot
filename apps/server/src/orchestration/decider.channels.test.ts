@@ -352,6 +352,46 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
     }),
   );
 
+  it.effect("admits an unrelated add to a roster that ALREADY holds a duplicated ref", () =>
+    Effect.gen(function* () {
+      // THE DELTA RULE, and this is the only test that can see it. Every other test here
+      // passes under both readings, because none of their rosters already violates the
+      // invariant. This one's does — and it can only be built by handing the read model
+      // the rows directly, which is precisely the population the projector can replay and
+      // no command can create (`t3_bot-z7u`).
+      //
+      // A command answers for the rows it admits, not for rows written before the
+      // invariant existed. Re-validating the whole roster made a legacy duplicate refuse
+      // every later add, with an error naming a member the operator never mentioned — a
+      // wall where a diagnosis belongs. Repairing that population needs a command
+      // add/remove cannot express (`t3_bot-uw9`).
+      //
+      // WHAT THIS DOES NOT SAY: that a second handle for a seated ref is admitted. It is
+      // not, whether or not the roster is already broken — the two tests above cover that
+      // and they stay red under any reading.
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add-to-legacy-roster"),
+          channelId: CHANNEL,
+          member: {
+            handle: ChannelMemberHandle.make("boss3"),
+            memberKind: "thread",
+            memberId: "thread-boss3",
+          },
+        },
+        readModel: makeReadModel([
+          { handle: "boss1", memberKind: "thread", memberId: "thread-boss1" },
+          // The duplicate: one ref, two handles, already seated.
+          { handle: "alias", memberKind: "thread", memberId: "thread-boss1" },
+        ]),
+        issuer: ADMIN,
+      });
+      const event = Array.isArray(decided) ? decided[0] : decided;
+      expect(event?.type).toBe("channel.member-added");
+    }),
+  );
+
   it.effect("still ADMITS one id under two kinds, which is a different collision", () =>
     Effect.gen(function* () {
       // THE WIDER AXIS, and the reason the check keys on the PAIR. Keying it on

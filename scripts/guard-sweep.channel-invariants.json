@@ -87,8 +87,8 @@
       "guard": "requireChannelMembersUnique",
       "axis": "inert",
       "file": "apps/server/src/orchestration/commandInvariants.ts",
-      "find": "    if (refs.has(ref)) {",
-      "replace": "    if (false as boolean) {"
+      "find": "    if (seated !== undefined) {",
+      "replace": "    if (false as boolean && seated !== undefined) {"
     },
     {
       "id": "member-refs-unique-refuses-two-kinds",
