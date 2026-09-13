@@ -33,19 +33,31 @@ import { decideOrchestrationCommand } from "./decider.ts";
 const NOW = "2026-01-01T00:00:00.000Z";
 const PROJECT = ProjectId.make("project-1");
 const CHANNEL = ChannelId.make("channel-seniors");
+const SECOND_CHANNEL = ChannelId.make("channel-juniors");
 const OWNER_ID = "human-owner";
 const DELETED_THREAD_ID = "thread-gone";
 const ADMIN = { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID } as const;
 
-function readModel(input: {
+interface ChannelInput {
+  readonly id: ChannelId;
   readonly members: ReadonlyArray<{
     readonly handle: string;
     readonly memberKind: "thread" | "human";
     readonly memberId: string;
   }>;
   readonly archivedAt?: string | null;
-  readonly channels?: boolean;
-}): OrchestrationReadModel {
+}
+
+// One channel (`CHANNEL`) with these members, or exactly the channels given.
+function readModel(
+  input:
+    | { readonly members: ChannelInput["members"]; readonly archivedAt?: string | null }
+    | { readonly channels: ReadonlyArray<ChannelInput> },
+): OrchestrationReadModel {
+  const channels =
+    "channels" in input
+      ? input.channels
+      : [{ id: CHANNEL, members: input.members, archivedAt: input.archivedAt }];
   return {
     snapshotSequence: 0,
     projects: [
@@ -64,23 +76,18 @@ function readModel(input: {
       // may still list it as a THREAD member.
       { id: DELETED_THREAD_ID, deletedAt: NOW },
     ] as unknown as OrchestrationReadModel["threads"],
-    channels:
-      input.channels === false
-        ? []
-        : [
-            {
-              id: CHANNEL,
-              name: "seniors",
-              members: input.members.map((member) => ({
-                handle: ChannelMemberHandle.make(member.handle),
-                memberKind: member.memberKind,
-                memberId: member.memberId,
-              })),
-              archivedAt: input.archivedAt ?? null,
-              createdAt: NOW,
-              updatedAt: NOW,
-            },
-          ],
+    channels: channels.map((channel) => ({
+      id: channel.id,
+      name: channel.id,
+      members: channel.members.map((member) => ({
+        handle: ChannelMemberHandle.make(member.handle),
+        memberKind: member.memberKind,
+        memberId: member.memberId,
+      })),
+      archivedAt: channel.archivedAt ?? null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    })),
     updatedAt: NOW,
   };
 }
@@ -140,6 +147,37 @@ it.layer(NodeServices.layer)("thread.create refuses a human's member id", (it) =
     }),
   );
 
+  it.effect("refuses a thread id that a human holds in a channel that is not the first", () =>
+    Effect.gen(function* () {
+      // Two channels. The first lists the id only as a THREAD member; the
+      // second seats the human under it. A scan of `channels[0]` alone finds
+      // no human and admits the thread — the mutation this test is written
+      // against — so the detail has to name the SECOND channel.
+      const error = yield* decideOrchestrationCommand({
+        command: createThread(OWNER_ID),
+        readModel: readModel({
+          channels: [
+            {
+              id: CHANNEL,
+              members: [{ handle: "owner", memberKind: "thread", memberId: OWNER_ID }],
+            },
+            {
+              id: SECOND_CHANNEL,
+              members: [{ handle: "owner", memberKind: "human", memberId: OWNER_ID }],
+            },
+          ],
+        }),
+        issuer: ADMIN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain(
+          `'${OWNER_ID}' is a human member of channel '${SECOND_CHANNEL}'`,
+        );
+      }
+    }),
+  );
+
   it.effect("refuses the operator's id when NO channel seats it yet", () =>
     Effect.gen(function* () {
       // `noSeedHierarchy`: nothing is seated, so the seated check finds
@@ -149,7 +187,7 @@ it.layer(NodeServices.layer)("thread.create refuses a human's member id", (it) =
       // seated check alone admits this input; the constant refuses it.
       const error = yield* decideOrchestrationCommand({
         command: createThread(HUMAN_OPERATOR_MEMBER_ID),
-        readModel: readModel({ members: [], channels: false }),
+        readModel: readModel({ channels: [] }),
         issuer: ADMIN,
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");

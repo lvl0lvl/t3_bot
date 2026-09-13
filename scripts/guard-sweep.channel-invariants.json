@@ -123,6 +123,14 @@
       "replace": "  const seatedHuman = input.readModel.channels.filter((channel) => channel.archivedAt === null).find((channel) =>"
     },
     {
+      "id": "thread-id-first-channel-only",
+      "guard": "requireThreadIdIsNoHuman",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  const seatedHuman = input.readModel.channels.find((channel) =>",
+      "replace": "  const seatedHuman = input.readModel.channels.slice(0, 1).find((channel) =>"
+    },
+    {
       "id": "thread-id-any-member-kind",
       "guard": "requireThreadIdIsNoHuman",
       "axis": "wider",
