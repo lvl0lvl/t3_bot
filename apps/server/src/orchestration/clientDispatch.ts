@@ -74,11 +74,11 @@ export const makeClientDispatch = (
  * with `dispatch` replaced by the door's bound one. A helper's own dispatch
  * options are refused, not merged: the door's stamp is the only one.
  *
- * NOT A SPREAD. `streamDomainEvents` is a getter that opens a fresh subscription on
- * every access (`Layers/OrchestrationEngine.ts`); `{ ...engine }` would read it
- * once at the hand-off and every consumer of the copy would share that one
- * subscription. The return annotation makes a member added to the shape a `tsc`
- * error here either way; naming the members is for the getter.
+ * NOT A SPREAD. The members are named one by one because `streamDomainEvents` is
+ * a getter that opens a fresh subscription on every access
+ * (`Layers/OrchestrationEngine.ts`), which `{ ...engine }` would read once at the
+ * hand-off. A member added to the shape is a `tsc` error here because this listing
+ * omits it; a spread would copy it and compile.
  */
 export const withClientDispatch = (
   engine: OrchestrationEngineShape,
@@ -92,8 +92,8 @@ export const withClientDispatch = (
   // through to the bound dispatch, that call reaches the store as the door's
   // origin and the operator issuer — a silently rewritten identity, the class of
   // omission this module exists to make visible. The die is the guard's whole
-  // job: a helper that wants its own issuer needs a different door (the MCP
-  // toolkits stamp a `thread` issuer), not this one.
+  // job: a helper that wants its own issuer needs a different door (the comms
+  // MCP toolkit stamps a `thread` issuer), not this one.
   dispatch: (command, options) =>
     options === undefined
       ? dispatch(command)
