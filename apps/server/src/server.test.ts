@@ -118,6 +118,7 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
+import { COLLIDING_THREAD_REF } from "./orchestration/testing/collidingRoster.ts";
 import { ChannelPostWakeRepository } from "./persistence/Services/ChannelPostWakes.ts";
 import { ProjectionTurnRepository } from "./persistence/Services/ProjectionTurns.ts";
 import {
@@ -8770,13 +8771,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   /**
    * A removal of SOMEONE ELSE, from a channel this connection is not in.
    *
-   * THE FIXTURE IS A COLLIDING PAIR, and that is the whole of why it is written
-   * this way: the removed member is a THREAD whose memberId is the operator's
-   * own. It differs from the connection member in `memberKind` ALONE. Against a
-   * roster where the two differ in both fields — which is every other fixture in
-   * this repo — a comparison that ignored `memberKind` would pass, and
-   * `t3_bot-46h` is the bead that exists because that mutation has survived full
-   * suites four times.
+   * THE REMOVED MEMBER IS THE SHARED COLLISION'S THREAD HALF
+   * (`orchestration/testing/collidingRoster.ts`): a thread whose memberId is
+   * the operator's own, so it differs from the connection member in
+   * `memberKind` ALONE. Against every other fixture, where the two differ in
+   * both fields, a comparison that ignored `memberKind` would pass — which is
+   * why the value comes from the one module that exists to supply that input,
+   * made by the contract's constructor, rather than being spelled here as the
+   * fourth home-grown copy.
    */
   const foreignRemovalEvent = {
     sequence: 2,
@@ -8792,7 +8794,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     payload: {
       channelId: ChannelId.make("channel-project"),
       handle: ChannelMemberHandle.make("pm"),
-      removedMember: { memberKind: "thread", memberId: HUMAN_OPERATOR_MEMBER_ID },
+      removedMember: COLLIDING_THREAD_REF,
       updatedAt: "2026-01-01T00:00:01.000Z",
     },
   } as unknown as OrchestrationEvent;
