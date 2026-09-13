@@ -27,6 +27,7 @@ import { useEnvironmentSettings } from "../hooks/useSettings";
 import { orchestrationEnvironment } from "../state/orchestration";
 import { channelEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
+import { cn } from "../lib/utils";
 import { formatDayAwareTimestamp } from "../timestampFormat";
 import { Button } from "./ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
@@ -379,6 +380,9 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // `[]`) — an observer attached once on mount would then observe nothing.
   const unreadable = AsyncResult.isFailure(page) && posts.length === 0;
   const empty = posts.length === 0 && !page.waiting;
+  // Whether the sentinel was on screen at the observer's last report — "the reader is
+  // at the live edge", for the clearance effect below to read at commit time.
+  const atLiveEdge = useRef(false);
   useEffect(() => {
     if (unreadable || empty) {
       return;
@@ -394,6 +398,9 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
     }
     const observer = new IntersectionObserver(
       (entries) => {
+        // A batch is chronological: `some` says the sentinel was seen, the last
+        // entry says where it is now.
+        atLiveEdge.current = entries[entries.length - 1]?.isIntersecting ?? false;
         if (entries.some((entry) => entry.isIntersecting)) {
           setSeenNewestId(newestIdRef.current);
         }
@@ -406,6 +413,37 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // Not gated on the cursor a second time: on the newest page the effect above marks
   // every newest post seen before paint, so the id comparison alone is the fact.
   const unseenBelow = newestId !== undefined && newestId !== seenNewestId;
+  // THE NEWEST READ FAILED, on whichever page the reader is. The input that made
+  // this unconditional: a channel whose history fits one page (no pager rendered)
+  // and a live re-read that fails — the pager's failed label was the only surface,
+  // and it was not on screen. `#48` surfaced the paged-up half and left this one
+  // to `t3_bot-ssz`. The general refusal (`PostsUnavailable`) still owns the
+  // no-posts case below.
+  const newestFailed = AsyncResult.isFailure(newestPage);
+  // THE RETRY HAS A FLIGHT. `Atom.swr` re-evaluates by copying the previous result
+  // with `waiting: true` and its tag kept, so the retried read is a waiting Failure
+  // for as long as it runs — read off `newestFailed` alone, the slot kept saying
+  // "didn’t load" with an enabled control, and every further click cancelled and
+  // restarted the read in flight. The input that breaks a `newestPage.waiting`-only
+  // gate: a live re-read over a Success, which is a waiting SUCCESS — the "New posts"
+  // case, which this must leave alone.
+  const retrying = newestFailed && newestPage.waiting;
+  // THE FAILED-READ PILL RESERVES ITS CLEARANCE. It sits over the scroller (the
+  // column would change the scroll extent under the reader — #48's record), so on
+  // the newest page it covered the newest post's last line: the column's 16px of
+  // bottom padding plus the 12px gap left 28px, and the pill spans 18–46px. While
+  // the label is lit the column pads to 56px instead (`pb-14` below). Two inputs:
+  // a channel that fits the pane — `mt-auto` bottom-aligns, so the posts move up
+  // and the line is clear; and a newest page taller than the pane with the reader
+  // at the live edge — the padding grows below the fold and `scrollTop` does not
+  // follow, so the line stays behind the pill unless this keeps them at the edge.
+  // A reader mid-page is NOT pulled: that is the theft #48 named.
+  useLayoutEffect(() => {
+    if (!newestFailed || !atLiveEdge.current) {
+      return;
+    }
+    bottom.current?.scrollIntoView({ block: "end" });
+  }, [newestFailed]);
 
   if (unreadable) {
     return <PostsUnavailable onRetry={refresh} />;
@@ -429,21 +467,6 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // every live re-read and every retry from the slot.
   const pageFailed = cursor !== undefined && AsyncResult.isFailure(page);
   const pageWaiting = cursor !== undefined && page.waiting;
-  // THE NEWEST READ FAILED, on whichever page the reader is. The input that made
-  // this unconditional: a channel whose history fits one page (no pager rendered)
-  // and a live re-read that fails — the pager's failed label was the only surface,
-  // and it was not on screen. `#48` surfaced the paged-up half and left this one
-  // to `t3_bot-ssz`. The general refusal (`PostsUnavailable`) still owns the
-  // no-posts case above.
-  const newestFailed = AsyncResult.isFailure(newestPage);
-  // THE RETRY HAS A FLIGHT. `Atom.swr` re-evaluates by copying the previous result
-  // with `waiting: true` and its tag kept, so the retried read is a waiting Failure
-  // for as long as it runs — read off `newestFailed` alone, the slot kept saying
-  // "didn’t load" with an enabled control, and every further click cancelled and
-  // restarted the read in flight. The input that breaks a `newestPage.waiting`-only
-  // gate: a live re-read over a Success, which is a waiting SUCCESS — the "New posts"
-  // case, which this must leave alone.
-  const retrying = newestFailed && newestPage.waiting;
   // RETURNED INSTEAD OF THE SCROLL CONTAINER, the way `PostsUnavailable` is.
   // Found by rendering twice: inside that container the empty state cannot
   // centre, because `justify-end` is what puts posts above the composer and
@@ -472,7 +495,7 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
     // bottom alignment for a short list and leaves the overflow scrollable.
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={scroller} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-        <div className="mt-auto flex flex-col gap-3 p-4">
+        <div className={cn("mt-auto flex flex-col gap-3 p-4", newestFailed && "pb-14")}>
           {moreAbove ? (
             // ONE CONTROL, whose action is what the reader needs next. On a failure it
             // re-issues the SAME cursor through `refresh()` rather than advancing or

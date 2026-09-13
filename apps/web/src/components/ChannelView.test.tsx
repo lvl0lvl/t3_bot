@@ -808,6 +808,63 @@ describe("ChannelPostRegion", () => {
     expect(buttonLabels(tree)).not.toContain("Earlier posts");
   });
 
+  it("keeps the newest post clear of the failed-read pill for a reader at the live edge", async () => {
+    // THE PILL SITS OVER THE SCROLLER, so on the newest page it covered the newest
+    // post's last line. The column pads for it while the label is lit, and the input
+    // that padding alone cannot handle: a newest page taller than the pane with the
+    // reader at the bottom — the padding grows below the fold and `scrollTop` stays,
+    // so the region has to keep them at the edge. Whether they were there is what the
+    // sentinel's observer last said. Padding is markup and is not asserted; the scroll is.
+    reset();
+    vi.stubGlobal("IntersectionObserver", TestIntersectionObserver);
+    try {
+      const previous = { posts: [post(1, "p-only", "only")], nextCursor: null };
+      answer(CHANNEL_A, previous);
+      const { ChannelView } = await import("./ChannelView");
+      const atEdge = await mount(CHANNEL_A);
+      const observer = observers[observers.length - 1]!;
+      const sentinel = observer.observe.mock.calls[0]?.[0] as Element;
+      await act(async () => {
+        observer.report(sentinel, true);
+      });
+      const scrolledBefore = harness.scrolls;
+
+      answerFailure(CHANNEL_A, undefined, previous);
+      harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
+      await act(async () => {
+        atEdge.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+      });
+      expect(buttonLabels(atEdge)).toContain("Newer posts didn’t load. Try again");
+      expect(harness.scrolls).toBe(scrolledBefore + 1);
+
+      // A READER MID-PAGE IS NOT PULLED — that is the theft #48 named. They were at
+      // the edge and wheeled up: the observer's LAST report is the one that counts,
+      // so a ref that latched the first `true` would pull them too.
+      reset();
+      observers.length = 0;
+      answer(CHANNEL_A, previous);
+      const midPage = await mount(CHANNEL_A);
+      const later = observers[observers.length - 1]!;
+      const laterSentinel = later.observe.mock.calls[0]?.[0] as Element;
+      await act(async () => {
+        later.report(laterSentinel, true);
+        later.report(laterSentinel, false);
+      });
+      const scrolledBeforeMidPage = harness.scrolls;
+
+      answerFailure(CHANNEL_A, undefined, previous);
+      harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
+      await act(async () => {
+        midPage.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+      });
+      expect(buttonLabels(midPage)).toContain("Newer posts didn’t load. Try again");
+      expect(harness.scrolls).toBe(scrolledBeforeMidPage);
+    } finally {
+      vi.unstubAllGlobals();
+      observers.length = 0;
+    }
+  });
+
   it("says the retry is in flight, and does not re-issue it under a second click", async () => {
     // THE INPUT: the retried read while it runs. `Atom.swr` answers a refresh with the
     // previous result copied as `waiting: true` and its tag KEPT, so the retry is a
