@@ -104,7 +104,7 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
       NodePath.join(import.meta.dirname, "CodexSessionRuntime.ts"),
       "utf8",
     );
-    const code = source.replace(/^\s*(?:\/\/|\/\*(?!.*\*\/[ \t]*\S)|\*).*$/gm, "");
+    const code = source.replace(/^\s*(?:\/\/|(?!.*\*\/[ \t]*\S)(?:\/\*|\*)).*$/gm, "");
     assert.deepEqual(code.match(/TurnId\.make\([^)]*\)/g), [
       "TurnId.make(notification.params.turn.id)",
       "TurnId.make(notification.params.turnId)",
