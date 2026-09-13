@@ -139,13 +139,17 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
   options: HarnessOptions = {},
 ) {
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
+  // WHO each dispatch was issued as, recorded beside the command — `undefined`
+  // when the handler passed no options, which is what a bare dispatch reads as.
+  const issuers = yield* Ref.make<ReadonlyArray<unknown>>([]);
   const thread = options.thread === undefined ? makeThread([]) : options.thread;
   const project = options.project === undefined ? makeProject() : options.project;
-  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
+  const dispatch: OrchestrationEngineShape["dispatch"] = (command, dispatchOptions) =>
     Effect.gen(function* () {
       const rejection = options.reject?.(command) ?? null;
       if (rejection !== null) return yield* rejection;
       yield* Ref.update(commands, (recorded) => [...recorded, command]);
+      yield* Ref.update(issuers, (recorded) => [...recorded, dispatchOptions?.issuer]);
       return { sequence: 1 };
     });
   const dependencies = Layer.mergeAll(
@@ -180,7 +184,7 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
       Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(capabilities)),
       Effect.provide(dependencies),
     );
-  return { commands, call };
+  return { commands, issuers, call };
 });
 
 describe("pull request toolkit handlers", () => {
@@ -221,6 +225,36 @@ describe("pull request toolkit handlers", () => {
           number: 123,
           source: "agent",
         },
+      ]);
+    }),
+  );
+
+  it.effect("issues a link as the token's thread, not bare", () =>
+    Effect.gen(function* () {
+      // THE DOOR TEST. This toolkit dispatched with no issuer; nothing refused it
+      // because no pull-request command has an issuer invariant, so the omission
+      // was invisible until the first invariant landed. The literal is spelled
+      // out: a comparison against the thread fixture would move with a wrong
+      // constant. `undefined` here is exactly what the bare dispatch produced.
+      const harness = yield* makeHarness();
+      yield* harness.call("link_pull_request", {
+        url: "https://github.com/T3Tools/T3Code/pull/123",
+      });
+      expect(yield* Ref.get(harness.issuers)).toEqual([
+        { memberKind: "thread", memberId: THREAD_ID },
+      ]);
+    }),
+  );
+
+  it.effect("issues an unlink as the token's thread, not bare", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ thread: makeThread([makeLink(5)]) });
+      yield* harness.call("unlink_pull_request", {
+        repository: "t3tools/t3code",
+        number: 5,
+      });
+      expect(yield* Ref.get(harness.issuers)).toEqual([
+        { memberKind: "thread", memberId: THREAD_ID },
       ]);
     }),
   );
