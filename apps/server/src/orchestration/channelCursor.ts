@@ -7,16 +7,16 @@
  * error. `decodeChannelCursor` below carries the account of that, with the
  * measurement; every other mention of it in the tree is a clause pointing here.
  *
- * `channelId` is a `string` here rather than `ChannelId` because the comms
- * gateway's seam stages its ids as strings; the client door brands them and
- * passes the brand's underlying string in. Both callers get the same decisions.
+ * `channelId` is a `string` here rather than `ChannelId`, and both callers pass
+ * the brand: the client door decoded it at the wire, and the comms seam takes a
+ * `ChannelId` since `t3_bot-d7d`. Both callers get the same decisions.
  *
  * WHO KEEPS THE PRECONDITION, since the type cannot. `decodeChannelCursor`'s split is
  * correct only because a `ChannelId` cannot contain ":", and a bare `string` parameter
  * does not say that. Both callers satisfy it, by different means: the client door
  * passes an id that has already been decoded as a `ChannelId`, and the comms gateway
- * passes one its toolkit resolved from a channel lookup — it brands it one line later,
- * so the value is a real channel id before it reaches here rather than because of it.
+ * passes one its toolkit resolved from a channel lookup — it arrives branded, so the
+ * value is a real channel id before it reaches here rather than because of it.
  * A third caller holding an arbitrary string has to brand it first; nothing in this
  * signature will stop it, which is why the guarantee is written down.
  *
