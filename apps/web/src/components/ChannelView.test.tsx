@@ -258,11 +258,10 @@ const occurrences = (tree: ReactTestRenderer, phrase: string) =>
 const text = (node: ReactTestInstance): string =>
   node.children.map((child) => (typeof child === "string" ? child : text(child))).join("");
 
+// Each button's text at every depth, not its first string child: the "New posts"
+// pill's first child is a chevron, and a label read as `children[0]` is the icon.
 const buttonLabels = (tree: ReactTestRenderer) =>
-  tree.root
-    .findAll((node) => node.type === "button")
-    .flatMap((button) => button.findAll((node) => typeof node.children?.[0] === "string"))
-    .map((node) => String(node.children[0]));
+  tree.root.findAll((node) => node.type === "button").map(text);
 
 describe("ChannelPostRegion", () => {
   const mount = async (channelId: ChannelId) => {

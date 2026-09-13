@@ -7,7 +7,7 @@ import type {
   OrchestrationChannelPost,
   ThreadId,
 } from "@t3tools/contracts";
-import { ArchiveIcon, HashIcon, SendIcon } from "lucide-react";
+import { ArchiveIcon, ChevronDownIcon, HashIcon, SendIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { useChannel, useChannelSupport, useThreadShell } from "../state/entities";
@@ -374,59 +374,71 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
     // My own render pass missed it because the channel had ONE post — which fits
     // the pane, so the property could not be exercised. `mt-auto` gives the same
     // bottom alignment for a short list and leaves the overflow scrollable.
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <div className="mt-auto flex flex-col gap-3 p-4">
-        {moreAbove ? (
-          // ONE CONTROL, whose action is what the reader needs next. On a failure it
-          // re-issues the SAME cursor through `refresh()` rather than advancing or
-          // resetting one: reverting to the newest page would silently undo the reader's
-          // own action and throw away their place in the history.
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <div className="mt-auto flex flex-col gap-3 p-4">
+          {moreAbove ? (
+            // ONE CONTROL, whose action is what the reader needs next. On a failure it
+            // re-issues the SAME cursor through `refresh()` rather than advancing or
+            // resetting one: reverting to the newest page would silently undo the reader's
+            // own action and throw away their place in the history.
+            <Button
+              variant="ghost"
+              size="sm"
+              className="self-center"
+              disabled={page.waiting}
+              onClick={() => {
+                if (pageFailed) {
+                  refresh();
+                  return;
+                }
+                const next = arrived?.nextCursor;
+                if (next !== null && next !== undefined) {
+                  setCursor(next);
+                }
+              }}
+            >
+              {page.waiting
+                ? "Loading earlier posts…"
+                : pageFailed
+                  ? "Earlier posts didn’t load. Try again"
+                  : "Earlier posts"}
+            </Button>
+          ) : null}
+          {posts.map((post) => (
+            <ChannelPost key={post.id} environmentId={environmentId} post={post} />
+          ))}
+          <div ref={bottom} />
+        </div>
+      </div>
+      {unseenBelow ? (
+        // THE WAY BACK, for a reader who paged up while the channel moved on. It
+        // scrolls; it does not re-read or touch the cursor, because the posts are
+        // already merged in and the pager's place in history is theirs to keep.
+        //
+        // THE CHAT PILL'S RECIPE (`ChatView`'s "Scroll to end"): the app's floating
+        // control is `glass`, `xs`, `rounded-full`, a chevron and a short label,
+        // positioned over the scroller rather than in its column. In the column it was a
+        // `secondary` fill — 3% white in dark, over post text — and its arrival
+        // and departure changed the scroll extent under the reader. Outside the
+        // scroller neither happens. `onPointerDown` keeps the composer's focus,
+        // as the sibling does.
+        <div className="pointer-events-none absolute bottom-3 left-1/2 z-30 flex -translate-x-1/2 justify-center py-1.5">
           <Button
-            variant="ghost"
-            size="sm"
-            className="self-center"
-            disabled={page.waiting}
-            onClick={() => {
-              if (pageFailed) {
-                refresh();
-                return;
-              }
-              const next = arrived?.nextCursor;
-              if (next !== null && next !== undefined) {
-                setCursor(next);
-              }
-            }}
-          >
-            {page.waiting
-              ? "Loading earlier posts…"
-              : pageFailed
-                ? "Earlier posts didn’t load. Try again"
-                : "Earlier posts"}
-          </Button>
-        ) : null}
-        {posts.map((post) => (
-          <ChannelPost key={post.id} environmentId={environmentId} post={post} />
-        ))}
-        <div ref={bottom} />
-        {unseenBelow ? (
-          // THE WAY BACK, for a reader who paged up while the channel moved on. It
-          // scrolls; it does not re-read or touch the cursor, because the posts are
-          // already merged in and the pager's place in history is theirs to keep.
-          // `sticky bottom-3` keeps it at the bottom edge of the scroller for as long as
-          // the newest post is below the fold.
-          <Button
-            variant="secondary"
-            size="sm"
-            className="sticky bottom-3 self-center"
+            variant="glass"
+            size="xs"
+            className="pointer-events-auto gap-1.5 rounded-full px-3 text-muted-foreground hover:text-foreground"
+            onPointerDown={(event) => event.preventDefault()}
             onClick={() => {
               bottom.current?.scrollIntoView({ block: "end" });
               setSeenNewestId(newestId);
             }}
           >
+            <ChevronDownIcon className="size-3.5" />
             New posts
           </Button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }
