@@ -167,6 +167,36 @@ export type SweepConfig = typeof SweepConfig.Type;
 const decodeSweepConfig = Schema.decodeUnknownEffect(Schema.fromJsonString(SweepConfig));
 
 /**
+ * Rows whose `file` is not a plain repo-relative path, which is a CONFIG defect and the only
+ * thing standing between a spelling and a false kill.
+ *
+ * `moved` comes from `git status --porcelain`, which prints `src/thing.ts`. Five places key on
+ * the raw config string — the row loop's setup-written guard, the pre-flight's, both `git
+ * ls-files` calls and the pre-flight's source cache — so `./src/thing.ts` misses every one of
+ * them. The row is then measured on a tree `setupCommand` dirtied, `git checkout --
+ * ./src/thing.ts` reverts setup's write instead of the mutation, and a LATER row is credited
+ * with killing a test that reddened for that reason: exit 0, reported `confirmed`, on the one
+ * verdict that gates a merge. Measured, with a control that differs only in the spelling.
+ *
+ * REFUSED HERE RATHER THAN NORMALIZED AT EACH SITE. A per-site fix leaves the defect wherever a
+ * site was missed and reads as green while doing it; this kills the class — `./x`, `../x`,
+ * `a/../b`, `/abs`, empty — at the one place a config enters. It also keeps the report's text
+ * identical to the config's: a normalizer would print `src/x.ts` in the table for an author who
+ * wrote `./src/x.ts`, in a tool whose entire job is that its quotations match the file.
+ *
+ * A dotfile path is NORMAL and must stay admitted: `.github/workflows/ci.yml` is a real target,
+ * so this asks about path SEGMENTS that are `.` or `..` rather than about a leading dot.
+ */
+const NORMAL_REPO_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[^\0]+$/u;
+
+export const nonNormalMutationPaths = (
+  mutations: ReadonlyArray<Mutation>,
+): ReadonlyArray<{ readonly id: string; readonly file: string }> =>
+  mutations
+    .filter((mutation) => !NORMAL_REPO_PATH.test(mutation.file))
+    .map((mutation) => ({ id: mutation.id, file: mutation.file }));
+
+/**
  * Distinct `id`s, because `id` is the report's ONLY row identity.
  *
  * It is the table's second column, the survivor list, the NOT RUN list and every
@@ -1142,6 +1172,20 @@ export const guardSweepCommand = Command.make(
           detail:
             `two mutations share an id (${duplicated.join(", ")}), and the report ` +
             "identifies every row by it",
+        });
+      }
+      // BEFORE ANY LOOKUP IS KEYED ON THESE STRINGS. `git status --porcelain` prints
+      // `src/thing.ts`, so a row spelled `./src/thing.ts` misses the setup-written guard and
+      // every other keyed check, and the run ends in a confirmed false kill at exit 0.
+      const nonNormal = nonNormalMutationPaths(parsed.mutations);
+      if (nonNormal.length > 0) {
+        return yield* new GuardSweepConfigError({
+          detail:
+            `${nonNormal.length} mutation${nonNormal.length === 1 ? "" : "s"} name a path that is ` +
+            "not plain repo-relative, and every keyed check here compares the config's own " +
+            "spelling against git's:\n  " +
+            nonNormal.map((row) => `${row.id}: ${row.file}`).join("\n  ") +
+            "\nWrite it as git prints it — no leading `./`, no `..` segment, not absolute.",
         });
       }
       // RESOLVED ONCE, and `mustSucceed`: a report that quietly names no commit
