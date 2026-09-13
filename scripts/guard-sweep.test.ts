@@ -19,6 +19,7 @@ import {
   statusPaths,
   type Mutation,
   type RunResult,
+  unappliableRows,
 } from "./guard-sweep.ts";
 
 const mutation = (overrides: Partial<Mutation> = {}): Mutation => ({
@@ -82,6 +83,80 @@ describe("applyMutation", () => {
     expect(applyMutation("if (guard) {", mutation({ replace: "if (guard) {" }))).toEqual({
       _tag: "replace-is-a-no-op",
     });
+  });
+});
+
+describe("unappliableRows", () => {
+  const sources = (source: string) => (file: string) =>
+    file === "src/thing.ts" ? source : undefined;
+
+  it("says nothing when every anchor resolves exactly once", () => {
+    const rows = unappliableRows({
+      mutations: [mutation()],
+      moved: new Set(),
+      read: sources("a\nif (guard) {\nb\n"),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  it("names the row and the file for an absent anchor", () => {
+    const rows = unappliableRows({
+      mutations: [mutation({ id: "gone" })],
+      moved: new Set(),
+      read: sources("a\nsomething else\nb\n"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toContain("gone");
+    expect(rows[0]).toContain("src/thing.ts");
+  });
+
+  it("names the COUNT for a non-unique anchor, which is the one a presence check cannot see", () => {
+    // A non-unique anchor does not fail — it succeeds somewhere unintended, and every
+    // downstream signal is satisfied by the wrong edit. The count is what tells an author
+    // which of the two problems they have.
+    const rows = unappliableRows({
+      mutations: [mutation({ id: "twice" })],
+      moved: new Set(),
+      read: sources("if (guard) {\nx\nif (guard) {\n"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toContain("twice");
+    expect(rows[0]).toContain("2 times");
+  });
+
+  it("refuses a replacement identical to its anchor, which would report a SURVIVOR", () => {
+    // The worst of the three: the suite runs against unmodified code and the row is
+    // reported as surviving, so a false FINDING rather than an honest absence.
+    const rows = unappliableRows({
+      mutations: [mutation({ id: "noop", replace: "if (guard) {" })],
+      moved: new Set(),
+      read: sources("a\nif (guard) {\nb\n"),
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toContain("noop");
+  });
+
+  it("leaves a row whose file setupCommand wrote to, which the row loop explains better", () => {
+    // Its anchor is absent here, so a pre-flight that did not skip it would refuse —
+    // and refuse for the wrong reason. `setupCommand` writing a mutation target is not
+    // the config's anchor being wrong, and the per-row NOT RUN names the actual cause.
+    const rows = unappliableRows({
+      mutations: [mutation({ id: "setup-wrote-it" })],
+      moved: new Set(["src/thing.ts"]),
+      read: sources("a\nsomething else\nb\n"),
+    });
+    expect(rows).toEqual([]);
+  });
+
+  it("leaves a row it could not read, which the row loop tells apart three ways", () => {
+    // Untracked, unreadable and outside-the-swept-tree are three different answers the
+    // row loop gives by name. One refusal here would collapse them into a vague one.
+    const rows = unappliableRows({
+      mutations: [mutation({ id: "unreadable", file: "src/absent.ts" })],
+      moved: new Set(),
+      read: sources("a\nif (guard) {\nb\n"),
+    });
+    expect(rows).toEqual([]);
   });
 });
 
