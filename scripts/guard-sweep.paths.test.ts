@@ -111,7 +111,7 @@ const runSweep = (root: string, config: string) =>
   );
 
 describe("a path git would print differently is refused", () => {
-  for (const file of ["./src/thing.ts", "src/../src/thing.ts"]) {
+  for (const file of ["./src/thing.ts", "src/../src/thing.ts", "src//thing.ts"]) {
     it(`refuses ${file} without spawning the suite`, () => {
       const { root, config, log } = scaffold([guardRow(file)]);
       try {

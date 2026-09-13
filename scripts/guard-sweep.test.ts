@@ -566,18 +566,28 @@ describe("nonNormalMutationPaths", () => {
     ]);
   });
 
-  it("names a `.` or `..` segment anywhere in the path, and an absolute path", () => {
+  it("names a `.`, `..` or empty segment anywhere in the path, and an absolute path", () => {
     // The single-dot segment is here because the pattern could be narrowed to `..` alone and
     // still pass every other case, while `src/./thing.ts` is the same defect: porcelain prints
-    // `src/thing.ts` for it too.
+    // `src/thing.ts` for it too. So is the empty segment: `git ls-files src//thing.ts` and
+    // `git checkout -- src//thing.ts` both succeed, and porcelain prints `src/thing.ts`.
     expect(
       nonNormalMutationPaths([
         row("dot-inside", "src/./thing.ts"),
         row("dotdot-inside", "src/../src/thing.ts"),
         row("dotdot-leading", "../sibling/thing.ts"),
+        row("empty-inside", "src//thing.ts"),
+        row("empty-trailing", "src/thing.ts/"),
         row("absolute", "/etc/passwd"),
       ]).map((offender) => offender.id),
-    ).toEqual(["dot-inside", "dotdot-inside", "dotdot-leading", "absolute"]);
+    ).toEqual([
+      "dot-inside",
+      "dotdot-inside",
+      "dotdot-leading",
+      "empty-inside",
+      "empty-trailing",
+      "absolute",
+    ]);
   });
 
   it("ADMITS a dotfile path, which is what separates this from a leading-dot check", () => {
