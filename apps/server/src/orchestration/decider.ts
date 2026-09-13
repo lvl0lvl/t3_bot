@@ -58,6 +58,7 @@ import {
   requireThread,
   requireThreadArchived,
   requireThreadAbsent,
+  requireThreadIdIsNoHuman,
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
@@ -397,6 +398,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         projectId: command.projectId,
       });
       yield* requireThreadAbsent({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      yield* requireThreadIdIsNoHuman({
         readModel,
         command,
         threadId: command.threadId,

@@ -12,6 +12,7 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
+import { HUMAN_OPERATOR_MEMBER_ID } from "@t3tools/contracts";
 import {
   canonicalChannelHandle,
   canonicalChannelName,
@@ -663,6 +664,60 @@ export function requireThreadAbsent(input: {
     invariantError(
       input.command.type,
       `Thread '${input.threadId}' already exists and cannot be created twice.`,
+    ),
+  );
+}
+
+/**
+ * A thread id may not be a human's member id.
+ *
+ * `requireChannelMemberShape` refuses a HUMAN member whose id names a thread
+ * that exists — but it runs at add time, against the threads that exist THEN.
+ * Seat the human first and create the thread second, and both are admitted:
+ * one channel holds one id under two kinds, and every by-id lookup on it must
+ * compare the kind or answer for the wrong member (`t3_bot-46h` pinned seven of
+ * them on both axes; `t3_bot-7iw` is the question of whether they should have
+ * to). The seeder seats the operator at boot, so the whole route was ONE
+ * `thread.create` with the operator's id, from a paired client, minting a
+ * thread whose MCP credential presents as `("thread", "human-walt")`.
+ *
+ * Two inputs, refused here, closed both orderings for commands:
+ *
+ *   - an id any channel holds as a HUMAN member's `memberId` — the seated
+ *     case; every channel, archived or not, because a roster does not stop
+ *     being a roster when the channel is archived;
+ *   - the operator's own id, seated or not — with `noSeedHierarchy` no human
+ *     is seated yet, and a thread created then would make the seeder's own
+ *     `channel.create` fail on the next boot (the shape guard refuses the
+ *     human member because the thread now exists), leaving the operator in no
+ *     channel at all. That is the input the seated check alone admits.
+ *
+ * A THREAD member's id is not refused: a deleted thread's id may be created
+ * again (`requireThreadAbsent` blocks only a live row) while a channel still
+ * lists the old member, and that member is a thread, not a human. Refusing it
+ * would turn every deleted-then-recreated draft into a refusal.
+ *
+ * Replay is untouched. A row written before this guard reaches every lookup
+ * as before, which is why the seven comparisons keep their kind clause.
+ */
+export function requireThreadIdIsNoHuman(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly threadId: ThreadId;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  const id = input.threadId as string;
+  const seatedHuman = input.readModel.channels.find((channel) =>
+    channel.members.some((member) => member.memberKind === "human" && member.memberId === id),
+  );
+  if (seatedHuman === undefined && id !== HUMAN_OPERATOR_MEMBER_ID) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      seatedHuman === undefined
+        ? `Thread id '${input.threadId}' is the operator's member id and cannot name a thread.`
+        : `Thread id '${input.threadId}' is a human member of channel '${seatedHuman.id}' and cannot name a thread.`,
     ),
   );
 }
