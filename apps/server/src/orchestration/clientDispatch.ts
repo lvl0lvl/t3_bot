@@ -20,7 +20,8 @@
  * `linkCreatedPullRequest` (the `gitRunStackedAction` RPC: `thread.pull-request.link`),
  * and both dispatch bare — no issuer, no origin, and no `dispatch` at the door to
  * see. Neither command has an issuer invariant today, so nothing refuses; the first
- * to grow one is refused inside that helper.
+ * to grow one is refused inside that helper. Rewiring both through this helper is
+ * `t3_bot-y7q`.
  *
  * THE STAMP IS UNCONDITIONAL. `requireCommandIssuer` ignores the field for every
  * command that has no issuer invariant, so stamping only channel commands would make
