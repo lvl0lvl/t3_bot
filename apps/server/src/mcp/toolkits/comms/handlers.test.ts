@@ -54,7 +54,6 @@ interface GatewayFailures {
   readonly getPost?: ChannelGateway.ChannelStoreUnavailable;
   readonly readPosts?: ChannelGateway.ChannelStoreUnavailable;
   readonly createPost?:
-    | ChannelGateway.ChannelStoreUnavailable
     | ChannelGateway.ChannelWriteConflict
     | ChannelGateway.ChannelMembershipRevoked
     | ChannelGateway.ChannelMentionUnresolvable
@@ -923,16 +922,6 @@ describe("comms toolkit gateway failure mapping", () => {
         .call("comms_post", { channel: "seniors", body: "x" })
         .pipe(Effect.flip);
       expect(retryable).toMatchObject({ _tag: "CommsPostFailedError", retryable: true });
-
-      const unavailable = yield* makeHarness({
-        failures: {
-          createPost: new ChannelGateway.ChannelStoreUnavailable({ detail: "no store" }),
-        },
-      });
-      const terminal = yield* unavailable
-        .call("comms_post", { channel: "seniors", body: "x" })
-        .pipe(Effect.flip);
-      expect(terminal).toMatchObject({ _tag: "CommsPostFailedError", retryable: false });
 
       // The same tag, the other way: a conflict the layer knows is permanent
       // must not tell the agent to try again. Without this the mapping could

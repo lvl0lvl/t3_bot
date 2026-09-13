@@ -425,31 +425,35 @@ export interface ChannelGatewayShape {
    * `channelId`, and rejects a post carrying a mention that does not resolve to
    * one — a post that silently drops a mention wakes nobody while looking sent.
    *
-   * EVERY FAILURE BELOW HAS A LIVE PRODUCER, and `commsLive.integration.test`
-   * reaches each of the last three through the real decider by changing the
-   * channel between the toolkit's check and the write - which is the only way
-   * they arrive, since the toolkit pre-checks the same three things. The live
-   * layer classifies from the decider's `reason` tag, never from its prose:
-   * the prose names the channel by its internal id, and forwarding it once
-   * handed that id to an agent (`t3_bot-dnz`). A refusal the decider has not
-   * tagged arrives as `ChannelWriteConflict` with `retryable: false`.
+   * PRECONDITION: `channelId` was obtained from `getChannelForMember` for the
+   * same member ref the caller issues as. A caller that passes any other id
+   * makes revoked-vs-conflict an existence answer for whichever principal it
+   * serves: an id that names a channel the author is not in is refused as
+   * `ChannelMembershipRevoked`, and one that names no channel at all as
+   * `ChannelWriteConflict`.
    *
-   * ARCHIVED IS STILL THE CALLER'S FIRST: decide it from the `archivedAt` on the
-   * channel you already resolved membership on, and treat `ChannelArchived`
-   * from here as the race. The decider checks membership BEFORE archived, so a
-   * non-member never learns the channel exists this way; a caller re-reading
-   * the row itself would answer that existence question with no membership
-   * check.
+   * POSTCONDITION: membership, mentions and archived are enforced at write
+   * time regardless of any pre-check. A caller that pre-checks against the row
+   * it resolved sees the three refusals only as races; a caller that does not
+   * sees them as its first answer; both are correct. The decider checks
+   * membership BEFORE archived, so a non-member never learns the channel
+   * exists this way. `commsLive.integration.test` reaches each of the three
+   * through the real decider by changing the channel between the toolkit's
+   * check and the write.
+   *
+   * EVERY FAILURE BELOW HAS A LIVE PRODUCER. The live layer classifies from
+   * the decider's `reason` tag, never from its prose: the prose names the
+   * channel by its internal id, and forwarding it once handed that id to an
+   * agent (`t3_bot-dnz`). A refusal the decider has not tagged arrives as
+   * `ChannelWriteConflict` with `retryable: false`. `createPost` performs no
+   * read of its own; a store failure during the write reaches the caller as
+   * `ChannelWriteConflict { retryable: true }`.
    */
   readonly createPost: (
     input: CreatePostInput,
   ) => Effect.Effect<
     CreatedPost,
-    | ChannelStoreUnavailable
-    | ChannelWriteConflict
-    | ChannelMembershipRevoked
-    | ChannelMentionUnresolvable
-    | ChannelArchived
+    ChannelWriteConflict | ChannelMembershipRevoked | ChannelMentionUnresolvable | ChannelArchived
   >;
 }
 
