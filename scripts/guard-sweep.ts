@@ -695,14 +695,14 @@ export class GuardSweepProcessError extends Schema.TaggedError<GuardSweepProcess
  * Runs a command and reports EVERYTHING it observed: stdout, stderr, exit code.
  *
  * IT USED TO RETURN STDOUT ALONE, having awaited the exit code and thrown it
- * away, with stderr piped to `"ignore"`. That made two of this tool's five
- * refusals properties of git SUCCEEDING rather than properties of the tool. Point
- * the sweep at a directory that is not a git repository: `git status --porcelain`
- * exits 128, writes its complaint to the discarded stderr, and leaves stdout
- * empty — so the dirty-tree check read `""` as clean, the sweep mutated an
- * uncommitted file, the restore failed silently under `Effect.ignore`, and the
- * run exited 0 reporting a survivor with the content gone. Two review lanes
- * reproduced that independently.
+ * away, with stderr piped to `"ignore"`. That made refusals 3 and 4 — the
+ * dirty-tree checks — properties of git SUCCEEDING rather than properties of
+ * the tool. Point the sweep at a directory that is not a git repository:
+ * `git status --porcelain` exits 128, writes its complaint to the discarded
+ * stderr, and leaves stdout empty — so the dirty-tree check read `""` as
+ * clean, the sweep mutated an uncommitted file, the restore failed silently
+ * under `Effect.ignore`, and the run exited 0 reporting a survivor with the
+ * content gone. Two review lanes reproduced that independently.
  *
  * It does NOT fail on a non-zero exit, and must not: the test command is
  * expected to exit non-zero, because a killed mutant is a failing suite. The
