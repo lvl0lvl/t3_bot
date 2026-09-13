@@ -400,7 +400,11 @@ function ChannelPost({
         // is an array: a post mentioning three handles wakes three threads, and a
         // sentence built for one stretches badly at three. `wrap-break-word` for
         // the same reason as the body — a thread title is free text.
-        <ul className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+        //
+        // `gap-1`, the article's own gap, and not less: at 390px a wrapped title's
+        // two lines sit 0px apart, so a smaller gap puts the next item closer than
+        // one line pitch and the item boundaries vanish.
+        <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
           {wakes.map((wake) => (
             <ChannelPostWakeLine
               key={wake.threadId}
