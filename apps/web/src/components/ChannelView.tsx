@@ -423,7 +423,9 @@ function ChannelPost({
  *
  * NOT A LINK. The turn id behind this line is provider-shaped (see
  * `describeChannelPostWakes`), so a control here would act on a turn the reader
- * is not looking at. A reader who wants the thread has the sidebar.
+ * is not looking at. That alone is the reason: the line carries no navigation,
+ * and the thread is in the sidebar only while this client holds an unarchived
+ * shell for it in scope — the name here is not a promise that it is.
  */
 function ChannelPostWakeLine({
   environmentId,
