@@ -186,6 +186,17 @@ rl.on("line", (line) => {
     write({ id, result: {} });
     return;
   }
+  if ((method === "thread/read" || method === "thread/rollback") && script.threadReadTurns) {
+    // A snapshot whose turn ids come from the script: the response path the
+    // runtime decodes outside the notification door.
+    const turns = script.threadReadTurns.map((turnId) => ({
+      ...fixture.responses.turnStart.turn,
+      id: turnId,
+      status: "completed",
+    }));
+    write({ id, result: { thread: { ...fixture.responses.threadStart.thread, turns } } });
+    return;
+  }
   if (id !== undefined) {
     write({ id, result: {} });
   }

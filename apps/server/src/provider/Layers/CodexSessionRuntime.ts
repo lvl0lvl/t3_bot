@@ -24,6 +24,9 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -863,6 +866,75 @@ export function makeMemoryConsolidationNotificationFilter(): (
   };
 }
 
+/**
+ * THE APP-SERVER'S IDS ARE OUTSIDE INPUT, checked once here and never `.make`d
+ * on the way in. The generated protocol types every id as `Schema.String`.
+ * `TurnId.make` throws on an empty string and admits whitespace; the decoder
+ * refuses both, so this door refuses the whitespace-only ids the old runtime
+ * passed through as garbage. Measured (`t3_bot-a50`): a `turn/started` whose
+ * `turn.id` is "" made `sendTurn` succeed and then nothing - the throw ended
+ * the client's reader loop and the runtime's own notification consumer, so no
+ * later notification arrived, no error was logged, and the turn never
+ * closed. Every handler below runs only after this has checked the payload's
+ * ids with the brand's decoder and dropped the message on refusal; the
+ * handlers then brand the RAW wire string, not the decoded value, so a padded
+ * id (" turn-1 ") is admitted here and carried untrimmed, by design.
+ *
+ * Read from the four field shapes the protocol uses (`turnId`, `itemId`,
+ * `turn.id`, `item.id`) rather than from a per-method table, so a method that
+ * grows one of those fields is covered without a second list to keep. Refused
+ * is a PRESENT value the brand refuses, never an absent one: the protocol
+ * spells "no turn context" as `turnId: null` on the hook notifications,
+ * `thread/goal/updated` and `mcpServer/elicitation/request`, and `itemId:
+ * null` on `thread/realtime/audioChunk`; those must pass.
+ */
+const decodeTurnId = Schema.decodeUnknownOption(TurnId);
+const decodeProviderItemId = Schema.decodeUnknownOption(ProviderItemId);
+
+type RefusedId = {
+  readonly field: string;
+  readonly preview: string;
+};
+
+// The refused value is echoed in the error event, the session's lastError and
+// the response written back to the app-server; a 1 MiB id would be copied
+// into all three at full size.
+const REFUSED_PREVIEW_LENGTH = 64;
+function previewRefusedValue(value: unknown): string {
+  if (typeof value !== "string") {
+    return typeof value;
+  }
+  if (value.length <= REFUSED_PREVIEW_LENGTH) {
+    return JSON.stringify(value);
+  }
+  return `${JSON.stringify(value.slice(0, REFUSED_PREVIEW_LENGTH))}… (${value.length} chars)`;
+}
+
+function refusedIds(params: unknown): ReadonlyArray<RefusedId> {
+  if (!Predicate.isObject(params)) {
+    return [];
+  }
+  const refused: Array<RefusedId> = [];
+  const check = (
+    field: string,
+    value: unknown,
+    decode: (input: unknown) => Option.Option<unknown>,
+  ) => {
+    if (value !== undefined && value !== null && Option.isNone(decode(value))) {
+      refused.push({ field, preview: previewRefusedValue(value) });
+    }
+  };
+  check("turnId", params.turnId, decodeTurnId);
+  check("itemId", params.itemId, decodeProviderItemId);
+  if (Predicate.isObject(params.turn)) {
+    check("turn.id", params.turn.id, decodeTurnId);
+  }
+  if (Predicate.isObject(params.item)) {
+    check("item.id", params.item.id, decodeProviderItemId);
+  }
+  return refused;
+}
+
 function readRouteFields(notification: CodexServerNotification): {
   readonly turnId: TurnId | undefined;
   readonly itemId: ProviderItemId | undefined;
@@ -1180,16 +1252,31 @@ function updateSession(
   });
 }
 
+// A response's turn id is outside input the same as a notification's; it is
+// decoded here, failing the same typed error as the response payload itself.
+const decodeResponseTurnId = Schema.decodeUnknownEffect(TurnId);
+function decodeTurnIdFromResponse(
+  method: string,
+  id: string,
+): Effect.Effect<TurnId, CodexErrors.CodexAppServerProtocolParseError> {
+  return decodeResponseTurnId(id).pipe(
+    Effect.mapError((error) =>
+      CodexErrors.CodexAppServerProtocolParseError.fromSchemaError(
+        "decode-response-payload",
+        error,
+        { method },
+      ),
+    ),
+  );
+}
+
 function parseThreadSnapshot(
+  method: string,
   response: EffectCodexSchema.V2ThreadReadResponse | EffectCodexSchema.V2ThreadRollbackResponse,
-): CodexThreadSnapshot {
-  return {
-    threadId: response.thread.id,
-    turns: response.thread.turns.map((turn) => ({
-      id: TurnId.make(turn.id),
-      items: turn.items,
-    })),
-  };
+): Effect.Effect<CodexThreadSnapshot, CodexErrors.CodexAppServerProtocolParseError> {
+  return Effect.forEach(response.thread.turns, (turn) =>
+    decodeTurnIdFromResponse(method, turn.id).pipe(Effect.map((id) => ({ id, items: turn.items }))),
+  ).pipe(Effect.map((turns) => ({ threadId: response.thread.id, turns })));
 }
 
 export const makeCodexSessionRuntime = (
@@ -1303,6 +1390,96 @@ export const makeCodexSessionRuntime = (
         threadId: options.threadId,
         method,
         message,
+      });
+
+    // ONE DOOR for everything the app-server sends. A refused id is reported
+    // as a provider error that names codex, the method and the field, and the
+    // payload goes no further. On a notification, a handler that fails or dies
+    // anyway is reported the same way and the pump keeps running, so the NEXT
+    // unforeseen defect is visible too rather than a silent stall. On a
+    // request, a dying handler is reported and answered internalError; a typed
+    // failure is answered by the protocol layer and not reported.
+    // `dispatchNotification` in the client catches typed failures only; a
+    // defect there ends the stdin reader.
+    const emitRefusedIds = (
+      method: string,
+      refused: ReadonlyArray<RefusedId>,
+      outcome: "the message was dropped" | "the request was answered with an error",
+    ) => {
+      const list = refused.map((entry) => `${entry.field} ${entry.preview}`).join(", ");
+      const which = refused.length === 1 ? "is not an id" : "are not ids";
+      return emitEvent({
+        kind: "error",
+        threadId: options.threadId,
+        method: "codex/malformed-id",
+        message: `Codex sent ${method} with ${list}, which ${which}; ${outcome}.`,
+        payload: { method, refused },
+      });
+    };
+    const emitHandlerFailure = (method: string, cause: Cause.Cause<unknown>) => {
+      const failure = Cause.squash(cause);
+      return emitEvent({
+        kind: "error",
+        threadId: options.threadId,
+        method: "codex/handler-failed",
+        message: `codex handling of ${method} failed: ${failure instanceof Error ? failure.message : Cause.pretty(cause)}`,
+        payload: { method, cause: Cause.pretty(cause) },
+      });
+    };
+    const guardRequest = <M extends CodexRpc.ServerRequestMethod>(
+      method: M,
+      handler: (
+        payload: CodexRpc.ServerRequestParamsByMethod[M],
+      ) => Effect.Effect<
+        CodexRpc.ServerRequestResponsesByMethod[M],
+        CodexErrors.CodexAppServerError
+      >,
+    ) =>
+      client.handleServerRequest(method, (payload) => {
+        const refused = refusedIds(payload);
+        if (refused.length > 0) {
+          return emitRefusedIds(method, refused, "the request was answered with an error").pipe(
+            Effect.flatMap(() =>
+              Effect.fail(
+                CodexErrors.CodexAppServerRequestError.invalidParams(
+                  `${method} carried an id T3 Code refuses`,
+                  { refused },
+                ),
+              ),
+            ),
+          );
+        }
+        return handler(payload).pipe(
+          Effect.catchDefect((defect) =>
+            emitHandlerFailure(method, Cause.die(defect)).pipe(
+              Effect.flatMap(() =>
+                Effect.fail(
+                  CodexErrors.CodexAppServerRequestError.internalError(
+                    `T3 Code failed while handling ${method}`,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      });
+    // Registered with the client by `guardNotification`, not here: a
+    // second registration per method would run `refusedIds` twice.
+    const directNotificationHandlers = new Map<
+      CodexRpc.ServerNotificationMethod,
+      (payload: unknown) => Effect.Effect<void, CodexErrors.CodexAppServerError>
+    >();
+    const handleNotification = <M extends CodexRpc.ServerNotificationMethod>(
+      method: M,
+      handler: (
+        payload: CodexRpc.ServerNotificationParamsByMethod[M],
+      ) => Effect.Effect<void, CodexErrors.CodexAppServerError>,
+    ) =>
+      Effect.sync(() => {
+        directNotificationHandlers.set(
+          method,
+          handler as (payload: unknown) => Effect.Effect<void, CodexErrors.CodexAppServerError>,
+        );
       });
 
     const updateCollabChildMetadata = (
@@ -1895,7 +2072,7 @@ export const makeCodexSessionRuntime = (
 
     const currentSessionProviderThreadId = Effect.map(Ref.get(sessionRef), currentProviderThreadId);
 
-    yield* client.handleServerNotification("thread/started", (payload) =>
+    yield* handleNotification("thread/started", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           if (providerThreadId && payload.thread.id !== providerThreadId) {
@@ -1908,7 +2085,7 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* client.handleServerNotification("turn/started", (payload) =>
+    yield* handleNotification("turn/started", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           if (providerThreadId && payload.threadId !== providerThreadId) {
@@ -1922,7 +2099,7 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* client.handleServerNotification("turn/completed", (payload) =>
+    yield* handleNotification("turn/completed", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           if (providerThreadId && payload.threadId !== providerThreadId) {
@@ -1941,7 +2118,7 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* client.handleServerNotification("error", (payload) =>
+    yield* handleNotification("error", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           const payloadThreadId = payload.threadId;
@@ -1958,7 +2135,7 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
+    yield* guardRequest("item/commandExecution/requestApproval", (payload) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("command-approval-request"));
         const turnId = TurnId.make(payload.turnId);
@@ -2014,7 +2191,7 @@ export const makeCodexSessionRuntime = (
       }),
     );
 
-    yield* client.handleServerRequest("item/fileChange/requestApproval", (payload) =>
+    yield* guardRequest("item/fileChange/requestApproval", (payload) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(
           yield* randomUUIDv4("file-change-approval-request"),
@@ -2072,7 +2249,7 @@ export const makeCodexSessionRuntime = (
       }),
     );
 
-    yield* client.handleServerRequest("mcpServer/elicitation/request", (payload) =>
+    yield* guardRequest("mcpServer/elicitation/request", (payload) =>
       Effect.gen(function* () {
         if (toMcpElicitationResponse(payload, "accept").action !== "accept") {
           yield* Effect.logWarning("Declined an unsupported MCP elicitation.", {
@@ -2137,7 +2314,7 @@ export const makeCodexSessionRuntime = (
       }),
     );
 
-    yield* client.handleServerRequest("item/tool/requestUserInput", (payload) =>
+    yield* guardRequest("item/tool/requestUserInput", (payload) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("user-input-request"));
         const turnId = TurnId.make(payload.turnId);
@@ -2191,23 +2368,38 @@ export const makeCodexSessionRuntime = (
       Effect.fail(CodexErrors.CodexAppServerRequestError.methodNotFound(method)),
     );
 
-    const registerServerNotification = <M extends CodexRpc.ServerNotificationMethod>(method: M) =>
-      client.handleServerNotification(method, (params) =>
-        Queue.offer(serverNotifications, makeCodexServerNotification(method, params)).pipe(
+    const guardNotification = <M extends CodexRpc.ServerNotificationMethod>(method: M) =>
+      client.handleServerNotification(method, (payload) => {
+        const refused = refusedIds(payload);
+        if (refused.length > 0) {
+          return emitRefusedIds(method, refused, "the message was dropped");
+        }
+        const direct = directNotificationHandlers.get(method);
+        // The handler is invoked only once the ids are admitted: an eager
+        // `.make` in its body would otherwise throw before the check ran.
+        return Effect.suspend(() => (direct ? direct(payload) : Effect.void)).pipe(
+          Effect.catchCause((cause) => emitHandlerFailure(method, cause)),
+          Effect.andThen(
+            Queue.offer(serverNotifications, makeCodexServerNotification(method, payload)),
+          ),
           Effect.asVoid,
-        ),
-      );
+        );
+      });
 
     yield* Effect.forEach(
       Object.values(
         CodexRpc.SERVER_NOTIFICATION_METHODS,
       ) as ReadonlyArray<CodexRpc.ServerNotificationMethod>,
-      registerServerNotification,
+      guardNotification,
       { concurrency: 1, discard: true },
     );
 
     yield* Stream.fromQueue(serverNotifications).pipe(
-      Stream.runForEach(handleRawNotification),
+      Stream.runForEach((notification) =>
+        handleRawNotification(notification).pipe(
+          Effect.catchCause((cause) => emitHandlerFailure(notification.method, cause)),
+        ),
+      ),
       Effect.forkIn(runtimeScope),
     );
 
@@ -2382,7 +2574,7 @@ export const makeCodexSessionRuntime = (
               ),
             ),
           );
-          const turnId = TurnId.make(response.turn.id);
+          const turnId = yield* decodeTurnIdFromResponse("turn/start", response.turn.id);
           yield* updateSession(sessionRef, (session) => ({
             status: "running",
             // Codex accepts follow-ups while the current turn is still
@@ -2439,7 +2631,7 @@ export const makeCodexSessionRuntime = (
           threadId: providerThreadId,
           includeTurns: true,
         });
-        return parseThreadSnapshot(response);
+        return yield* parseThreadSnapshot("thread/read", response);
       }),
       rollbackThread: (numTurns) =>
         Effect.gen(function* () {
@@ -2452,7 +2644,7 @@ export const makeCodexSessionRuntime = (
             status: "ready",
             activeTurnId: undefined,
           });
-          return parseThreadSnapshot(response);
+          return yield* parseThreadSnapshot("thread/rollback", response);
         }),
       uploadFeedback: (reason) =>
         Effect.gen(function* () {
