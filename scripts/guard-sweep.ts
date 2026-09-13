@@ -1191,18 +1191,20 @@ export const guardSweepCommand = Command.make(
             "identifies every row by it",
         });
       }
-      // BEFORE ANY LOOKUP IS KEYED ON THESE STRINGS. `git status --porcelain` prints
-      // `src/thing.ts`, so a row spelled `./src/thing.ts` misses the setup-written guard and
-      // every other keyed check, and the run ends in a confirmed false kill at exit 0.
+      // BEFORE THE SET LOOKUPS THAT DECIDE WHETHER A ROW IS MEASURABLE. `git status
+      // --porcelain` prints `src/thing.ts`, so a row spelled `./src/thing.ts` is absent from the
+      // setup-written guard while git accepts the spelling everywhere else, and the run ends in a
+      // confirmed false kill at exit 0.
       const nonNormal = nonNormalMutationPaths(parsed.mutations);
       if (nonNormal.length > 0) {
         return yield* new GuardSweepConfigError({
           detail:
             `${nonNormal.length} mutation${nonNormal.length === 1 ? "" : "s"} name a path that is ` +
-            "not plain repo-relative, and every keyed check here compares the config's own " +
-            "spelling against git's:\n  " +
+            "not plain repo-relative, and this tool decides whether a row is measurable by " +
+            "looking its file up in the output of `git status --porcelain`, which prints " +
+            "`src/thing.ts`:\n  " +
             nonNormal.map((row) => `${row.id}: ${row.file}`).join("\n  ") +
-            "\nWrite it as git prints it — no leading `./`, no `..` segment, not absolute.",
+            "\nWrite it as git prints it — no leading `./`, no `.` or `..` segment, not absolute.",
         });
       }
       // RESOLVED ONCE, and `mustSucceed`: a report that quietly names no commit
