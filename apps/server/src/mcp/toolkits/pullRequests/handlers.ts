@@ -143,6 +143,10 @@ const make = Effect.gen(function* () {
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const crypto = yield* Crypto.Crypto;
 
+  // Both dispatches are the token's thread acting; one place says so.
+  const issuedBy = (thread: OrchestrationThreadShell) =>
+    ({ issuer: { memberKind: "thread", memberId: thread.id } }) as const;
+
   const commandId = (tag: string, threadId: ThreadId) =>
     crypto.randomUUIDv4.pipe(
       Effect.orDie,
@@ -190,16 +194,26 @@ const make = Effect.gen(function* () {
         const project = yield* projectOf(thread, PullRequestLinkFailedError);
         const target = yield* resolveTarget(input, project);
         const alreadyLinked = yield* engine
-          .dispatch({
-            type: "thread.pull-request.link",
-            commandId: yield* commandId("mcp-pr-link", thread.id),
-            threadId: thread.id,
-            host: target.host,
-            repository: target.repository,
-            number: target.number,
-            url: target.url,
-            source: "agent",
-          })
+          .dispatch(
+            {
+              type: "thread.pull-request.link",
+              commandId: yield* commandId("mcp-pr-link", thread.id),
+              threadId: thread.id,
+              host: target.host,
+              repository: target.repository,
+              number: target.number,
+              url: target.url,
+              source: "agent",
+            },
+            // THE ISSUER, NOT A COMMAND FIELD — the thread the token names, as the
+            // comms toolkit stamps its posts. This door dispatched bare and nothing
+            // refused it: no pull-request command has an issuer invariant yet, and
+            // the `catchTags` below maps EVERY invariant refusal to the outcome the
+            // agent asked for, so the first invariant to land would have read as
+            // `alreadyLinked: true`, not as a failure. That catch's breadth is its
+            // own bead, t3_bot-9dp.
+            issuedBy(thread),
+          )
           .pipe(
             Effect.as(false),
             // The decider rejects a second link of the same PR; for the agent that is
@@ -215,14 +229,17 @@ const make = Effect.gen(function* () {
         const project = yield* projectOf(thread, PullRequestUnlinkFailedError);
         const target = yield* resolveTarget(input, project);
         const wasLinked = yield* engine
-          .dispatch({
-            type: "thread.pull-request.unlink",
-            commandId: yield* commandId("mcp-pr-unlink", thread.id),
-            threadId: thread.id,
-            host: target.host,
-            repository: target.repository,
-            number: target.number,
-          })
+          .dispatch(
+            {
+              type: "thread.pull-request.unlink",
+              commandId: yield* commandId("mcp-pr-unlink", thread.id),
+              threadId: thread.id,
+              host: target.host,
+              repository: target.repository,
+              number: target.number,
+            },
+            issuedBy(thread),
+          )
           .pipe(
             Effect.as(true),
             Effect.catchTags({ OrchestrationCommandInvariantError: () => Effect.succeed(false) }),
