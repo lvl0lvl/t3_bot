@@ -2540,6 +2540,18 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  // Thrown outside any Effect on purpose: the point is a defect that carries a
+  // `_tag` (`SchemaError`) which no dispatch arm names.
+  const decodeNumberSync = Schema.decodeUnknownSync(Schema.Number);
+  const thrownSchemaError = (): unknown => {
+    try {
+      decodeNumberSync("x");
+    } catch (error) {
+      return error;
+    }
+    throw new Error("decoding 'x' as a number did not throw");
+  };
+
   it.effect("answers a squashed defect on the HTTP door as an internal error with a trace", () =>
     Effect.gen(function* () {
       // What the engine hands this door when its worker throws: `Cause.squash`
@@ -2549,14 +2561,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // no arm names. `catchTags` matches neither; a backstop keyed on the
       // ABSENCE of a `_tag` (the first version of this fix) answered the second
       // as an empty 500 with no traceId.
-      const schemaExit = yield* Effect.exit(
-        Effect.sync(() => Schema.decodeUnknownSync(Schema.Number)("x")),
-      );
-      if (!Exit.isFailure(schemaExit)) {
-        assert.fail("decoding 'x' as a number did not throw");
-      }
-      const schemaDefect = Cause.squash(schemaExit.cause);
-      const squashedDefects: Array<unknown> = [new TypeError("boom-untagged"), schemaDefect];
+      // `Cause.squash` of a Die is the thrown value itself, so the thrown
+      // SchemaError IS the shape the engine hands the door.
+      const squashedDefects: Array<unknown> = [new TypeError("boom-untagged"), thrownSchemaError()];
       let hit = 0;
       yield* buildAppUnderTest({
         layers: {
