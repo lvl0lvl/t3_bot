@@ -6539,6 +6539,26 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("brands a turn id from the SDK only behind the id gate", () =>
+    Effect.gen(function* () {
+      // Upstream's rewind rewrite (efccda9ac, #11358) builds a snapshot with
+      // `TurnId.make(entry.info.id)` over a forked session's messages and
+      // merges past `admitMessageTurnId` with no conflict, so the class #49
+      // closed comes back silently. The two sites this file may brand a turn
+      // id are the raw string the gate admitted and the uuid the adapter
+      // mints; a third `TurnId.make(` is the merge to look at.
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const source = yield* fileSystem.readFileString(
+        path.join(import.meta.dirname, "OpenCodeAdapter.ts"),
+      );
+      NodeAssert.deepEqual(source.match(/TurnId\.make\([^)]*\)/g), [
+        "TurnId.make(id)",
+        "TurnId.make(`opencode-turn-${yield* randomUUIDv4}`)",
+      ]);
+    }),
+  );
+
   it.effect("classifies a confirmed not-found across the shapes the SDK/runtime can produce", () =>
     Effect.sync(() => {
       // The real production shape: runOpenCodeSdk wraps the thrown Error
