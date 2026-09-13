@@ -24,6 +24,9 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -863,6 +866,56 @@ export function makeMemoryConsolidationNotificationFilter(): (
   };
 }
 
+/**
+ * THE APP-SERVER'S IDS ARE OUTSIDE INPUT, decoded once here and never `.make`d
+ * on the way in. The generated protocol types every id as `Schema.String`;
+ * `TurnId` and `ProviderItemId` refuse an empty or whitespace value, and a
+ * `.make` on one throws inside the handler that runs it. Measured
+ * (`t3_bot-a50`): a `turn/started` whose `turn.id` is "" made `sendTurn`
+ * succeed and then nothing - the throw ended the client's reader loop and the
+ * runtime's own notification consumer, so no later notification arrived, no
+ * error was logged, and the turn never closed. Every handler below runs only
+ * after this has admitted the payload's ids; the `.make` calls that remain in
+ * them re-brand a value this already decoded, the way a decoded wire command's
+ * ids are re-branded downstream.
+ *
+ * Read from the four field shapes the protocol uses (`turnId`, `itemId`,
+ * `turn.id`, `item.id`) rather than from a per-method table, so a method that
+ * grows one of those fields is covered without a second list to keep.
+ */
+const decodeTurnId = Schema.decodeUnknownOption(TurnId);
+const decodeProviderItemId = Schema.decodeUnknownOption(ProviderItemId);
+
+type RefusedId = {
+  readonly field: string;
+  readonly value: unknown;
+};
+
+function refusedIds(params: unknown): ReadonlyArray<RefusedId> {
+  if (!Predicate.isObject(params)) {
+    return [];
+  }
+  const refused: Array<RefusedId> = [];
+  const check = (
+    field: string,
+    value: unknown,
+    decode: (input: unknown) => Option.Option<unknown>,
+  ) => {
+    if (value !== undefined && Option.isNone(decode(value))) {
+      refused.push({ field, value });
+    }
+  };
+  check("turnId", params.turnId, decodeTurnId);
+  check("itemId", params.itemId, decodeProviderItemId);
+  if (Predicate.isObject(params.turn)) {
+    check("turn.id", params.turn.id, decodeTurnId);
+  }
+  if (Predicate.isObject(params.item)) {
+    check("item.id", params.item.id, decodeProviderItemId);
+  }
+  return refused;
+}
+
 function readRouteFields(notification: CodexServerNotification): {
   readonly turnId: TurnId | undefined;
   readonly itemId: ProviderItemId | undefined;
@@ -1304,6 +1357,91 @@ export const makeCodexSessionRuntime = (
         method,
         message,
       });
+
+    // ONE DOOR for everything the app-server sends. A refused id is reported
+    // as a provider error that names codex, the method and the field, and the
+    // payload goes no further; a handler that fails or dies anyway is reported
+    // the same way and the pump keeps running, so the NEXT unforeseen defect
+    // is visible too rather than a silent stall. `dispatchNotification` in the
+    // client catches typed failures only; a defect there ends the stdin reader.
+    const reportRefusedIds = (method: string, refused: ReadonlyArray<RefusedId>) =>
+      emitEvent({
+        kind: "error",
+        threadId: options.threadId,
+        method: "codex/malformed-id",
+        message: `codex sent ${method} with ${refused
+          .map((entry) => `${entry.field} ${JSON.stringify(entry.value)}`)
+          .join(", ")}, which is not an id; the message was dropped`,
+        payload: { method, refused },
+      });
+    const reportHandlerFailure = (method: string, cause: Cause.Cause<unknown>) =>
+      emitEvent({
+        kind: "error",
+        threadId: options.threadId,
+        method: "codex/handler-failed",
+        message: `codex handling of ${method} failed: ${Cause.squash(cause) instanceof Error ? (Cause.squash(cause) as Error).message : Cause.pretty(cause)}`,
+        payload: { method, cause: Cause.pretty(cause) },
+      });
+    const admitted = <A, E, R>(
+      method: string,
+      params: unknown,
+      handle: Effect.Effect<A, E, R>,
+    ): Effect.Effect<void, CodexErrors.CodexAppServerIdentifierGenerationError, R> => {
+      const refused = refusedIds(params);
+      if (refused.length > 0) {
+        return reportRefusedIds(method, refused);
+      }
+      return handle.pipe(
+        Effect.asVoid,
+        Effect.catchCause((cause) => reportHandlerFailure(method, cause)),
+      );
+    };
+    const onRequest = <M extends CodexRpc.ServerRequestMethod>(
+      method: M,
+      handler: (
+        payload: CodexRpc.ServerRequestParamsByMethod[M],
+      ) => Effect.Effect<
+        CodexRpc.ServerRequestResponsesByMethod[M],
+        CodexErrors.CodexAppServerError
+      >,
+    ) =>
+      client.handleServerRequest(method, (payload) => {
+        const refused = refusedIds(payload);
+        if (refused.length > 0) {
+          return reportRefusedIds(method, refused).pipe(
+            Effect.flatMap(() =>
+              Effect.fail(
+                CodexErrors.CodexAppServerRequestError.invalidParams(
+                  `${method} carried an id T3 Code refuses`,
+                  { refused },
+                ),
+              ),
+            ),
+          );
+        }
+        return handler(payload).pipe(
+          Effect.catchDefect((defect) =>
+            reportHandlerFailure(method, Cause.die(defect)).pipe(
+              Effect.flatMap(() =>
+                Effect.fail(
+                  CodexErrors.CodexAppServerRequestError.internalError(
+                    `T3 Code failed while handling ${method}`,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      });
+    const onNotification = <M extends CodexRpc.ServerNotificationMethod>(
+      method: M,
+      handler: (
+        payload: CodexRpc.ServerNotificationParamsByMethod[M],
+      ) => Effect.Effect<void, CodexErrors.CodexAppServerError>,
+    ) =>
+      client.handleServerNotification(method, (payload) =>
+        admitted(method, payload, handler(payload)),
+      );
 
     const updateCollabChildMetadata = (
       agentThreadId: string,
@@ -1895,7 +2033,7 @@ export const makeCodexSessionRuntime = (
 
     const currentSessionProviderThreadId = Effect.map(Ref.get(sessionRef), currentProviderThreadId);
 
-    yield* client.handleServerNotification("thread/started", (payload) =>
+    yield* onNotification("thread/started", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           if (providerThreadId && payload.thread.id !== providerThreadId) {
@@ -1908,7 +2046,7 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* client.handleServerNotification("turn/started", (payload) =>
+    yield* onNotification("turn/started", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           if (providerThreadId && payload.threadId !== providerThreadId) {
@@ -1922,7 +2060,7 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* client.handleServerNotification("turn/completed", (payload) =>
+    yield* onNotification("turn/completed", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           if (providerThreadId && payload.threadId !== providerThreadId) {
@@ -1941,7 +2079,7 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* client.handleServerNotification("error", (payload) =>
+    yield* onNotification("error", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           const payloadThreadId = payload.threadId;
@@ -1958,7 +2096,7 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
+    yield* onRequest("item/commandExecution/requestApproval", (payload) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("command-approval-request"));
         const turnId = TurnId.make(payload.turnId);
@@ -2014,7 +2152,7 @@ export const makeCodexSessionRuntime = (
       }),
     );
 
-    yield* client.handleServerRequest("item/fileChange/requestApproval", (payload) =>
+    yield* onRequest("item/fileChange/requestApproval", (payload) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(
           yield* randomUUIDv4("file-change-approval-request"),
@@ -2072,7 +2210,7 @@ export const makeCodexSessionRuntime = (
       }),
     );
 
-    yield* client.handleServerRequest("mcpServer/elicitation/request", (payload) =>
+    yield* onRequest("mcpServer/elicitation/request", (payload) =>
       Effect.gen(function* () {
         if (toMcpElicitationResponse(payload, "accept").action !== "accept") {
           yield* Effect.logWarning("Declined an unsupported MCP elicitation.", {
@@ -2137,7 +2275,7 @@ export const makeCodexSessionRuntime = (
       }),
     );
 
-    yield* client.handleServerRequest("item/tool/requestUserInput", (payload) =>
+    yield* onRequest("item/tool/requestUserInput", (payload) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("user-input-request"));
         const turnId = TurnId.make(payload.turnId);
@@ -2192,7 +2330,7 @@ export const makeCodexSessionRuntime = (
     );
 
     const registerServerNotification = <M extends CodexRpc.ServerNotificationMethod>(method: M) =>
-      client.handleServerNotification(method, (params) =>
+      onNotification(method, (params) =>
         Queue.offer(serverNotifications, makeCodexServerNotification(method, params)).pipe(
           Effect.asVoid,
         ),
@@ -2207,7 +2345,11 @@ export const makeCodexSessionRuntime = (
     );
 
     yield* Stream.fromQueue(serverNotifications).pipe(
-      Stream.runForEach(handleRawNotification),
+      Stream.runForEach((notification) =>
+        handleRawNotification(notification).pipe(
+          Effect.catchCause((cause) => reportHandlerFailure(notification.method, cause)),
+        ),
+      ),
       Effect.forkIn(runtimeScope),
     );
 
