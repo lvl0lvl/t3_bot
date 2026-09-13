@@ -6544,15 +6544,20 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       // Upstream's rewind rewrite (efccda9ac, #11358) builds a snapshot with
       // `TurnId.make(entry.info.id)` over a forked session's messages and
       // merges past `admitMessageTurnId` with no conflict, so the class #49
-      // closed comes back silently. The two sites this file may brand a turn
-      // id are the raw string the gate admitted and the uuid the adapter
-      // mints; a third `TurnId.make(` is the merge to look at.
+      // closed comes back silently. OpenCodeAdapter.ts may brand a turn id at
+      // two sites: the raw string the gate admitted and the uuid it mints. A
+      // third `TurnId.make(` is a merge landing outside the gate: route the
+      // SDK value through `admitMessageTurnId`, or add a self-minted call to
+      // the list below. Only code counts: a comment naming the call is not a
+      // brand site. The pin sees the literal `TurnId.make(` only: a cast
+      // `as TurnId`, an aliased or destructured `make`, or a bracket access
+      // stays green (upstream writes none of these today; `vp fmt` normalises
+      // the whitespace forms into reach).
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const source = yield* fileSystem.readFileString(
         path.join(import.meta.dirname, "OpenCodeAdapter.ts"),
       );
-      // Only code counts: a comment naming the call is not a brand site.
       const code = source.replace(/^\s*(?:\/\/|\/\*|\*).*$/gm, "");
       NodeAssert.deepEqual(code.match(/TurnId\.make\([^)]*\)/g), [
         "TurnId.make(id)",
