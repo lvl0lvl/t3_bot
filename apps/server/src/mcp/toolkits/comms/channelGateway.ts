@@ -6,10 +6,16 @@
  * errors below are the vocabulary the toolkit translates for an agent — a
  * caller above this file cannot tell the two implementations apart.
  *
- * Ids are `string` here, and that is a staged simplification rather than a
- * contained one: branding them surfaces `ChannelMemberHandle` in `handlers.ts`
- * (mention resolution) and in `tools.ts` (the handles an agent sends and
- * receives), so it is a change to those files too.
+ * WHICH IDS CARRY THEIR BRAND HERE is a rule, not a leftover. The channel id
+ * and the caller's thread id are `ChannelId` and `ThreadId` end to end: one is
+ * resolved from a projection row, the other taken from a credential, so
+ * neither is ever built from text at this seam. Post ids and handles arrive as
+ * `string`, because an agent typed them, and are decoded on the way in
+ * (`decodePostId` in the live layer; roster resolution in `handlers.ts`)
+ * rather than `.make`d. Outbound records and errors stay `string`: they are
+ * copied into the toolkit's output for an agent to read, and a brand there
+ * would surface `ChannelMemberHandle` in `handlers.ts` and `tools.ts` to
+ * prove something the wire cannot carry.
  *
  * IDS ARE IDENTIFIERS, NOT TEXT, and `string` here understates them.
  * `ChannelId` and `ChannelPostId` are branded through `makeOpaqueEntityId`
@@ -160,14 +166,21 @@ export interface ChannelMember {
 
 export interface Channel {
   /**
-   * THE BRAND, NOT A STRING, on every id this seam takes or hands out. A
-   * `.make` on a caller-supplied string throws while the call is being
-   * assembled - before any Effect exists, so no `catchTags`/`catchCause`
-   * around the call ever runs (`t3_bot-d7d`; the first instance was #13's
-   * `comms_reply` dying on "a:b"). The projection row is already decoded
-   * into the brand, so the live layer has nothing to construct; a caller that
-   * holds a raw string - the next one holds values from a browser - decodes
-   * at its own door with `Schema.decode` and gets a typed refusal there.
+   * THE BRAND, NOT A STRING, for the channel id on every shape this seam
+   * takes. A `.make` on a caller-supplied string throws while the call is
+   * being assembled - before any Effect exists, so no `catchTags`/`catchCause`
+   * around the call ever runs (`t3_bot-d7d`). #13's `comms_reply` dying on
+   * "a:b" was that shape one argument over, `ChannelPostId.make` on the parent
+   * id; the channel-id `.make` beside it had the same shape and no incident
+   * yet. The projection row is already decoded into the brand, so the live
+   * layer has nothing to construct. This seam's only caller is the toolkit,
+   * whose channel id is a resolved row; the browser door
+   * (`orchestration/channelPosts.ts`, #25) decodes `ChannelId` at the wire
+   * contract and reads the projection directly. A caller that holds a raw
+   * string obtains the brand the same way, `Schema.decode` at its own door,
+   * and gets an `Option` rather than a throw (`t3_bot-py6`: the opaque-id
+   * decode trims before it checks, so it is not byte-for-byte the `.make`
+   * set).
    */
   readonly channelId: ChannelId;
   /**
@@ -202,7 +215,8 @@ export interface Channel {
 /**
  * One thread a post woke, and how that wake's turn ended.
  *
- * Strings, like every id on this seam. The vocabulary is the contract's
+ * Strings, outbound: the toolkit copies this record into its output and
+ * nothing constructs an id from it. The vocabulary is the contract's
  * (`OrchestrationChannelPostWakeOutcome`) and is NOT re-declared here as a
  * union: the seam would then be a second spelling of the five words, and the
  * handler that copies them across would compile against either.
@@ -304,7 +318,10 @@ export interface ChannelPage {
 }
 
 export interface CreatePostInput {
-  /** From `getChannelForMember`, or decoded at the caller's door; see `Channel.channelId`. */
+  /**
+   * A `ChannelId` from `getChannelForMember` for the member the caller acts
+   * as; see `createPost`'s PRECONDITION.
+   */
   readonly channelId: ChannelId;
   /**
    * The calling thread, from its MCP credential and never from tool input.
@@ -337,7 +354,10 @@ export interface CreatedPost {
 }
 
 export interface ReadPostsInput {
-  /** From `getChannelForMember`, or decoded at the caller's door; see `Channel.channelId`. */
+  /**
+   * A `ChannelId` from `getChannelForMember` for the member the caller acts
+   * as; see `createPost`'s PRECONDITION.
+   */
   readonly channelId: ChannelId;
   /** 1..200, enforced at the tool schema; the gateway may assume the range. */
   readonly limit: number;
@@ -404,6 +424,9 @@ export interface ChannelGatewayShape {
    * This exists so `reply` can ask whether a parent exists without paging
    * history to find out: a lookback bounded by a page size silently refuses
    * replies to anything outside it.
+   *
+   * No membership check runs here either; the caller resolves the channel for
+   * its member first and passes that row's id.
    */
   readonly getPost: (
     channelId: ChannelId,
@@ -428,6 +451,10 @@ export interface ChannelGatewayShape {
    * answered with an empty page. The empty page is indistinguishable from "you
    * are caught up", which is the defect this contract exists to prevent.
    * `limit` is a maximum, not an exact count.
+   *
+   * NO MEMBERSHIP CHECK RUNS HERE. The caller resolves the channel for its
+   * member first and passes that row's id; an id from anywhere else reads a
+   * channel the member is not in, successfully.
    */
   readonly readPosts: (
     input: ReadPostsInput,

@@ -1513,9 +1513,10 @@ describe("the comms toolkit on the live gateway", () => {
         // pinned. This line only keeps the four values used.
         expect([post, create, read, channel]).toHaveLength(4);
 
-        // The door's answer for the same string is a typed refusal - an
-        // Option, not a throw - which is what a caller holding browser input
-        // (`t3_bot-zuy`) does before it may reach this seam at all.
+        // The door's answer for the same string is an Option, not a throw. The
+        // browser door (`orchestration/channelPosts.ts`, #25) decodes
+        // `ChannelId` at the wire contract; nothing from a browser reaches
+        // this seam.
         expect(Option.isNone(decodeChannelId(raw))).toBe(true);
         expect(Option.isSome(decodeChannelId(CHANNEL_ID))).toBe(true);
       }).pipe(Effect.provide(TestLayer)),
