@@ -46,6 +46,20 @@
  *    survives that untouched, and only a wider mutation finds it. A sweep with
  *    no `wider` rows has measured one half of the question.
  *
+ * 6. It never accepts a `file` git would print differently. Like 1 this refuses
+ *    the whole config before the baseline, and for the same reason: it is
+ *    knowable from the config alone. `moved` comes from `git status
+ *    --porcelain`, which prints `src/thing.ts`, so a row spelled
+ *    `./src/thing.ts` is absent from the Set the setup-written guard asks. git
+ *    NORMALIZES a pathspec, so every other site accepted that spelling — measured:
+ *    `ls-files --error-unmatch` passes and `checkout --` succeeds — which is how
+ *    the row came to be measured on a tree `setupCommand` had dirtied and its
+ *    restore reverted setup's write rather than the mutation. The NEXT row was
+ *    then credited with killing a test that reddened for that reason: exit 0,
+ *    every row `confirmed`. A leading `./`, a `..` segment anywhere, an absolute
+ *    path and the empty path are refused; a DOTFILE path is not, because
+ *    `.github/workflows/ci.yml` is a real target.
+ *
  * ITS EXIT CODE IS A VERDICT: 0 all killed, 2 a survivor, 3 something NOT RUN,
  * 1 the tool or config failed. Every outcome used to be 0 and only a crash was
  * non-zero, which made the code an anti-signal — 0 for the healthy state and 0
@@ -170,19 +184,22 @@ const decodeSweepConfig = Schema.decodeUnknownEffect(Schema.fromJsonString(Sweep
  * Rows whose `file` is not a plain repo-relative path, which is a CONFIG defect and the only
  * thing standing between a spelling and a false kill.
  *
- * `moved` comes from `git status --porcelain`, which prints `src/thing.ts`. Five places key on
- * the raw config string — the row loop's setup-written guard, the pre-flight's, both `git
- * ls-files` calls and the pre-flight's source cache — so `./src/thing.ts` misses every one of
- * them. The row is then measured on a tree `setupCommand` dirtied, `git checkout --
- * ./src/thing.ts` reverts setup's write instead of the mutation, and a LATER row is credited
- * with killing a test that reddened for that reason: exit 0, reported `confirmed`, on the one
- * verdict that gates a merge. Measured, with a control that differs only in the spelling.
+ * TWO checks are defeated, and every other site is what makes it dangerous. `moved` comes from
+ * `git status --porcelain`, which prints `src/thing.ts`, and the row loop's setup-written guard
+ * and the pre-flight's skip both ask a Set built from that — neither finds `./src/thing.ts`.
+ * git itself NORMALIZES a pathspec, so `git ls-files --error-unmatch ./src/thing.ts` passes and
+ * `git checkout -- ./src/thing.ts` succeeds: the row is measured on a tree `setupCommand`
+ * dirtied, and its restore reverts setup's write instead of the mutation. A LATER row is then
+ * credited with killing a test that reddened for that reason — exit 0, reported `confirmed`, on
+ * the one verdict that gates a merge. Both halves measured, the second because a count of
+ * "places keyed on the string" is not a count of places that behave wrongly.
  *
- * REFUSED HERE RATHER THAN NORMALIZED AT EACH SITE. A per-site fix leaves the defect wherever a
- * site was missed and reads as green while doing it; this kills the class — `./x`, `../x`,
- * `a/../b`, `/abs`, empty — at the one place a config enters. It also keeps the report's text
- * identical to the config's: a normalizer would print `src/x.ts` in the table for an author who
- * wrote `./src/x.ts`, in a tool whose entire job is that its quotations match the file.
+ * REFUSED HERE RATHER THAN NORMALIZED AT THE LOOKUPS. Normalizing the two keys would fix this
+ * spelling; refusing kills the class — `./x`, `../x`, `a/../b`, `/abs`, empty — at the one place
+ * a config enters, and any future check keyed on the string inherits the fix rather than the
+ * trap. It also keeps the report's text identical to the config's: a normalizer would print
+ * `src/x.ts` in the table for an author who wrote `./src/x.ts`, in a tool whose entire job is
+ * that its quotations match the file.
  *
  * A dotfile path is NORMAL and must stay admitted: `.github/workflows/ci.yml` is a real target,
  * so this asks about path SEGMENTS that are `.` or `..` rather than about a leading dot.

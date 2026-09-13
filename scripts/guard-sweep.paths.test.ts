@@ -2,17 +2,17 @@
  * ONE CLAIM: a `file` git would print differently is refused before any lookup is keyed on it.
  *
  * The defect this pins produced a CONFIRMED FALSE KILL at exit 0 — the one verdict that gates a
- * merge. `moved` comes from `git status --porcelain`, which prints `src/thing.ts`, and five places
- * keyed on the raw config string, so a row spelled `./src/thing.ts` missed the setup-written guard,
- * was measured on a tree `setupCommand` had dirtied, and its restore (`git checkout --
- * ./src/thing.ts`) reverted setup's write rather than the mutation. A LATER row was then credited
- * with killing a test that reddened for that reason.
+ * merge. `moved` comes from `git status --porcelain`, which prints `src/thing.ts`, so a row spelled
+ * `./src/thing.ts` was absent from the setup-written guard; git normalizes a pathspec, so every
+ * other site accepted the spelling and the row was measured on a tree `setupCommand` had dirtied,
+ * with its restore (`git checkout -- ./src/thing.ts`) reverting setup's write rather than the
+ * mutation. A LATER row was then credited with killing a test that reddened for that reason.
  *
  * THE END-TO-END TEST IS THE POINT, not the predicate. `nonNormalMutationPaths` is pure and unit
- * tested beside it, but a pure test cannot show that the refusal happens BEFORE the five keyed
- * lookups — and "the check exists" was never the question. So this drives the real tool against a
- * stub suite, and the assertion is that the suite is NEVER SPAWNED: with the refusal placed after
- * any of those lookups the exit code and the error tag are unchanged, so only the spawn count
+ * tested beside it, but a pure test cannot show that the refusal happens BEFORE the lookups and
+ * the spawned suite — and "the check exists" was never the question. So this drives the real tool
+ * against a stub suite, and the assertion is that the suite is NEVER SPAWNED: with the refusal
+ * placed after the baseline the exit code and the error tag are unchanged, so only the spawn count
  * tells the placements apart.
  *
  * Separate from `guard-sweep.test.ts`, which says "Nothing here spawns a process or touches git",
@@ -119,9 +119,9 @@ describe("a path git would print differently is refused", () => {
         // only actionable thing is which row and what is wrong with it.
         expect(output).toContain("the-row");
         expect(output).toContain(file);
-        // THE ASSERTION THAT PINS THE ORDER. This refusal must precede the five keyed lookups;
-        // placed after any of them the status and the tag are identical, so nothing above this
-        // line distinguishes the two.
+        // THE ASSERTION THAT PINS THE ORDER. This refusal must precede the baseline; placed
+        // after it the status and the tag are identical, so nothing above this line
+        // distinguishes the two placements.
         expect(spawnsIn(log)).toBe(0);
       } finally {
         NodeFS.rmSync(root, { recursive: true, force: true });
