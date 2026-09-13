@@ -12062,13 +12062,18 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ).pipe(Effect.flip),
       );
 
-      assert.equal(error._tag, "OrchestrationDispatchCommandError");
+      if (error._tag !== "OrchestrationDispatchCommandError") {
+        assert.fail(`Expected an OrchestrationDispatchCommandError, got ${error._tag}`);
+      }
       assert.equal(
         error.message,
         "Orchestration command invariant failed (channel.post.create): Mentions did not resolve: nobody.",
       );
       // The handles come back through the wire schema, not only the tag.
-      assert.deepStrictEqual(error.refusal, { _tag: "mentions-unresolved", handles: ["nobody"] });
+      assert.deepStrictEqual(error.refusal, {
+        _tag: "mentions-unresolved",
+        handles: [ChannelMemberHandle.make("nobody")],
+      });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
