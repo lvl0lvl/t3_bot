@@ -1,0 +1,125 @@
+{
+  "testCommand": [
+    "pnpm",
+    "exec",
+    "vp",
+    "test",
+    "run",
+    "apps/server/src/orchestration/workflowScriptQuery.test.ts"
+  ],
+  "setupCommand": ["pnpm", "install", "--frozen-lockfile"],
+  "mutations": [
+    {
+      "id": "request-gate-extension-dropped",
+      "guard": "readWorkflowScript/request-gate",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  if (!NodePath.isAbsolute(requested) || NodePath.extname(requested) !== \".js\") {",
+      "replace": "  if (!NodePath.isAbsolute(requested)) {"
+    },
+    {
+      "id": "request-gate-absolute-dropped",
+      "guard": "readWorkflowScript/request-gate",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  if (!NodePath.isAbsolute(requested) || NodePath.extname(requested) !== \".js\") {",
+      "replace": "  if (NodePath.extname(requested) !== \".js\") {"
+    },
+    {
+      "id": "request-gate-refuses-everything",
+      "guard": "readWorkflowScript/request-gate",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  if (!NodePath.isAbsolute(requested) || NodePath.extname(requested) !== \".js\") {",
+      "replace": "  if (true as boolean) {"
+    },
+    {
+      "id": "root-widened-to-home",
+      "guard": "readWorkflowScript/scripts-root",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  return NodePath.join(NodeOS.homedir(), \".claude\", \"projects\");",
+      "replace": "  return NodePath.join(NodeOS.homedir());"
+    },
+    {
+      "id": "containment-dropped",
+      "guard": "readWorkflowScript/containment",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  if (resolved !== root && !resolved.startsWith(`${root}${NodePath.sep}`)) {",
+      "replace": "  if (false as boolean) {"
+    },
+    {
+      "id": "containment-prefix-without-separator",
+      "guard": "readWorkflowScript/containment",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  if (resolved !== root && !resolved.startsWith(`${root}${NodePath.sep}`)) {",
+      "replace": "  if (!resolved.startsWith(root)) {"
+    },
+    {
+      "id": "containment-refuses-everything",
+      "guard": "readWorkflowScript/containment",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  if (resolved !== root && !resolved.startsWith(`${root}${NodePath.sep}`)) {",
+      "replace": "  if (true as boolean) {"
+    },
+    {
+      "id": "resolved-extension-dropped",
+      "guard": "readWorkflowScript/resolved-extension",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  if (NodePath.extname(resolved) !== \".js\") {",
+      "replace": "  if (false as boolean) {"
+    },
+    {
+      "id": "resolved-extension-refuses-everything",
+      "guard": "readWorkflowScript/resolved-extension",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "  if (NodePath.extname(resolved) !== \".js\") {",
+      "replace": "  if (true as boolean) {"
+    },
+    {
+      "id": "not-found-relabelled",
+      "guard": "readWorkflowScript/file-realpath",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "        reason: \"not-found\",",
+      "replace": "        reason: \"read-failed\","
+    },
+    {
+      "id": "not-regular-file-dropped",
+      "guard": "readWorkflowScript/regular-file",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "        if (!stat.isFile()) {",
+      "replace": "        if (false as boolean) {"
+    },
+    {
+      "id": "truncation-never",
+      "guard": "readWorkflowScript/byte-cap",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "      const truncated = stat.size > SCRIPT_BYTE_CAP;",
+      "replace": "      const truncated = false;"
+    },
+    {
+      "id": "truncation-off-by-one",
+      "guard": "readWorkflowScript/byte-cap",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "      const truncated = stat.size > SCRIPT_BYTE_CAP;",
+      "replace": "      const truncated = stat.size >= SCRIPT_BYTE_CAP;"
+    },
+    {
+      "id": "read-cap-dropped",
+      "guard": "readWorkflowScript/byte-cap",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/workflowScriptQuery.ts",
+      "find": "        const buffer = Buffer.alloc(Math.min(stat.size, SCRIPT_BYTE_CAP));",
+      "replace": "        const buffer = Buffer.alloc(stat.size);"
+    }
+  ]
+}
