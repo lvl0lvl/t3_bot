@@ -850,7 +850,7 @@ function asRuntimeRequestId(value: ApprovalRequestId): RuntimeRequestId {
 // here is dropped when malformed; a refused thread id ("" or whitespace) is
 // dropped the same way instead of throwing in `.make` while the session
 // starts, and `startSession` logs the drop at debug. Dropping is the
-// decision (pm, 2026-09-13): a trace label is not worth a failed session
+// decision (`t3_bot-qci`): a trace label is not worth a failed session
 // start, so do not promote a malformed cursor field to an error later.
 const decodeCursorThreadId = Schema.decodeUnknownOption(ThreadId);
 
