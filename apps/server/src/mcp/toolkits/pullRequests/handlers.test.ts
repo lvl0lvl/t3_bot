@@ -247,11 +247,12 @@ describe("pull request toolkit handlers", () => {
 
   it.effect("issues a link as the token's thread, not bare", () =>
     Effect.gen(function* () {
-      // THE DOOR TEST. This toolkit dispatched with no issuer; nothing refused it
-      // because no pull-request command has an issuer invariant, so the omission
-      // was invisible until the first invariant landed. The literal is spelled
-      // out: a comparison against the thread fixture would move with a wrong
-      // constant. `undefined` here is exactly what the bare dispatch produced.
+      // THE DOOR TEST. This toolkit dispatched with no issuer, and nothing refused
+      // it because no pull-request command has an issuer invariant yet. Two tokens
+      // on two threads: the issuer must be each token's own thread, so a constant
+      // `memberId` fails on the second dispatch. `undefined` in `dispatches` is what
+      // the bare dispatch recorded; an extra key beside the issuer fails the strict
+      // comparison.
       const harness = yield* makeHarness();
       const params = { url: "https://github.com/T3Tools/T3Code/pull/123" };
       yield* harness.call("link_pull_request", params);

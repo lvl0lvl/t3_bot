@@ -206,10 +206,12 @@ const make = Effect.gen(function* () {
               source: "agent",
             },
             // THE ISSUER, NOT A COMMAND FIELD — the thread the token names, as the
-            // comms toolkit stamps its posts. This door dispatched bare: nothing
-            // refused it, because no pull-request command has an issuer invariant
-            // yet, so the first one to grow one would have been refused inside this
-            // handler with nothing at the door to point at.
+            // comms toolkit stamps its posts. This door dispatched bare and nothing
+            // refused it: no pull-request command has an issuer invariant yet, and
+            // the `catchTags` below maps EVERY invariant refusal to the outcome the
+            // agent asked for, so the first invariant to land would have read as
+            // `alreadyLinked: true`, not as a failure. That catch's breadth is its
+            // own bead, t3_bot-9dp.
             issuedBy(thread),
           )
           .pipe(
