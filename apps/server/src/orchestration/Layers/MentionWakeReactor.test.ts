@@ -2442,16 +2442,10 @@ describe("MentionWakeReactor wake budget", () => {
 
   const OTHER_CHANNEL_ID = ChannelId.make("channel-juniors");
 
-  /**
-   * One memberId held by BOTH a human member and a thread member — the fixture
-   * `t3_bot-46h` asks for, because against every other roster in this repo
-   * `memberId === x` and `memberKind === k && memberId === x` are the same
-   * function.
-   */
-  // THE COLLIDING ROSTER IS SHARED (`../testing/collidingRoster.ts`). This test
-  // held its own spelling — a channel id, a twin id, an issuer — and so did
-  // three other files, each differently. One module now; the reason it exists
-  // and the ordering that makes it constructible are on that module.
+  // THE COLLIDING ROSTER IS SHARED (`../testing/collidingRoster.ts`). This file
+  // held its own spelling — a channel id, a twin id, an issuer — and so did the
+  // other files that compare memberships; the module names them, and carries
+  // the reason it exists and the ordering that makes the collision constructible.
 
   /** A second channel with the same roster, to prove the budget is per channel. */
   const seedOtherChannel = async (system: System) => {
