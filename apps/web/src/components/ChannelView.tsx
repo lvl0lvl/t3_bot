@@ -197,7 +197,8 @@ const CHANNEL_POST_PAGE_SIZE = 50;
 function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelShell }) {
   const { environmentId, id: channelId } = channel;
   // The cursor this region is currently asking with. `undefined` is the newest
-  // page, which is what opening a channel wants.
+  // page, which is what opening a channel wants; once set, the pager's request
+  // and the newest-page request below are two different atoms, both mounted.
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [posts, setPosts] = useState<ReadonlyArray<OrchestrationChannelPost>>([]);
   // The newest post this region has already asked about. NOT a "have I mounted"
@@ -219,6 +220,9 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // arrives the re-read's page is full and carries a cursor again. A latch would
   // have hidden the pager on that channel for the rest of the session.
   const [moreAbove, setMoreAbove] = useState<boolean | undefined>(undefined);
+  // The newest post the reader has been shown at the bottom; a newer one than this
+  // is what lights the "New posts" control.
+  const [seenNewestId, setSeenNewestId] = useState<string | undefined>(undefined);
   const bottom = useRef<HTMLDivElement | null>(null);
 
   const request = orchestrationEnvironment.channelPosts({
@@ -322,7 +326,6 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // unscrolled and the "New posts" control lit for a reader who is on the newest
   // page — one frame, on every post, which is the flicker this app's users notice.
   const newestId = posts[posts.length - 1]?.id;
-  const [seenNewestId, setSeenNewestId] = useState<string | undefined>(undefined);
   useLayoutEffect(() => {
     if (cursor !== undefined) {
       return;

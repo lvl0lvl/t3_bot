@@ -467,7 +467,7 @@ describe("ChannelPostRegion", () => {
     // Taking it is one click, and the offer is withdrawn once taken.
     const back = pagedUp.root
       .findAll((node) => node.type === "button")
-      .find((button) => JSON.stringify(button.children).includes("New posts"));
+      .find((button) => text(button).includes("New posts"));
     await act(async () => {
       back?.props.onClick?.();
     });
