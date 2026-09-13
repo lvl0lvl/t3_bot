@@ -2911,13 +2911,13 @@ export class OrchestrationGetSnapshotError extends Schema.TaggedError<Orchestrat
  * WHICH invariant refused, for a caller that acts differently per cause and
  * must not read the prose to find out.
  *
- * The decider's `detail` is a log line. It names the channel by its internal
- * id, and the one caller that needed to classify a refusal (the comms
- * toolkit's gateway) could either match that English or forward it - and
- * forwarding it handed an agent "Author is not a member of channel
- * 'channel-seniors-t'", an id the tool surface never otherwise exposes
- * (`t3_bot-dnz`). So the refusals a caller tells apart carry a tag, and the
- * prose stays a log line.
+ * The decider's `detail` reaches the caller on both doors as `message`. It
+ * names the channel by its internal id, and the one caller that needed to
+ * classify a refusal (the comms toolkit's gateway) could either match that
+ * English or forward it - and forwarding it handed an agent "Author is not a
+ * member of channel 'channel-seniors-t'", an id the tool surface never
+ * otherwise exposes (`t3_bot-dnz`). So the refusals a caller tells apart
+ * carry a tag, and the prose is never what a caller classifies from.
  *
  * Only refusals a caller acts on differently have a member; every other
  * invariant is "this command can never apply" and one shape serves them. A

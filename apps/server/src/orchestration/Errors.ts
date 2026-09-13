@@ -31,7 +31,8 @@ export class OrchestrationCommandDecodeError extends Schema.TaggedError<Orchestr
 /**
  * `reason` is `CommandInvariantRefusal` from the contracts package: the tag a
  * caller branches on instead of reading `detail`, and since `t3_bot-nqf` the
- * value both dispatch doors put on the wire. `detail` stays a log line.
+ * value both dispatch doors put on the wire. `detail` reaches the caller on
+ * both doors as `message` and is never what a caller classifies from.
  */
 export class OrchestrationCommandInvariantError extends Schema.TaggedError<OrchestrationCommandInvariantError>()(
   "OrchestrationCommandInvariantError",
