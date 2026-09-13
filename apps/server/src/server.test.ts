@@ -2333,6 +2333,59 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("answers an untagged decider refusal on the HTTP door as a refusal with no tag", () =>
+    Effect.gen(function* () {
+      // Most invariants carry no `reason`: every `invariantError` without a
+      // third argument, every constructor in the decider. The tagged test
+      // above cannot see the arm narrowed to "tagged is 409, untagged is
+      // 500"; this fixture has no tag and no cause, so it is the arm's
+      // refusal branch alone.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.fail(
+                new OrchestrationCommandInvariantError({
+                  commandType: "thread.settle",
+                  detail: "thread is archived",
+                }),
+              ),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "thread.settle",
+          commandId: "cmd-http-untagged-refusal",
+          threadId: "thread-http-untagged-refusal",
+        }),
+      });
+      const body = yield* responseJsonEffect<{
+        readonly _tag: string;
+        readonly code: string;
+        readonly commandType: string;
+        readonly refusal?: unknown;
+        readonly message: string;
+      }>(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body._tag, "EnvironmentCommandRefusedError");
+      assert.equal(body.code, "command_refused");
+      assert.equal(body.commandType, "thread.settle");
+      assert.equal(body.refusal, undefined);
+      assert.equal(
+        body.message,
+        "Orchestration command invariant failed (thread.settle): thread is archived",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("answers a blocked settlement on the HTTP door as a refusal with no tag", () =>
     Effect.gen(function* () {
       // THE SECOND ARM. `OrchestrationThreadSettleBlockedError` is the other
