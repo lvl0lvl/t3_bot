@@ -1,6 +1,7 @@
 import {
   CommandId,
   AuthAdministrativeScopes,
+  EnvironmentCommandRefusedError,
   EnvironmentHttpApi,
   EnvironmentHttpCommonError,
   type OrchestrationReadModel,
@@ -50,6 +51,7 @@ type ProjectCliDispatchCommand = Extract<
 >;
 
 const isEnvironmentHttpCommonError = Schema.is(EnvironmentHttpCommonError);
+const isEnvironmentCommandRefusedError = Schema.is(EnvironmentCommandRefusedError);
 
 export class ProjectCommandIdGenerationError extends Schema.TaggedError<ProjectCommandIdGenerationError>()(
   "ProjectCommandIdGenerationError",
@@ -168,6 +170,17 @@ export type ProjectCommandError = typeof ProjectCommandError.Type;
 
 export function projectCommandErrorFromLiveServerRequest(cause: unknown): ProjectCommandError {
   if (isEnvironmentHttpCommonError(cause)) {
+    return new ProjectLiveServerDeclaredResponseError({
+      operation: "callLiveServer",
+      code: cause.code,
+      traceId: cause.traceId,
+      cause,
+    });
+  }
+  // The dispatch door's 409 is declared on its endpoint but not in the common
+  // union; without this arm a decider refusal prints as a transport failure
+  // with neither its code nor its trace.
+  if (isEnvironmentCommandRefusedError(cause)) {
     return new ProjectLiveServerDeclaredResponseError({
       operation: "callLiveServer",
       code: cause.code,

@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 
-import { EnvironmentInternalError } from "@t3tools/contracts";
+import { EnvironmentCommandRefusedError, EnvironmentInternalError } from "@t3tools/contracts";
 
 import {
   ProjectLiveServerDeclaredResponseError,
@@ -22,6 +22,27 @@ it("maps declared server failures into structural project command errors", () =>
   assert.strictEqual(error.code, "internal_error");
   assert.strictEqual(error.traceId, "trace-123");
   assert.strictEqual(error.message, "Server request failed (internal_error, trace trace-123).");
+  assert.strictEqual(error.cause, cause);
+});
+
+it("maps a decider refusal on the dispatch door into a declared response error", () => {
+  // Declared on the dispatch endpoint only, so `EnvironmentHttpCommonError`
+  // does not match it; dropping the refused arm sends this to the transport
+  // failure below, with no code and no trace.
+  const cause = new EnvironmentCommandRefusedError({
+    code: "command_refused",
+    commandType: "project.create",
+    message:
+      "Orchestration command invariant failed (project.create): Project '/tmp/repo' already exists.",
+    traceId: "trace-409",
+  });
+
+  const error = projectCommandErrorFromLiveServerRequest(cause);
+
+  assert.instanceOf(error, ProjectLiveServerDeclaredResponseError);
+  assert.strictEqual(error.code, "command_refused");
+  assert.strictEqual(error.traceId, "trace-409");
+  assert.strictEqual(error.message, "Server request failed (command_refused, trace trace-409).");
   assert.strictEqual(error.cause, cause);
 });
 
