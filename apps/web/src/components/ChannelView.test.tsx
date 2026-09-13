@@ -1074,6 +1074,10 @@ describe("ChannelPostRegion", () => {
     // this repository's taste section names, and it is also an offer it cannot honour.
     expect(buttonLabels(tree)).toContain("Earlier posts didn’t load. Try again");
     expect(buttonLabels(tree)).not.toContain("Earlier posts");
+    // AND THE SLOT STAYS DARK: the newest read did not fail. A `newestFailed` that
+    // also read the pager's atom lit "Newer posts didn’t load" here — two controls
+    // for one failure, one of them naming a read that succeeded.
+    expect(buttonLabels(tree)).not.toContain("Newer posts didn’t load. Try again");
 
     // Pressing it RE-ISSUES the same read rather than advancing or resetting the cursor:
     // reverting to the newest page would silently undo what the reader asked for.
