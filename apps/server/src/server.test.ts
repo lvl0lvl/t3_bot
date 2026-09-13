@@ -2440,6 +2440,49 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("answers the engine's wrapped crypto failure on the HTTP door as internal", () =>
+    Effect.gen(function* () {
+      // The exact shape `OrchestrationEngine.ts` builds when event-id
+      // generation fails: the invariant class with a `cause` and no `reason`.
+      // Dropping the `cause` guard from the invariant arm answers this 409.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.fail(
+                new OrchestrationCommandInvariantError({
+                  commandType: "thread.settle",
+                  detail: "Failed to generate an event identifier.",
+                  cause: new Error("crypto-failed"),
+                }),
+              ),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "thread.settle",
+          commandId: "cmd-http-crypto-failed",
+          threadId: "thread-http-crypto-failed",
+        }),
+      });
+      const body = yield* responseJsonEffect<{
+        readonly _tag: string;
+        readonly reason: string;
+      }>(response);
+
+      assert.equal(response.status, 500);
+      assert.equal(body._tag, "EnvironmentInternalError");
+      assert.equal(body.reason, "orchestration_dispatch_failed");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("still answers a dispatch failure on the HTTP door as an internal error", () =>
     Effect.gen(function* () {
       // The other side of the split, so a fix that widened the refusal arm to

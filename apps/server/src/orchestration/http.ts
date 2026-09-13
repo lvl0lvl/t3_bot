@@ -164,12 +164,19 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
               // caller's situation; the rest are the server's. A new member of
               // `OrchestrationDispatchError` is a type error here, not a 500.
               Effect.catchTags({
+                // One production constructor of this class is not a refusal:
+                // the engine wraps a Crypto failure in it with a `cause`
+                // (`OrchestrationEngine.ts`, "Failed to generate an event
+                // identifier."). Answering that 409 tells the caller it
+                // conflicted; it is the server's failure, so it keeps its 500.
                 OrchestrationCommandInvariantError: (error) =>
-                  failEnvironmentCommandRefused({
-                    commandType: error.commandType,
-                    message: error.message,
-                    ...(error.reason !== undefined ? { refusal: error.reason } : {}),
-                  }),
+                  error.cause !== undefined
+                    ? failEnvironmentInternal("orchestration_dispatch_failed", error)
+                    : failEnvironmentCommandRefused({
+                        commandType: error.commandType,
+                        message: error.message,
+                        ...(error.reason !== undefined ? { refusal: error.reason } : {}),
+                      }),
                 OrchestrationThreadSettleBlockedError: (error) =>
                   failEnvironmentCommandRefused({
                     commandType: normalizedCommand.type,
