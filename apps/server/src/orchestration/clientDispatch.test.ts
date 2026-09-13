@@ -110,6 +110,15 @@ describe("makeClientDispatch", () => {
       void handed.streamDomainEvents;
       expect(streamReads).toBe(2);
       expect(yield* handed.latestSequence).toBe(7);
+      // Passed through, not wrapped, so identity is the property: a wrapper
+      // that re-implements a member (`readEvents(0, limit)` from any cursor,
+      // `readThreadEvents` through the global reader, `getThreadReplayStats`
+      // with `maxEvents: 0`, `subscribeDomainEvents` as an empty stream) is a
+      // different function that this equality refuses and a call could not.
+      expect(handed.readEvents).toBe(engine.readEvents);
+      expect(handed.readThreadEvents).toBe(engine.readThreadEvents);
+      expect(handed.getThreadReplayStats).toBe(engine.getThreadReplayStats);
+      expect(handed.subscribeDomainEvents).toBe(engine.subscribeDomainEvents);
     }),
   );
 });
