@@ -10,7 +10,7 @@
  *
  * @module channelGatewayLive
  */
-import { ChannelId, ChannelMemberHandle, ChannelPostId, CommandId } from "@t3tools/contracts";
+import { type ChannelId, ChannelMemberHandle, ChannelPostId, CommandId } from "@t3tools/contracts";
 import { canonicalChannelName } from "@t3tools/shared/channelIdentity";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -184,20 +184,20 @@ const make = Effect.gen(function* () {
    */
   const decodePostId = Schema.decodeUnknownOption(ChannelPostId);
 
-  const getPost = (channelId: string, postId: string) =>
-    // SUSPENDED for the same reason `readPosts` is: `Option.match` runs
-    // `onSome` immediately, so `ChannelId.make` would be evaluated while this
-    // function is being CALLED and its throw would escape before any Effect
-    // existed. The toolkit's channelId comes from a resolved `Channel` and is
-    // safe by provenance - but this signature takes a bare `string`, the seam
-    // is written for callers that do not exist yet, and the next one holds
-    // values from a browser. "Every caller passes something safe" is the
-    // ordering argument wearing a different coat.
+  const getPost = (channelId: ChannelId, postId: string) =>
+    // SUSPENDED so that nothing in this function runs while it is being
+    // CALLED: `Option.match` runs `onSome` immediately, and a `.make` in that
+    // position used to throw before any Effect existed, escaping every
+    // `catchTags`/`catchCause` the caller had piped. The channel id now
+    // arrives branded and the post id is decoded, so nothing here can throw
+    // today; the suspend is what keeps the next `.make` someone adds in this
+    // position reportable as a defect of the Effect rather than a throw at
+    // the call (`t3_bot-d7d`).
     Effect.suspend(() =>
       Option.match(decodePostId(postId), {
         onNone: () => Effect.succeedNone,
         onSome: (id) =>
-          channels.getPost({ channelId: ChannelId.make(channelId), postId: id }).pipe(
+          channels.getPost({ channelId, postId: id }).pipe(
             // NO WAKES ON THIS PATH, and that is a decision rather than an
             // omission: `getPost` exists so `reply` can check a parent exists,
             // and the answer it needs is yes or no. Joining wakes here would
@@ -232,7 +232,7 @@ const make = Effect.gen(function* () {
         );
       }
       const at = decoded.success;
-      const channelId = ChannelId.make(input.channelId);
+      const channelId = input.channelId;
       const overFetch = channelPostOverFetch(input.limit);
       const rows =
         input.direction === "forward"
@@ -318,7 +318,7 @@ const make = Effect.gen(function* () {
           {
             type: "channel.post.create",
             commandId: CommandId.make(`comms-post:${postId}`),
-            channelId: ChannelId.make(input.channelId),
+            channelId: input.channelId,
             postId: ChannelPostId.make(postId),
             body: input.body,
             mentions: input.mentions.map((handle) => ChannelMemberHandle.make(handle)),

@@ -31,6 +31,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Tool } from "effect/unstable/ai";
 
@@ -1458,25 +1459,32 @@ describe("the comms toolkit on the live gateway", () => {
   );
 
   it.effect(
-    "reports a malformed channel id rather than throwing while being called",
+    "refuses a raw channel id at the type, so nothing can throw while being called",
     () =>
       Effect.gen(function* () {
         yield* seed();
         const gateway = yield* ChannelGateway;
 
-        // `Effect.exit` can only produce an Exit VALUE if the Effect was built
-        // at all. A throw while the function is being CALLED never reaches it
-        // and fails the test uncatchably instead - which looks identical in a
-        // summary line, so an assertion that only checks THAT it failed cannot
-        // tell the two apart. That distinction is the whole of what the
-        // `Effect.suspend` buys.
-        //
-        // What comes back is a DEFECT, not a typed failure: a Failure whose
-        // cause is a Die. `getPost` declares only `ChannelStoreUnavailable`, so
-        // a malformed id is still a caller bug - the suspend makes the bug
-        // reportable rather than escaping.
-        const unbrandable = yield* gateway.getPost("not a channel id", "post-1").pipe(Effect.exit);
-        expect(unbrandable._tag).toBe("Failure");
+        // The seam used to take a bare string and `ChannelId.make` it, and a
+        // malformed one threw while `getPost` was being CALLED - before any
+        // Effect existed, past every `catchTags` the caller had piped (#13's
+        // `comms_reply` on "a:b"). It takes the brand now, so the call below
+        // does not compile: THAT is the pin. Widening the parameter back to
+        // `string` makes this directive unused and `tsc` reds it (TS2578);
+        // the runtime suite cannot see the widening, and says so here rather
+        // than pretending to.
+        const raw: string = "not a channel id";
+        // @ts-expect-error a bare string is not a ChannelId; decode at the door
+        const call = () => gateway.getPost(raw, "post-1");
+        expect(typeof call).toBe("function");
+
+        // The door's answer for the same string is a typed refusal - an
+        // Option, not a throw - which is what a caller holding browser input
+        // (`t3_bot-zuy`) does before it may reach this seam at all.
+        expect(Option.isNone(Schema.decodeUnknownOption(ChannelId)(raw))).toBe(true);
+        expect(Option.isSome(Schema.decodeUnknownOption(ChannelId)("channel-seniors-live"))).toBe(
+          true,
+        );
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );

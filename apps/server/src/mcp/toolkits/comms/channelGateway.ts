@@ -28,6 +28,7 @@
  */
 import { refFromThreadCredential } from "@t3tools/contracts";
 import type {
+  ChannelId,
   ChannelMemberRef,
   OrchestrationChannelPostWakeOutcome,
   ThreadId,
@@ -158,7 +159,17 @@ export interface ChannelMember {
 }
 
 export interface Channel {
-  readonly channelId: string;
+  /**
+   * THE BRAND, NOT A STRING, on every id this seam takes or hands out. A
+   * `.make` on a caller-supplied string throws while the call is being
+   * assembled - before any Effect exists, so no `catchTags`/`catchCause`
+   * around the call ever runs (`t3_bot-d7d`; the first instance was #13's
+   * `comms_reply` dying on "a:b"). The projection row is already decoded
+   * into the brand, so the live layer has nothing to construct; a caller that
+   * holds a raw string - the next one holds values from a browser - decodes
+   * at its own door with `Schema.decode` and gets a typed refusal there.
+   */
+  readonly channelId: ChannelId;
   /**
    * Canonical name, by the shared rule with "#" as the sigil.
    *
@@ -293,7 +304,8 @@ export interface ChannelPage {
 }
 
 export interface CreatePostInput {
-  readonly channelId: string;
+  /** From `getChannelForMember`, or decoded at the caller's door; see `Channel.channelId`. */
+  readonly channelId: ChannelId;
   /**
    * The calling thread, from its MCP credential and never from tool input.
    *
@@ -325,7 +337,8 @@ export interface CreatedPost {
 }
 
 export interface ReadPostsInput {
-  readonly channelId: string;
+  /** From `getChannelForMember`, or decoded at the caller's door; see `Channel.channelId`. */
+  readonly channelId: ChannelId;
   /** 1..200, enforced at the tool schema; the gateway may assume the range. */
   readonly limit: number;
   /**
@@ -393,7 +406,7 @@ export interface ChannelGatewayShape {
    * replies to anything outside it.
    */
   readonly getPost: (
-    channelId: string,
+    channelId: ChannelId,
     postId: string,
   ) => Effect.Effect<Option.Option<ChannelPostRecord>, ChannelStoreUnavailable>;
 

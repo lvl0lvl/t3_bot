@@ -1,4 +1,4 @@
-import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { ChannelId, EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -14,7 +14,7 @@ import { CommsToolkit, CURSOR_PATTERN } from "./tools.ts";
 
 const THREAD_ID = ThreadId.make("thread-boss3");
 const OTHER_THREAD_ID = ThreadId.make("thread-boss1");
-const CHANNEL_ID = "channel-seniors";
+const CHANNEL_ID = ChannelId.make("channel-seniors");
 
 const MEMBERS: ReadonlyArray<ChannelGateway.ChannelMember> = [
   { handle: "pm", memberKind: "thread", memberId: "thread-pm" },
