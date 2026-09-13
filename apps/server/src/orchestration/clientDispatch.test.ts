@@ -20,6 +20,12 @@ import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts
  * stamps; this proves the one place they stamp FROM, on inputs a door cannot
  * vary — a command with no issuer invariant, and an origin that is absent
  * rather than empty.
+ *
+ * The hand-off likewise: the door tests ("imports agent sessions over websocket
+ * rpc as the human operator", "links a created pull request over websocket rpc
+ * as the human operator") prove each RPC hands its helper the bound engine;
+ * `withClientDispatch` below proves what the handed engine is — every member
+ * the engine's, the getter live, and a helper's own options refused.
  */
 const recording = () => {
   const calls: Array<{ readonly command: OrchestrationCommand; readonly options: unknown }> = [];
@@ -79,7 +85,9 @@ describe("makeClientDispatch", () => {
       expect(Object.keys(calls[1]!.options as object)).toEqual(["issuer"]);
     }),
   );
+});
 
+describe("withClientDispatch", () => {
   it.effect("hands a helper the same engine, dispatching as the door", () =>
     Effect.gen(function* () {
       // THE INPUT THAT BREAKS A SPREAD: `streamDomainEvents` is a getter that
@@ -121,9 +129,7 @@ describe("makeClientDispatch", () => {
       expect(handed.subscribeDomainEvents).toBe(engine.subscribeDomainEvents);
     }),
   );
-});
 
-describe("withClientDispatch", () => {
   it.effect("refuses a helper's own options rather than rewriting them", () =>
     Effect.gen(function* () {
       // THE INPUT THAT BREAKS A PASS-THROUGH: a helper handing `{ issuer }` of
