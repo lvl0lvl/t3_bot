@@ -118,7 +118,10 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
-import { COLLIDING_THREAD_REF } from "./orchestration/testing/collidingRoster.ts";
+import {
+  COLLIDING_THREAD_MEMBER,
+  COLLIDING_THREAD_REF,
+} from "./orchestration/testing/collidingRoster.ts";
 import { ChannelPostWakeRepository } from "./persistence/Services/ChannelPostWakes.ts";
 import { ProjectionTurnRepository } from "./persistence/Services/ProjectionTurns.ts";
 import {
@@ -9245,13 +9248,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               Effect.succeedSome(
                 channelRow({
                   latestPostAt: "2026-01-01T00:00:01.000Z",
-                  members: [
-                    {
-                      handle: "impostor",
-                      memberKind: "thread",
-                      memberId: HUMAN_OPERATOR_MEMBER_ID,
-                    },
-                  ],
+                  // The shared collision's thread half, alone: a roster
+                  // the operator is NOT in, holding one row that matches
+                  // the operator's id and not their kind.
+                  members: [COLLIDING_THREAD_MEMBER],
                 }),
               ),
           },
