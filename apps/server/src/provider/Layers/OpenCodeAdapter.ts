@@ -476,6 +476,24 @@ const toRequestError = (cause: OpenCodeRuntimeError): ProviderAdapterRequestErro
     cause: cause.cause,
   });
 
+// An assistant message's id from `session.messages` is outside input that
+// becomes a TurnId. `TurnId.make` on an empty id throws inside the reader,
+// a Die no caller's catchTags sees; the decode fails as the same request
+// error a bad `session.messages` response already does, naming the id.
+const decodeMessageTurnId = Schema.decodeUnknownEffect(TurnId);
+const decodeAssistantMessageId = (id: string) =>
+  decodeMessageTurnId(id).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "session.messages",
+          detail: `OpenCode returned an assistant message whose id ${JSON.stringify(id)} is not a turn id.`,
+          cause,
+        }),
+    ),
+  );
+
 /**
  * Map a `Cause.squash`-ed failure into a `ProviderAdapterProcessError`. The
  * typed cause is usually an `OpenCodeRuntimeError` (from {@link runOpenCodeSdk}),
@@ -3792,7 +3810,7 @@ export function makeOpenCodeAdapter(
           if (entry.info.id === session.data?.revert?.messageID) break;
           if (entry.info.role === "assistant") {
             turns.push({
-              id: TurnId.make(entry.info.id),
+              id: yield* decodeAssistantMessageId(entry.info.id),
               items: [entry.info, ...entry.parts],
             });
           }

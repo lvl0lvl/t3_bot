@@ -6403,6 +6403,62 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect(
+    "fails readThread and rollbackThread typed when an assistant message id is refused",
+    () =>
+      Effect.gen(function* () {
+        // The SDK types the id as string; "" and " " are the two values the
+        // brand's decoder refuses that a `.make` treats differently ("" throws
+        // a Die inside the reader, " " is admitted as a garbage turn id).
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-refused-message-id");
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+
+        for (const [refused, quoted] of [
+          ["", '""'],
+          [" ", '" "'],
+        ] as const) {
+          runtimeMock.state.messages = [
+            { info: { id: "user-1", role: "user" }, parts: [] },
+            {
+              info: { id: "assistant-1", role: "assistant" },
+              parts: [{ id: "part-1", type: "text", text: "first answer" }],
+            },
+            { info: { id: refused, role: "assistant" }, parts: [] },
+          ];
+          runtimeMock.state.revertCalls.length = 0;
+
+          for (const read of [adapter.readThread(threadId), adapter.rollbackThread(threadId, 1)]) {
+            const error = yield* read.pipe(Effect.flip);
+            NodeAssert.equal(error._tag, "ProviderAdapterRequestError");
+            if (error._tag !== "ProviderAdapterRequestError") {
+              throw new Error("Unexpected error type");
+            }
+            NodeAssert.equal(error.provider, "opencode");
+            NodeAssert.equal(error.method, "session.messages");
+            NodeAssert.equal(
+              error.detail,
+              `OpenCode returned an assistant message whose id ${quoted} is not a turn id.`,
+            );
+          }
+          NodeAssert.deepEqual(runtimeMock.state.revertCalls, []);
+        }
+
+        runtimeMock.state.messages[2] = {
+          info: { id: "assistant-2", role: "assistant" },
+          parts: [],
+        };
+        NodeAssert.deepEqual(
+          (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
+          ["assistant-1", "assistant-2"],
+        );
+      }),
+  );
+
   it.effect("classifies a confirmed not-found across the shapes the SDK/runtime can produce", () =>
     Effect.sync(() => {
       // The real production shape: runOpenCodeSdk wraps the thrown Error
