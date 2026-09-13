@@ -190,9 +190,15 @@ export function mergeChannelPosts<
  *
  * "UNKNOWN" IS A WARNING, NOT AN AGE. Turn rows persist — the projection has no age
  * sweep — so a link whose turn row is gone means the thread was reverted past that
- * turn or its id was recreated, both facts a reader wants (measured; the contract's
- * `OrchestrationChannelPostWakeOutcome` docstring carries the two greps). The word
- * here says the turn is off the record, and does not call the wake a failure.
+ * turn or its id was recreated, both facts a reader wants. What holds that: the two
+ * `DELETE FROM projection_turns` statements in
+ * `apps/server/src/persistence/Layers/ProjectionTurns.ts` (one matches only the
+ * pending placeholder, `turn_id IS NULL`; one is whole-thread, called from
+ * `thread.created` and `thread.reverted` in
+ * `apps/server/src/orchestration/Layers/ProjectionPipeline.ts`), and the test in
+ * `MentionWakeReactor.test.ts` that drives the whole-thread delete and asserts
+ * `unknown`. The word here says the turn is off the record, and does not call the
+ * wake a failure.
  *
  * PAST TENSE, NEVER A CONTROL. The turn id a wake carries is provider-shaped —
  * which turn it names differs per adapter, and on neither is it one a cancel would
