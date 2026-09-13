@@ -27,6 +27,7 @@ import { useEnvironmentSettings } from "../hooks/useSettings";
 import { orchestrationEnvironment } from "../state/orchestration";
 import { channelEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
+import { cn } from "../lib/utils";
 import { formatDayAwareTimestamp } from "../timestampFormat";
 import { Button } from "./ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
@@ -379,6 +380,9 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // `[]`) — an observer attached once on mount would then observe nothing.
   const unreadable = AsyncResult.isFailure(page) && posts.length === 0;
   const empty = posts.length === 0 && !page.waiting;
+  // Whether the sentinel was on screen at the observer's last report — "the reader is
+  // at the live edge", for the clearance effect below to read at commit time.
+  const atLiveEdge = useRef(false);
   useEffect(() => {
     if (unreadable || empty) {
       return;
@@ -394,6 +398,9 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
     }
     const observer = new IntersectionObserver(
       (entries) => {
+        // A batch is chronological: `some` says the sentinel was seen, the last
+        // entry says where it is now.
+        atLiveEdge.current = entries[entries.length - 1]?.isIntersecting ?? false;
         if (entries.some((entry) => entry.isIntersecting)) {
           setSeenNewestId(newestIdRef.current);
         }
@@ -406,6 +413,43 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // Not gated on the cursor a second time: on the newest page the effect above marks
   // every newest post seen before paint, so the id comparison alone is the fact.
   const unseenBelow = newestId !== undefined && newestId !== seenNewestId;
+  // THE NEWEST READ FAILED, on whichever page the reader is. The input that made
+  // this unconditional: a channel whose history fits one page (no pager rendered)
+  // and a live re-read that fails — the pager's failed label was the only surface,
+  // and it was not on screen. `#48` surfaced the paged-up half and left this one
+  // to `t3_bot-ssz`. The general refusal (`PostsUnavailable`) still owns the
+  // no-posts case below.
+  const newestFailed = AsyncResult.isFailure(newestPage);
+  // THE RETRY HAS A FLIGHT. `Atom.swr` re-evaluates by copying the previous result
+  // with `waiting: true` and its tag kept, so the retried read is a waiting Failure
+  // for as long as it runs — read off `newestFailed` alone, the slot kept saying
+  // "didn’t load" with an enabled control, and every further click cancelled and
+  // restarted the read in flight. The input that breaks a `newestPage.waiting`-only
+  // gate: a live re-read over a Success, which is a waiting SUCCESS — the "New posts"
+  // case, which this must leave alone.
+  const retrying = newestFailed && newestPage.waiting;
+  // THE FAILED-READ PILL RESERVES ITS CLEARANCE. It sits over the scroller (the
+  // column would change the scroll extent under the reader — #48's record), so on
+  // the newest page it covered the newest post's last line: the column's 16px of
+  // bottom padding plus the 12px gap left 28px, and the pill spans 18–46px. While
+  // the label is lit the column pads to 56px instead (`pb-14` below). Two inputs:
+  // a channel that fits the pane — `mt-auto` bottom-aligns, so the posts move up
+  // and the line is clear; and a newest page taller than the pane with the reader
+  // at the live edge — the padding grows below the fold and `scrollTop` does not
+  // follow, so the line stays behind the pill unless this keeps them at the edge.
+  // A reader mid-page is NOT pulled: that is the theft #48 named.
+  //
+  // THE SCROLLER'S END, NOT THE SENTINEL. The sentinel is the column's last child
+  // and sits ABOVE the column's bottom padding, so on a column taller than the pane
+  // `scrollIntoView({ block: "end" })` aligned the sentinel's bottom to the fold and
+  // left the 56px below it — measured: max 2117→2157, `scrollTop` 2102, the pill
+  // still over 14 of the line's 17px. The scroller's own `scrollHeight` is the padded end.
+  useLayoutEffect(() => {
+    if (!newestFailed || !atLiveEdge.current) {
+      return;
+    }
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
+  }, [newestFailed]);
 
   if (unreadable) {
     return <PostsUnavailable onRetry={refresh} />;
@@ -413,19 +457,25 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // A FAILURE WITH POSTS ALREADY ON SCREEN IS NOT THE SAME STATE, and it used to be
   // reported as nothing at all: the guard above only fires while the channel has shown
   // nothing, so a page that failed after one had landed rendered the previous screen
-  // unchanged. No error, and the pager back to "Earlier posts" as though ready —
-  // pressing it did nothing, because `arrived` is undefined over a Failure. At the
-  // time live arrival was gated on the cursor as well, so nothing would have moved
-  // again. A channel that silently stops mid-history with a control that lies about
-  // being able to continue.
-  const pageFailed = AsyncResult.isFailure(page);
-  // THE NEWEST READ FAILS ON ITS OWN while the reader is paged up — it is a second
-  // atom there, and every other failure here is read over `page`. The input: a
-  // `latestPostAt` change after a page-up whose re-read fails. Nothing on screen
-  // said so, and the next `latestPostAt` change was the only retry. On the newest
-  // page the two atoms are one and `pageFailed` already covers it; the general
-  // failed-with-posts-on-screen notice is `t3_bot-ssz`'s.
-  const newestFailed = cursor !== undefined && AsyncResult.isFailure(newestPage);
+  // unchanged. No error, and the pager back to "Earlier posts" as though ready.
+  // `AsyncResult.value` of a Failure is its previous success's value, so `arrived` is
+  // undefined only on the FIRST read of a cursor — and that is where pressing it did
+  // nothing: no cursor to advance to. Over a re-read `arrived` is the page that
+  // already landed, which is what keeps it on screen below. At the time live arrival
+  // was gated on the cursor as well, so nothing would have moved again. A channel
+  // that silently stops mid-history with a control that lies about being able to
+  // continue.
+  //
+  // ONLY THE PAGER'S OWN READ, its failure and its flight alike. On the newest page
+  // `page` is the newest atom, and a failure there is the newest read's — the slot
+  // below says so with a retry that re-issues it. A pager that also read "Earlier
+  // posts didn’t load" for the same failure would name a read that was never made.
+  // The input that put the flight under the same gate: a live re-read on the newest
+  // page with a pager on screen, which is `waiting` on that same atom — read off
+  // `page` alone, the pager said "Loading earlier posts…" and went disabled for
+  // every live re-read and every retry from the slot.
+  const pageFailed = cursor !== undefined && AsyncResult.isFailure(page);
+  const pageWaiting = cursor !== undefined && page.waiting;
   // RETURNED INSTEAD OF THE SCROLL CONTAINER, the way `PostsUnavailable` is.
   // Found by rendering twice: inside that container the empty state cannot
   // centre, because `justify-end` is what puts posts above the composer and
@@ -454,17 +504,18 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
     // bottom alignment for a short list and leaves the overflow scrollable.
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={scroller} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-        <div className="mt-auto flex flex-col gap-3 p-4">
+        <div className={cn("mt-auto flex flex-col gap-3 p-4", newestFailed && "pb-14")}>
           {moreAbove ? (
-            // ONE CONTROL, whose action is what the reader needs next. On a failure it
-            // re-issues the SAME cursor through `refresh()` rather than advancing or
-            // resetting one: reverting to the newest page would silently undo the reader's
-            // own action and throw away their place in the history.
+            // ONE CONTROL, whose action is what the reader needs next. On ITS OWN failure
+            // (`pageFailed`) it re-issues the SAME cursor through `refresh()` rather than
+            // advancing or resetting one: reverting to the newest page would silently undo
+            // the reader's own action and throw away their place in the history. On the
+            // newest page a failure of `page` is the newest read's, and the click advances.
             <Button
               variant="ghost"
               size="sm"
               className="self-center"
-              disabled={page.waiting}
+              disabled={pageWaiting}
               onClick={() => {
                 if (pageFailed) {
                   refresh();
@@ -476,7 +527,7 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
                 }
               }}
             >
-              {page.waiting
+              {pageWaiting
                 ? "Loading earlier posts…"
                 : pageFailed
                   ? "Earlier posts didn’t load. Try again"
@@ -516,7 +567,14 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
             size="xs"
             className="pointer-events-auto gap-1.5 rounded-full px-3 text-muted-foreground hover:text-foreground"
             onPointerDown={(event) => event.preventDefault()}
+            disabled={retrying}
+            // Guarded in the handler as well as by `disabled`: the region's tests
+            // call `onClick` directly, and a second click that re-issues the read
+            // while the first is in flight is the behaviour under test, not the prop.
             onClick={() => {
+              if (retrying) {
+                return;
+              }
               if (newestFailed) {
                 refreshNewest();
                 return;
@@ -525,7 +583,9 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
               setSeenNewestId(newestId);
             }}
           >
-            {newestFailed ? (
+            {retrying ? (
+              "Loading newer posts…"
+            ) : newestFailed ? (
               "Newer posts didn’t load. Try again"
             ) : (
               <>
