@@ -64,6 +64,18 @@ const writeScript = (script: Script) =>
 const summarize = (event: ProviderEvent) => `${event.kind}:${event.method}:${event.turnId ?? "-"}`;
 
 describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => {
+  it("registers every server method through the two doors", () => {
+    // The door works by re-pointing every registration. An upstream sync that
+    // adds a third `client.handleServer*` line merges clean and lands outside
+    // it; this is the only thing that notices.
+    const source = NodeFS.readFileSync(
+      NodePath.join(import.meta.dirname, "CodexSessionRuntime.ts"),
+      "utf8",
+    );
+    const raw = source.match(/client\.handleServer(?:Notification|Request)\(/g) ?? [];
+    assert.deepEqual(raw, ["client.handleServerRequest(", "client.handleServerNotification("]);
+  });
+
   it.effect("reports an empty turn id as a codex error and keeps delivering", () =>
     Effect.gen(function* () {
       yield* writeScript({
