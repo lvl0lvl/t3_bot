@@ -206,7 +206,7 @@ export function mergeChannelPosts<
  * the word). The lines are statements of what happened, and nothing on them is
  * clickable.
  */
-export type ChannelPostWakeLine = {
+export type ChannelPostWakeDescription = {
   readonly threadId: OrchestrationChannelPostWake["threadId"];
   /** How the turn ended; null while it is still running. */
   readonly ended: string | null;
@@ -222,7 +222,7 @@ const WAKE_OUTCOME_WORDS: Record<OrchestrationChannelPostWake["outcome"], string
 
 export function describeChannelPostWakes(
   wakes: ReadonlyArray<OrchestrationChannelPostWake> | undefined,
-): ReadonlyArray<ChannelPostWakeLine> | null {
+): ReadonlyArray<ChannelPostWakeDescription> | null {
   if (wakes === undefined) {
     return null;
   }
