@@ -578,6 +578,9 @@ describe("nonNormalMutationPaths", () => {
         row("dotdot-leading", "../sibling/thing.ts"),
         row("empty-inside", "src//thing.ts"),
         row("empty-trailing", "src/thing.ts/"),
+        // A newline before the `..` segment: `.*` in a lookahead stops at one, so a segment
+        // check written as a lookahead is blind past it while git lists `src/thing.ts`.
+        row("dotdot-after-newline", "src/x\n/../thing.ts"),
         row("absolute", "/etc/passwd"),
       ]).map((offender) => offender.id),
     ).toEqual([
@@ -586,6 +589,7 @@ describe("nonNormalMutationPaths", () => {
       "dotdot-leading",
       "empty-inside",
       "empty-trailing",
+      "dotdot-after-newline",
       "absolute",
     ]);
   });

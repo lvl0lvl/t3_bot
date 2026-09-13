@@ -204,7 +204,7 @@ const decodeSweepConfig = Schema.decodeUnknownEffect(Schema.fromJsonString(Sweep
  * A dotfile path is NORMAL and must stay admitted: `.github/workflows/ci.yml` is a real target,
  * so this asks about path SEGMENTS that are `.` or `..` rather than about a leading dot.
  */
-const NORMAL_REPO_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))(?!.*\/\/)(?!.*\/$)[^\0]+$/u;
+const NORMAL_REPO_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))(?!.*\/\/)(?!.*\/$)[^\0-\x1f\x7f]+$/u;
 
 export const nonNormalMutationPaths = (
   mutations: ReadonlyArray<{ readonly id: string; readonly file: string }>,
