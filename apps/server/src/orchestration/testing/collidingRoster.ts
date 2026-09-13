@@ -28,13 +28,17 @@
  * too (`t3_bot-46h` criterion 4, proven on #24). `t3_bot-7iw` closed that:
  * `thread.create` now refuses an id any channel holds as a HUMAN member's, and
  * the operator's id outright (`requireThreadIdIsNoHuman`). Both orderings are
- * refused for commands. What is left is the path this module has always also
- * modelled: a database written BEFORE the invariant, whose rows replay into the
- * projection and reach every lookup untouched. That is why the seven
- * membership comparisons keep their kind clause, and why this fixture is
- * three appended EVENTS rather than three commands — criterion 5 the other
- * way round: the aggregate refuses the roster, so the fixture is built from
- * events, which is the path the real row arrives by.
+ * refused for commands — precisely: no command sequence produces the pair from
+ * a clean database. A database that already holds thread X beside human X,
+ * written before 7iw, can still `channel.member.add` the thread half; that add
+ * is admitted on purpose (`decider.channels.test.ts` pins it). What is left is
+ * the path this module has always also modelled: a database written BEFORE
+ * the invariant, whose rows replay into the projection and reach every lookup
+ * untouched. That is why every membership comparison in
+ * `scripts/guard-sweep.colliding-roster.json` keeps its kind clause, and why
+ * this fixture is three appended EVENTS rather than three commands —
+ * criterion 5 the other way round: the aggregate refuses the roster, so the
+ * fixture is built from events, which is the path the real row arrives by.
  *
  * THREE CONSUMERS, BECAUSE TESTS REACH A ROSTER THREE WAYS. Tests that hold a
  * database append the three events and start an engine over them
@@ -148,13 +152,13 @@ export const COLLIDING_THREAD_MEMBER: ChannelMember = {
  * first for the issuer under test: human first when the author is the THREAD,
  * thread first when the author is the HUMAN. Reversed, that test passes under
  * an id-only lookup and measures nothing — a review lane proved that with all
- * 685 tests green over a broken guard. The aggregate itself produces
- * human-first (the only order the shape guard admits); thread-first is what
- * REPLAY of pre-invariant events produces, and both are states a lookup can be
- * handed. `some` (the gateway, the shell stream) and the projection's SQL
- * `WHERE` answer a set question and are order-insensitive; their tests
- * distinguish by a NEGATIVE — a roster holding only the other kind, asked
- * about by this one.
+ * 685 tests green over a broken guard. Human-first is the order commands
+ * produced until `t3_bot-7iw`; thread-first is what replay of rows written
+ * before `t3_bot-8i2` produces. Both arrive by replay now, and both are states
+ * a lookup can be handed. `some` (the gateway, the shell stream) and the
+ * projection's SQL `WHERE` answer a set question and are order-insensitive;
+ * their tests distinguish by a NEGATIVE — a roster holding only the other
+ * kind, asked about by this one.
  */
 export const collidingMembers = (input: {
   readonly humanHandle: ChannelMemberHandle;
@@ -179,9 +183,8 @@ export const collidingMembers = (input: {
  *
  * FOR THE DECIDER'S TESTS, which are pure and take a read model rather than an
  * engine. The thread row is there because this is what the projection holds
- * after the three commands — the shape guard on `channel.member.add` needs the
- * thread to exist — or after a pre-invariant event replays, which reaches every
- * comparison the same way.
+ * after the three events `appendCollidingRoster` writes, which reach every
+ * comparison the same way a replayed row does.
  *
  * `extra` lets a test add its own threads and channels beside the collision
  * rather than replacing it; the collision is the point and must not be lost
