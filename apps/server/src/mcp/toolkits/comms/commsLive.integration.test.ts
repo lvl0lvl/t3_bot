@@ -663,9 +663,9 @@ describe("the comms toolkit on the live gateway", () => {
       Effect.gen(function* () {
         yield* seed();
         const engine = yield* OrchestrationEngineService;
-        // A member removed between the toolkit's check and the write is the
-        // race the gateway's conflict branch exists for - but the refusal that
-        // comes back is the DECIDER's, and it is permanent for this input.
+        // A member removed BEFORE the toolkit's check, not between the check
+        // and the write: this is the non-race path, and the refusal that comes
+        // back is the TOOLKIT's pre-check. It is permanent for this input.
         yield* engine.dispatch(
           {
             type: "channel.member.remove",
@@ -694,9 +694,11 @@ describe("the comms toolkit on the live gateway", () => {
         // and the conflict branch is never reached. Hardcoding the gateway back
         // to `retryable: true` leaves this green. Measured, not assumed.
         //
-        // The gateway's branch is reachable only on a genuine race or an
-        // infrastructure failure, so pinning it needs an injected dispatch
-        // failure rather than a state the aggregate can be put into.
+        // The race itself is run for real by "names the mention that stopped
+        // resolving between the check and the write", and reaches the same
+        // error through the `mentions-unresolved` tag. The gateway's conflict
+        // branch is pinned by "says retry only for a failure that retrying
+        // could fix", with an injected untagged refusal.
         expect((error as { _tag: string })._tag).toBe("CommsMemberNotFoundError");
       }).pipe(Effect.provide(TestLayer)),
     30_000,
