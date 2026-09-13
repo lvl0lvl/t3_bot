@@ -185,14 +185,10 @@ const make = Effect.gen(function* () {
   const decodePostId = Schema.decodeUnknownOption(ChannelPostId);
 
   const getPost = (channelId: ChannelId, postId: string) =>
-    // SUSPENDED so that nothing in this function runs while it is being
-    // CALLED: `Option.match` runs `onSome` immediately, and a `.make` in that
-    // position used to throw before any Effect existed, escaping every
-    // `catchTags`/`catchCause` the caller had piped. The channel id now
-    // arrives branded and the post id is decoded, so nothing here can throw
-    // today; the suspend is what keeps the next `.make` someone adds in this
-    // position reportable as a defect of the Effect rather than a throw at
-    // the call (`t3_bot-d7d`).
+    // SUSPENDED, and nothing in here can throw at call time any more: the
+    // channel id arrives branded and the post id is decoded (`t3_bot-d7d`).
+    // #13's `Effect.exit` pin for the `.make` that sat here retired with the
+    // `.make`; no test distinguishes this body from an unsuspended one.
     Effect.suspend(() =>
       Option.match(decodePostId(postId), {
         onNone: () => Effect.succeedNone,
@@ -232,12 +228,15 @@ const make = Effect.gen(function* () {
         );
       }
       const at = decoded.success;
-      const channelId = input.channelId;
       const overFetch = channelPostOverFetch(input.limit);
       const rows =
         input.direction === "forward"
-          ? channels.listPosts({ channelId, limit: overFetch, afterSequence: at })
-          : channels.listPostsBackward({ channelId, limit: overFetch, beforeSequence: at });
+          ? channels.listPosts({ channelId: input.channelId, limit: overFetch, afterSequence: at })
+          : channels.listPostsBackward({
+              channelId: input.channelId,
+              limit: overFetch,
+              beforeSequence: at,
+            });
       return rows.pipe(
         Effect.mapError(() => storeUnavailable("readPosts")),
         Effect.map((all) => {
