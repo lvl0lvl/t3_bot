@@ -1395,10 +1395,13 @@ export const makeCodexSessionRuntime = (
 
     // ONE DOOR for everything the app-server sends. A refused id is reported
     // as a provider error that names codex, the method and the field, and the
-    // payload goes no further; a handler that fails or dies anyway is reported
-    // the same way and the pump keeps running, so the NEXT unforeseen defect
-    // is visible too rather than a silent stall. `dispatchNotification` in the
-    // client catches typed failures only; a defect there ends the stdin reader.
+    // payload goes no further. On a notification, a handler that fails or dies
+    // anyway is reported the same way and the pump keeps running, so the NEXT
+    // unforeseen defect is visible too rather than a silent stall. On a
+    // request, a dying handler is reported and answered internalError; a typed
+    // failure is answered by the protocol layer and not reported.
+    // `dispatchNotification` in the client catches typed failures only; a
+    // defect there ends the stdin reader.
     const reportRefusedIds = (
       method: string,
       refused: ReadonlyArray<RefusedId>,
