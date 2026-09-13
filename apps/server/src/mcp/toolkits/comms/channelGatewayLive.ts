@@ -355,6 +355,11 @@ const make = Effect.gen(function* () {
                   return new ChannelMentionUnresolvable({ handles: error.reason.handles });
                 case "channel-archived":
                   return new ChannelArchived();
+                default: {
+                  // A fourth member of `CommandInvariantRefusal` with no arm
+                  // here would fall through to "the channel refused the post".
+                  error.reason satisfies never;
+                }
               }
             }
             // Everything else: an untagged refusal is still permanent for this
