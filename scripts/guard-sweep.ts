@@ -46,19 +46,24 @@
  *    survives that untouched, and only a wider mutation finds it. A sweep with
  *    no `wider` rows has measured one half of the question.
  *
- * 6. It never accepts a `file` git would print differently. Like 1 this refuses
+ * 6. It refuses a `file` spelled other than as git prints it. Like 1 this refuses
  *    the whole config before the baseline, and for the same reason: it is
- *    knowable from the config alone. `moved` comes from `git status
- *    --porcelain`, which prints `src/thing.ts`, so a row spelled
- *    `./src/thing.ts` is absent from the Set the setup-written guard asks. git
+ *    knowable from the config alone. `moved` is the Set of paths `git status
+ *    --porcelain -z` names, and the setup-written guard asks it with the row's
+ *    `file` as written, so a row spelled `./src/thing.ts` is absent from it. git
  *    NORMALIZES a pathspec, so every other site accepted that spelling — measured:
  *    `ls-files --error-unmatch` passes and `checkout --` succeeds — which is how
  *    the row came to be measured on a tree `setupCommand` had dirtied and its
  *    restore reverted setup's write rather than the mutation. The NEXT row was
  *    then credited with killing a test that reddened for that reason: exit 0,
- *    every row `confirmed`. A leading `./`, a `..` segment anywhere, an absolute
- *    path and the empty path are refused; a DOTFILE path is not, because
- *    `.github/workflows/ci.yml` is a real target.
+ *    every row `confirmed`. THE REFUSED SET, stated once here and pointed at by
+ *    `NORMAL_REPO_PATH` and the refusal's message: an absolute path, the empty
+ *    path, any segment that is `.`, `..` or empty (`./x`, `a/./b`, `a/../b`,
+ *    `a//b`, a trailing `/`), and any control byte (a lookahead's `.*` stops at
+ *    a newline, so `x\n/../y` passed the `..` check written as one). Admitted:
+ *    a DOTFILE path, because `.github/workflows/ci.yml` is a real target, and
+ *    whitespace anywhere in the name, because `-z` prints it as written where
+ *    the line form quoted it.
  *
  * ITS EXIT CODE IS A VERDICT: 0 all killed, 2 a survivor, 3 something NOT RUN,
  * 1 the tool or config failed. Every outcome used to be 0 and only a crash was
@@ -185,24 +190,24 @@ const decodeSweepConfig = Schema.decodeUnknownEffect(Schema.fromJsonString(Sweep
  * thing standing between a spelling and a false kill.
  *
  * TWO checks are defeated, and every other site is what makes it dangerous. `moved` comes from
- * `git status --porcelain`, which prints `src/thing.ts`, and the row loop's setup-written guard
- * and the pre-flight's skip both ask a Set built from that — neither finds `./src/thing.ts`.
- * git itself NORMALIZES a pathspec, so `git ls-files --error-unmatch ./src/thing.ts` passes and
- * `git checkout -- ./src/thing.ts` succeeds: the row is measured on a tree `setupCommand`
- * dirtied, and its restore reverts setup's write instead of the mutation. A LATER row is then
- * credited with killing a test that reddened for that reason — exit 0, reported `confirmed`, on
- * the one verdict that gates a merge. Both halves measured, the second because a count of
- * "places keyed on the string" is not a count of places that behave wrongly.
+ * `git status --porcelain -z`, which prints `src/thing.ts`, and the row loop's setup-written
+ * guard and the pre-flight's skip both ask a Set built from that — neither finds
+ * `./src/thing.ts`. git itself NORMALIZES a pathspec, so `git ls-files --error-unmatch
+ * ./src/thing.ts` passes and `git checkout -- ./src/thing.ts` succeeds: the row is measured on
+ * a tree `setupCommand` dirtied, and its restore reverts setup's write instead of the mutation.
+ * A LATER row is then credited with killing a test that reddened for that reason — exit 0,
+ * reported `confirmed`, on the one verdict that gates a merge. Both halves measured, the second
+ * because a count of "places keyed on the string" is not a count of places that behave wrongly.
  *
- * REFUSED HERE RATHER THAN NORMALIZED AT THE LOOKUPS. Normalizing the two keys would fix this
- * spelling; refusing kills the class — `./x`, `../x`, `a/../b`, `/abs`, empty — at the one place
- * a config enters, and any future check keyed on the string inherits the fix rather than the
- * trap. It also keeps the report's text identical to the config's: a normalizer would print
- * `src/x.ts` in the table for an author who wrote `./src/x.ts`, in a tool whose entire job is
- * that its quotations match the file.
+ * REFUSED HERE RATHER THAN NORMALIZED AT THE LOOKUPS. Normalizing the two keys would fix one
+ * spelling at a time; refusing at the one place a config enters means any future check keyed
+ * on the string inherits the refusal rather than the trap. It also keeps the report's text
+ * identical to the config's: a normalizer would print `src/x.ts` in the table for an author
+ * who wrote `./src/x.ts`, in a tool whose entire job is that its quotations match the file.
  *
- * A dotfile path is NORMAL and must stay admitted: `.github/workflows/ci.yml` is a real target,
- * so this asks about path SEGMENTS that are `.` or `..` rather than about a leading dot.
+ * The refused set is stated ONCE, in refusal 6 of the header. This asks about path SEGMENTS
+ * rather than about a leading dot because a dotfile path is normal: `.github/workflows/ci.yml`
+ * is a real target.
  */
 const NORMAL_REPO_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))(?!.*\/\/)(?!.*\/$)[^\0-\x1f\x7f]+$/u;
 
@@ -1213,7 +1218,8 @@ export const guardSweepCommand = Command.make(
             nonNormal
               .map((row) => `${JSON.stringify(row.id)}: ${JSON.stringify(row.file)}`)
               .join("\n  ") +
-            "\nWrite it as git prints it — no leading `./`, no `.` or `..` segment, not absolute.",
+            "\nWrite it as git prints it: not absolute, not empty, no `.`, `..` or empty segment, " +
+            "no control byte.",
         });
       }
       // RESOLVED ONCE, and `mustSucceed`: a report that quietly names no commit
