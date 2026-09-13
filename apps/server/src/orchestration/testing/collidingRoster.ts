@@ -167,10 +167,10 @@ export const COLLIDING_MEMBERS: ReadonlyArray<ChannelMember> = collidingMembers(
  * A read model holding the colliding roster, with the twin thread present.
  *
  * FOR THE DECIDER'S TESTS, which are pure and take a read model rather than an
- * engine. The thread row is there because `requireChannelAuthorIsMember` is
- * reached only for a thread issuer that exists, and because this is what the
- * projection holds after the three commands — or after a pre-invariant event
- * replays, which reaches every comparison the same way.
+ * engine. The thread row is there because this is what the projection holds
+ * after the three commands — the shape guard on `channel.member.add` needs the
+ * thread to exist — or after a pre-invariant event replays, which reaches every
+ * comparison the same way.
  *
  * `extra` lets a test add its own threads and channels beside the collision
  * rather than replacing it; the collision is the point and must not be lost
