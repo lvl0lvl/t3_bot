@@ -90,10 +90,10 @@ const TestLayer = CommsToolkitHandlersLive.pipe(
  *
  * A TAP rather than a stand-in: the gateway also reads the projection the real
  * engine's pipeline maintains, so replacing the service would replace the
- * thing under test. It exists because the gateway's conflict branch cannot be
- * reached end to end - the toolkit pre-checks everything the decider would
- * refuse, so a state the aggregate can be put into is caught before any
- * dispatch happens.
+ * thing under test. It injects a failure no channel state can produce on a
+ * post - an infrastructure error, or a refusal the decider does not tag. The
+ * refusals a state change CAN produce are reached for real through
+ * `dispatchBeforePost`.
  */
 const dispatchFailsWith = (error: OrchestrationDispatchError) =>
   Layer.effect(
