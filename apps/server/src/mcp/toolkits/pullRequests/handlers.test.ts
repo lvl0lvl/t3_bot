@@ -139,9 +139,11 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
   options: HarnessOptions = {},
 ) {
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
-  // WHO each dispatch was issued as, recorded beside the command — `undefined`
-  // when the handler passed no options, which is what a bare dispatch reads as.
-  const issuers = yield* Ref.make<ReadonlyArray<unknown>>([]);
+  // The WHOLE options object of each dispatch, recorded beside the command —
+  // `undefined` when the handler passed none, which is what a bare dispatch
+  // reads as. Recording `options?.issuer` alone let an extra `origin` key
+  // stamped beside the issuer pass unseen.
+  const dispatches = yield* Ref.make<ReadonlyArray<unknown>>([]);
   const thread = options.thread === undefined ? makeThread([]) : options.thread;
   const project = options.project === undefined ? makeProject() : options.project;
   const dispatch: OrchestrationEngineShape["dispatch"] = (command, dispatchOptions) =>
@@ -149,7 +151,7 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
       const rejection = options.reject?.(command) ?? null;
       if (rejection !== null) return yield* rejection;
       yield* Ref.update(commands, (recorded) => [...recorded, command]);
-      yield* Ref.update(issuers, (recorded) => [...recorded, dispatchOptions?.issuer]);
+      yield* Ref.update(dispatches, (recorded) => [...recorded, dispatchOptions]);
       return { sequence: 1 };
     });
   const dependencies = Layer.mergeAll(
@@ -184,7 +186,7 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
       Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(capabilities)),
       Effect.provide(dependencies),
     );
-  return { commands, issuers, call };
+  return { commands, dispatches, call };
 });
 
 describe("pull request toolkit handlers", () => {
@@ -240,9 +242,9 @@ describe("pull request toolkit handlers", () => {
       yield* harness.call("link_pull_request", {
         url: "https://github.com/T3Tools/T3Code/pull/123",
       });
-      expect(yield* Ref.get(harness.issuers)).toEqual([
-        { memberKind: "thread", memberId: THREAD_ID },
-      ]);
+      const dispatches = yield* Ref.get(harness.dispatches);
+      expect(dispatches).toStrictEqual([{ issuer: { memberKind: "thread", memberId: THREAD_ID } }]);
+      expect(Object.keys(dispatches[0] as object)).toEqual(["issuer"]);
     }),
   );
 
@@ -253,9 +255,9 @@ describe("pull request toolkit handlers", () => {
         repository: "t3tools/t3code",
         number: 5,
       });
-      expect(yield* Ref.get(harness.issuers)).toEqual([
-        { memberKind: "thread", memberId: THREAD_ID },
-      ]);
+      const dispatches = yield* Ref.get(harness.dispatches);
+      expect(dispatches).toStrictEqual([{ issuer: { memberKind: "thread", memberId: THREAD_ID } }]);
+      expect(Object.keys(dispatches[0] as object)).toEqual(["issuer"]);
     }),
   );
 
