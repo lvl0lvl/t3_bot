@@ -34,14 +34,15 @@ import * as NodePath from "node:path";
  * reading the script's own directory instead would inspect the original tree, which `setupCommand`
  * never touches, and every run would then report the same thing.
  */
-const SUITE = [
-  "#!/bin/sh",
-  'echo spawn >> "$(dirname "$0")/spawns.log"',
-  'if grep -q "setup wrote this" "$PWD/src/thing.ts" 2>/dev/null; then S=passed; else S=failed; fi',
-  'if grep -q "if (guard) {" "$PWD/src/thing.ts" 2>/dev/null; then G=passed; else G=failed; fi',
-  `echo "{\\"numTotalTestSuites\\":1,\\"numTotalTests\\":2,\\"testResults\\":[{\\"name\\":\\"src/thing.test.ts\\",\\"assertionResults\\":[{\\"fullName\\":\\"setup state is present\\",\\"status\\":\\"$S\\"},{\\"fullName\\":\\"the guard is present\\",\\"status\\":\\"$G\\"}]}]}"`,
-  "",
-].join("\n");
+const suiteFor = (thing: string) =>
+  [
+    "#!/bin/sh",
+    'echo spawn >> "$(dirname "$0")/spawns.log"',
+    `if grep -q "setup wrote this" "$PWD/${thing}" 2>/dev/null; then S=passed; else S=failed; fi`,
+    `if grep -q "if (guard) {" "$PWD/${thing}" 2>/dev/null; then G=passed; else G=failed; fi`,
+    `echo "{\\"numTotalTestSuites\\":1,\\"numTotalTests\\":2,\\"testResults\\":[{\\"name\\":\\"src/thing.test.ts\\",\\"assertionResults\\":[{\\"fullName\\":\\"setup state is present\\",\\"status\\":\\"$S\\"},{\\"fullName\\":\\"the guard is present\\",\\"status\\":\\"$G\\"}]}]}"`,
+    "",
+  ].join("\n");
 
 const guardRow = (file: string) => ({
   id: "the-row",
@@ -62,13 +63,16 @@ const elsewhereRow = {
   replace: "export const limit = 1;",
 };
 
-/** `setupCommand` dirties `src/thing.ts`, which is the file every one of these rows turns on. */
-const scaffold = (mutations: ReadonlyArray<unknown>) => {
+/**
+ * `setupCommand` dirties `thing`, the file every one of these rows turns on. It is `src/thing.ts`
+ * unless the case is about the NAME: porcelain quotes a space or a non-ASCII byte.
+ */
+const scaffold = (mutations: ReadonlyArray<unknown>, thing = "src/thing.ts") => {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "guard-sweep-paths-"));
   const suite = NodePath.join(root, "suite.sh");
-  NodeFS.writeFileSync(suite, SUITE, { mode: 0o755 });
+  NodeFS.writeFileSync(suite, suiteFor(thing), { mode: 0o755 });
   NodeFS.mkdirSync(NodePath.join(root, "src"));
-  NodeFS.writeFileSync(NodePath.join(root, "src/thing.ts"), "a\nif (guard) {\nb\n");
+  NodeFS.writeFileSync(NodePath.join(root, thing), "a\nif (guard) {\nb\n");
   NodeFS.writeFileSync(NodePath.join(root, "src/other.ts"), "export const limit = 10;\n");
   for (const argv of [
     ["init", "--quiet"],
@@ -87,7 +91,7 @@ const scaffold = (mutations: ReadonlyArray<unknown>) => {
     config,
     JSON.stringify({
       testCommand: [suite],
-      setupCommand: ["/bin/sh", "-c", "printf '// setup wrote this\\n' >> src/thing.ts"],
+      setupCommand: ["/bin/sh", "-c", `printf '// setup wrote this\\n' >> '${thing}'`],
       mutations,
     }),
   );
@@ -169,4 +173,26 @@ describe("a path git would print differently is refused", () => {
       NodeFS.rmSync(root, { recursive: true, force: true });
     }
   }, 60_000);
+
+  for (const thing of ["src/my thing.ts", "src/café.ts"]) {
+    it(`sees setup's write to ${thing}, which porcelain prints quoted`, () => {
+      // THE SAME FALSE KILL WITH A SPELLING THE REFUSAL CANNOT CATCH, because this one IS how
+      // the file is named: `git status --porcelain` prints ` M "src/my thing.ts"` and
+      // ` M "src/caf\303\251.ts"`, so a Set keyed on that line never holds the row's `file`.
+      // Measured with the Set built from the line form: exit 0, both rows killed, and
+      // `row-two-elsewhere` credited to `setup state is present`. The Set is built from `-z`,
+      // which prints the path raw, and this row is then correctly NOT RUN.
+      const { root, config, log } = scaffold([guardRow(thing), elsewhereRow], thing);
+      try {
+        const done = runSweep(root, config);
+        const output = `${done.stdout}${done.stderr}`;
+        expect(output).not.toContain("GuardSweepConfigError");
+        expect(output).toContain(`the tree already differs from HEAD at ${thing}`);
+        expect(done.status).toBe(3);
+        expect(spawnsIn(log)).toBeGreaterThan(0);
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }, 60_000);
+  }
 });

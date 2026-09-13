@@ -746,24 +746,32 @@ const mustSucceed = Effect.fn("guardSweep.mustSucceed")(function* (
 }, Effect.scoped);
 
 /**
- * The tracked paths a `git status --porcelain` line names.
+ * The tracked paths `git status --porcelain -z` names.
  *
  * Used to refuse a mutation whose target the tree has already moved: the restore is
  * `git checkout -- <file>`, which returns it to HEAD, so a file `setupCommand` wrote into
  * cannot be restored to what the BASELINE was measured on. Nothing else writes to a
  * scratch worktree between its creation and the first row.
  *
- * A rename reads `R  old -> new`, and the new name is the one a mutation could target.
+ * `-z` AND NOT THE LINE FORM, because the line form quotes: a space or a non-ASCII byte in
+ * the name prints as ` M "src/a b.ts"`, the Set then holds the spelling with the quotes, and
+ * the row's `file` is never found — the setup-written guard passes, the restore reverts
+ * setup's write, and the NEXT row is credited with the red. `-z` prints the path raw and
+ * NUL-terminates it. A rename is `R  new\0old\0`, the reverse of the line form's `old -> new`;
+ * the old name is skipped because no mutation can target it.
  */
 export const statusPaths = (status: string): ReadonlySet<string> => {
   const paths = new Set<string>();
-  for (const line of status.split("\n")) {
-    if (line.trim() === "") {
+  const entries = status.split("\0");
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    if (entry === "") {
       continue;
     }
-    const named = line.slice(3).trim();
-    const arrow = named.indexOf(" -> ");
-    paths.add(arrow === -1 ? named : named.slice(arrow + 4));
+    paths.add(entry.slice(3));
+    if (entry[0] === "R" || entry[0] === "C" || entry[1] === "R" || entry[1] === "C") {
+      index += 1;
+    }
   }
   return paths;
 };
@@ -808,7 +816,7 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
   // be about the sweep's own writes rather than about what it inherited. Empty on
   // `--in-place`, where the handler has already refused a dirty tree; on the worktree
   // path the only writer between `git worktree add` and here is `setupCommand`.
-  const moved = statusPaths(yield* mustSucceed(["git", "status", "--porcelain"], root));
+  const moved = statusPaths(yield* mustSucceed(["git", "status", "--porcelain", "-z"], root));
 
   // PRE-FLIGHT, BEFORE THE BASELINE, because an anchor that does not resolve exactly once
   // is a property of the CONFIG and is knowable without running anything. It used to be

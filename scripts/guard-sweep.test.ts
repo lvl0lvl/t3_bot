@@ -623,21 +623,31 @@ describe("nonNormalMutationPaths", () => {
 });
 
 describe("statusPaths", () => {
-  it("reads the path out of a porcelain line", () => {
-    expect([...statusPaths(" M src/a.ts\n?? src/b.ts\n")]).toEqual(["src/a.ts", "src/b.ts"]);
+  it("reads the path out of a porcelain -z entry, unquoted", () => {
+    // The line form prints `"src/a b.ts"` with the quotes for a space or a non-ASCII byte, and
+    // a Set keyed on that spelling never finds the row's `file`; `-z` prints the path raw.
+    expect([...statusPaths(" M src/a.ts\0?? src/b.ts\0 M src/a b.ts\0")]).toEqual([
+      "src/a.ts",
+      "src/b.ts",
+      "src/a b.ts",
+    ]);
   });
 
-  it("takes the NEW name of a rename", () => {
-    // `R  old -> new` is the form a hand-written parser gets wrong, and the new name is the
-    // one a mutation could target — a mutation aimed at the old name cannot resolve at all.
-    expect([...statusPaths("R  src/old.ts -> src/new.ts\n")]).toEqual(["src/new.ts"]);
+  it("takes the NEW name of a rename and skips the old name that follows it", () => {
+    // `-z` reverses the line form's `old -> new` into `new\0old\0`: the entry after a rename
+    // is the old name, which no mutation can target, and it carries no status of its own.
+    expect([...statusPaths("R  src/new.ts\0src/old.ts\0 M src/c.ts\0")]).toEqual([
+      "src/new.ts",
+      "src/c.ts",
+    ]);
+    // A rename detected against the worktree puts the `R` in the second column.
+    expect([...statusPaths(" R src/f.ts\0src/e.ts\0")]).toEqual(["src/f.ts"]);
   });
 
   it("is empty for a clean tree", () => {
     // The `--in-place` path relies on this: the handler has already refused a dirty tree, so
     // every row must pass the moved-target check rather than be refused by an empty string.
     expect([...statusPaths("")]).toEqual([]);
-    expect([...statusPaths("\n")]).toEqual([]);
   });
 });
 
