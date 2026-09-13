@@ -2065,12 +2065,14 @@ export const ChannelMemberAddedPayload = Schema.Struct({
  * WHO LEFT, and it carries the member ref as well as the handle because the
  * websocket has to decide "was that me" from the EVENT.
  *
- * THE HANDLE STAYS AND REMAINS THE PROJECTOR'S KEY. `requireChannelMembersUnique`
- * makes a handle unique WITHIN a channel; `memberId` is NOT unique. Nothing
- * checks it at all, so two SAME-kind members can hold one id under two handles;
- * and a thread member and a human member can share one (`t3_bot-46h`) BY
- * ORDERING, which is worth writing out because the obvious reading is that the
- * aggregate refuses it:
+ * THE HANDLE STAYS AND REMAINS THE PROJECTOR'S KEY, and it is not the only thing
+ * that is unique: `requireChannelMembersUnique` makes the handle AND the
+ * `(memberKind, memberId)` pair unique within a channel at the command boundary
+ * (`t3_bot-1ez`), so two same-kind members can no longer hold one id under two
+ * handles. Two kinds of non-uniqueness are left. CROSS-KIND is still admitted — a
+ * thread member and a human member can share one id (`t3_bot-46h`) BY ORDERING,
+ * which is worth writing out because the obvious reading is that the aggregate
+ * refuses it:
  *
  *   `requireChannelMemberShape` refuses a human member whose id names a thread,
  *   but it looks the id up in the roster AT ADD TIME and never re-validates an
@@ -2078,6 +2080,12 @@ export const ChannelMemberAddedPayload = Schema.Struct({
  *   the human member with id X while no thread X exists (admitted), create
  *   thread X (admitted), add a thread member for X (admitted). One roster, two
  *   kinds, one id, no invariant broken.
+ *
+ * And the second: the projector filters by HANDLE and appends
+ * (`projector.ts`), so a roster REPLAYED from events written before `t3_bot-1ez`
+ * can still carry a same-kind duplicate even though no command can create one now.
+ * That population is what `t3_bot-z7u` is about, and it is why reading a duplicate
+ * as legacy data rather than as live behaviour is the correct reading.
  *
  * A pre-invariant event replayed through the projector gets there too. Re-keying
  * the projector on the ref would be a regression dressed as a cleanup. The

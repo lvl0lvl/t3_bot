@@ -419,9 +419,14 @@ export function requireChannelMembersUnique(input: {
   readonly members: ReadonlyArray<ChannelMember>;
 }): Effect.Effect<void, OrchestrationCommandInvariantError> {
   const handles = new Set<string>();
-  // A tuple rather than `${kind}:${id}`, so a memberId containing the separator
-  // cannot make two different refs look like one.
-  const refs = new Set<string>();
+  // Keyed by a tuple rather than `${kind}:${id}`. Not because the separator is
+  // reachable today — `memberKind` is a closed two-value literal union, so no kind can
+  // contain a colon and the forged-separator collision cannot happen — but because the
+  // tuple is free and stays correct if `memberKind` ever becomes operator-supplied
+  // text, which is when the string key would start silently merging refs. The value is
+  // the HANDLE rather than a bare Set membership, because the operator who reads this
+  // refusal has to act on it and did not type the id.
+  const refs = new Map<string, string>();
   for (const member of input.members) {
     if (handles.has(member.handle)) {
       return Effect.fail(
@@ -433,18 +438,19 @@ export function requireChannelMembersUnique(input: {
     }
     handles.add(member.handle);
     const ref = JSON.stringify([member.memberKind, member.memberId]);
-    if (refs.has(ref)) {
+    const seated = refs.get(ref);
+    if (seated !== undefined) {
       return Effect.fail(
         invariantError(
           input.command.type,
-          `Member '${member.memberId}' of kind '${member.memberKind}' is on this channel ` +
-            `twice, under two handles. One member is one row: the author of a post and the ` +
-            `target of a mention are resolved by this pair, so a second handle for it makes ` +
-            `both depend on row order.`,
+          `Handles '${seated}' and '${member.handle}' are the same member ` +
+            `('${member.memberKind}' '${member.memberId}') in one channel. One member is one ` +
+            `row: the author of a post and the target of a mention are resolved by that pair, ` +
+            `so a second handle for it makes both depend on row order.`,
         ),
       );
     }
-    refs.add(ref);
+    refs.set(ref, member.handle);
   }
   return Effect.void;
 }

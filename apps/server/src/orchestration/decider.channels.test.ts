@@ -300,10 +300,17 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
-        // Names THIS guard, not merely that something refused: the shape and
-        // handle checks run on the same roster and either would satisfy `_tag`.
-        expect(error.detail).toContain("under two handles");
+        // Names THIS guard, not merely that something refused: the shape and handle
+        // checks run on the same roster and either would satisfy `_tag`.
+        expect(error.detail).toContain("are the same member");
         expect(error.detail).toContain("thread-boss1");
+        // BOTH HANDLES. The operator who reads this refusal is the one who has to act
+        // on it, and on a roster they did not write the memberId is not something they
+        // can act on — they need to know which handle to remove. A guard that tracked
+        // refs in a Set could not name the seated handle at all, so this pair of
+        // assertions is what separates that implementation from this one.
+        expect(error.detail).toContain("alias");
+        expect(error.detail).toContain("boss1");
       }
     }),
   );
@@ -336,7 +343,11 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       }).pipe(Effect.flip);
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
-        expect(error.detail).toContain("under two handles");
+        expect(error.detail).toContain("are the same member");
+        // The handle already on the roster and the one being added, for the reason the
+        // create test gives: this is the refusal an operator has to act on.
+        expect(error.detail).toContain("boss1");
+        expect(error.detail).toContain("alias");
       }
     }),
   );
