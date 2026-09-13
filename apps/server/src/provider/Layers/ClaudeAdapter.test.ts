@@ -6111,6 +6111,7 @@ describe("ClaudeAdapterLive", () => {
     // with it dies here instead of failing an assertion. "claude-thread-abc"
     // decodes; only the synthetic-id conjunct refuses it, and the drop log
     // fires for it too: the value was dropped, whichever conjunct did it.
+    // "  t1  " decodes to "t1" and is branded raw: the span carries it padded.
     const harness = makeHarness();
     const spans: Array<Tracer.NativeSpan> = [];
     const tracer = Tracer.make({
@@ -6151,6 +6152,7 @@ describe("ClaudeAdapterLive", () => {
           resume: "6ba7b812-9dad-11d1-80b4-00c04fd430c8",
           dropped: false,
         },
+        { threadId: "  t1  ", resume: "6ba7b813-9dad-11d1-80b4-00c04fd430c8", dropped: false },
       ];
       for (const { threadId, resume, dropped } of cursors) {
         const dropsBefore = dropLogs.length;

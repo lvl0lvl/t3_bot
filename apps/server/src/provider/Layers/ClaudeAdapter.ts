@@ -852,6 +852,9 @@ function asRuntimeRequestId(value: ApprovalRequestId): RuntimeRequestId {
 // starts, and `startSession` logs the drop at debug. Dropping is the
 // decision (`t3_bot-qci`): a trace label is not worth a failed session
 // start, so do not promote a malformed cursor field to an error later.
+// An admitted id is branded raw, not as the decoded value: ThreadId trims
+// at decode (`t3_bot-py6`), so a padded id reaches the span padded. That
+// is the answer to the question #47 deferred here.
 const decodeCursorThreadId = Schema.decodeUnknownOption(ThreadId);
 
 function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undefined {
