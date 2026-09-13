@@ -97,6 +97,46 @@
       "file": "apps/server/src/orchestration/commandInvariants.ts",
       "find": "  return JSON.stringify([member.memberKind, member.memberId]);",
       "replace": "  return JSON.stringify([member.memberId]);"
+    },
+    {
+      "id": "thread-id-seated-check-dropped",
+      "guard": "requireThreadIdIsNoHuman",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "    channel.members.some((member) => member.memberKind === \"human\" && member.memberId === id),",
+      "replace": "    channel.members.some((member) => member.memberKind === \"human\" && member.memberId === id && false),"
+    },
+    {
+      "id": "thread-id-operator-constant-dropped",
+      "guard": "requireThreadIdIsNoHuman",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  if (seatedHuman === undefined && id !== HUMAN_OPERATOR_MEMBER_ID) {",
+      "replace": "  if (seatedHuman === undefined) {"
+    },
+    {
+      "id": "thread-id-archived-channels-skipped",
+      "guard": "requireThreadIdIsNoHuman",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  const seatedHuman = input.readModel.channels.find((channel) =>",
+      "replace": "  const seatedHuman = input.readModel.channels.filter((channel) => channel.archivedAt === null).find((channel) =>"
+    },
+    {
+      "id": "thread-id-any-member-kind",
+      "guard": "requireThreadIdIsNoHuman",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "    channel.members.some((member) => member.memberKind === \"human\" && member.memberId === id),",
+      "replace": "    channel.members.some((member) => member.memberId === id),"
+    },
+    {
+      "id": "thread-id-guard-not-called",
+      "guard": "decider.thread.create/requireThreadIdIsNoHuman-called",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/decider.ts",
+      "find": "      yield* requireThreadIdIsNoHuman({\n        readModel,\n        command,\n        threadId: command.threadId,\n      });\n",
+      "replace": ""
     }
   ]
 }
