@@ -583,6 +583,13 @@ describe("OrchestrationEngine", () => {
         resultSequence: sequence,
       });
       expect(yield* engine.latestSequence).toBe(sequence);
+      const second = yield* engine
+        .dispatch({ type: "thread.settle", commandId, threadId })
+        .pipe(Effect.flip);
+      expect(second._tag).toBe("OrchestrationCommandPreviouslyRejectedError");
+      expect(second.message).toBe(
+        "Command previously rejected (cmd-blocked-settle): This thread still needs attention. Resolve or interrupt it first, then try again.",
+      );
     }).pipe(Effect.provide(makeOrchestrationLayer())),
   );
 
