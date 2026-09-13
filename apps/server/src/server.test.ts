@@ -125,9 +125,11 @@ import {
 import { ChannelPostWakeRepository } from "./persistence/Services/ChannelPostWakes.ts";
 import { ProjectionTurnRepository } from "./persistence/Services/ProjectionTurns.ts";
 import {
+  OrchestrationCommandIdConflictError,
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
   OrchestrationListenerCallbackError,
+  OrchestrationProjectorDecodeError,
   OrchestrationThreadSettleBlockedError,
 } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -136,7 +138,7 @@ import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { OrchestrationEventStoreLive } from "./persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationEventStore } from "./persistence/Services/OrchestrationEventStore.ts";
-import { PersistenceSqlError } from "./persistence/Errors.ts";
+import { PersistenceDecodeError, PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import { ProviderAuthService } from "./provider/Services/ProviderAuthService.ts";
@@ -2617,6 +2619,90 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(response.status, 500);
       assert.equal(body._tag, "EnvironmentInternalError");
       assert.equal(body.reason, "orchestration_dispatch_failed");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("answers each member of the dispatch union on the HTTP door by its own arm", () =>
+    Effect.gen(function* () {
+      // Six arms, six sites: re-pointing any one internal arm at the refusal
+      // survived the whole file when only the listener arm was pinned. One
+      // app, one request per member; the failure message names the member.
+      const rows = [
+        {
+          error: new PersistenceSqlError({ operation: "appendEvents" }),
+          expected: { status: 500, _tag: "EnvironmentInternalError" },
+        },
+        {
+          error: new PersistenceDecodeError({ operation: "readEvents", issue: "bad row" }),
+          expected: { status: 500, _tag: "EnvironmentInternalError" },
+        },
+        {
+          error: new OrchestrationCommandIdConflictError({
+            commandId: "cmd-http-arm-table",
+            receiptAggregateKind: "thread",
+            receiptAggregateId: "thread-other",
+            commandAggregateKind: "thread",
+            commandAggregateId: "thread-http-arm-table",
+          }),
+          expected: { status: 500, _tag: "EnvironmentInternalError" },
+        },
+        {
+          // A replayed rejection is the caller's situation again (REPLAY-001).
+          error: new OrchestrationCommandPreviouslyRejectedError({
+            commandId: "cmd-http-arm-table",
+            detail: "Previously rejected.",
+          }),
+          expected: { status: 409, _tag: "EnvironmentCommandRefusedError" },
+        },
+        {
+          error: new OrchestrationProjectorDecodeError({
+            eventType: "thread.settled",
+            issue: "bad",
+          }),
+          expected: { status: 500, _tag: "EnvironmentInternalError" },
+        },
+        {
+          error: new OrchestrationListenerCallbackError({
+            listener: "domain-event",
+            detail: "bad",
+          }),
+          expected: { status: 500, _tag: "EnvironmentInternalError" },
+        },
+      ] as const;
+      let current: (typeof rows)[number]["error"] | undefined;
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              current === undefined ? Effect.die("no row selected") : Effect.fail(current),
+          },
+        },
+      });
+      const url = yield* getHttpServerUrl("/api/orchestration/dispatch");
+      const cookie = yield* getAuthenticatedSessionCookieHeader();
+
+      for (const row of rows) {
+        current = row.error;
+        const response = yield* fetchEffect(url, {
+          method: "POST",
+          headers: { "content-type": "application/json", cookie },
+          body: jsonRequestBody({
+            type: "thread.settle",
+            commandId: "cmd-http-arm-table",
+            threadId: "thread-http-arm-table",
+          }),
+        });
+        const body = yield* responseJsonEffect<{
+          readonly _tag: string;
+          readonly reason?: string;
+        }>(response);
+
+        assert.equal(response.status, row.expected.status, row.error._tag);
+        assert.equal(body._tag, row.expected._tag, row.error._tag);
+        if (row.expected.status === 500) {
+          assert.equal(body.reason, "orchestration_dispatch_failed", row.error._tag);
+        }
+      }
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
