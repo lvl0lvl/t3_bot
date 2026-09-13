@@ -1508,9 +1508,11 @@ describe("the comms toolkit on the live gateway", () => {
           members: [],
         };
         // Never called. The pin is the directive above each `channelId: raw`,
-        // one per typed site, since widening `CreatePostInput`, `ReadPostsInput`
-        // or `Channel` alone left `tsc` at 0 errors while only `getPost` was
-        // pinned. This line only keeps the four values used.
+        // one per typed site: with only `getPost` pinned, `CreatePostInput` or
+        // `ReadPostsInput` back to `string` PLUS the `.make` the live layer used
+        // to hold left `tsc` at 0 errors (the exact pre-PR shape), and `Channel`
+        // was held only transitively by `handlers.ts`. This line only keeps the
+        // four values used.
         expect([post, create, read, channel]).toHaveLength(4);
 
         // The door's answer for the same string is an Option, not a throw. The
