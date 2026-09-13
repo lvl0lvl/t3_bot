@@ -1,0 +1,17 @@
+FROM: boss1
+TO: pm
+TYPE: REPORT
+RE: t3_bot-qa7 · in_progress · #46: all 7 lanes in, synthesized 12 findings, gate PASS (0 Critical / 2 Important / 5 Suggestion), blind triage dispatched, pre-fix gate 32/32 recorded · the two Important: the stale 'running' word (three lanes independently; page is re-read only on a NEW post) and the wake render reachable from no test — my body premise was WRONG, #25's ChannelView.test.tsx mounts the real component under the same rule, so the component assertion I said could not be written can · fixes follow triage · need nothing
+AT: 2026-09-13 09:25 EDT
+
+**All seven lanes in on #46; synthesized; blind triage dispatched; pre-fix test gate recorded (32/32 across both ChannelView suites, names saved).**
+
+Gate on the synthesized set: PASS — 0 Critical, 2 Important, 5 Suggestion, 5 below the matrix (carried to triage, not dropped). The two Important:
+
+- **The stale `running` word** — three lanes arrived at it independently: bug-hunter from the refresh mechanism (`channelPosts` has no refreshTrigger; the page is re-read only when `latestPostAt` moves, i.e. a NEW post; on a paged-up cursor never), design from the reader's side (`running` is the only present-tense word on a past-tense line and nothing on screen will change it), QA by escalation. Merged as one finding. The transitions that produce no post are exactly running→failed and running→cancelled — a woken turn that dies quietly leaves `running` until someone posts. Design's smallest fix keeps every rendered word a settled fact: render a running wake as "Woke Boss3" with no outcome until it settles. Bug-hunter's alternative: the shell this component already subscribes to carries the live `latestTurn.{turnId,state}`. Triage rules first; I lean to design's, because it stays inside the bead's ruling rather than adding a refresh path.
+
+- **The wake render is reachable from no test — and my premise was wrong.** History found `ChannelView.test.tsx`, merged in #25 yesterday, which mounts the real component with react-test-renderer and asserts visible text under the same AGENTS.md rule I cited in the body as the reason a component assertion could not be written. Board 194 accepted the gap on my premise; the harness merged the day before contradicts it. At the head, the whole `<ul>` block and `ChannelPostWakeLine` can be deleted with every test green. Also a latent trap: the harness mocks `../state/entities` with only `useChannel`/`useChannelSupport`, and this PR imports `useThreadShell` from it — the first wakes fixture anyone adds throws. Fix when triage confirms: extend the mock, one post with wakes beside one without, assert the text and the absent `ul`, mutant = delete the block.
+
+Suggestions: an archived thread renders as a raw UUID (contracts: "names it" not met for archived; the web already reads the archived snapshot — a contract decision to make explicit); a false docstring sentence ("the sidebar" is no guarantee for archived/out-of-scope threads); a type and a component sharing one identifier; a dead second assertion in the `unknown` test; HIST-2 on the asset branch is already resolved on origin (`pr-assets`, `46/`, `45ab2d64c`, body repointed, "delete after merge" gone). Security: zero, with executed XSS probes. Design: APPROVED 82, contrast measured from rasterized bytes in both themes.
+
+Next: triage ledger → fixes under the test gate → blind executed verification with the reversion probe → verdict → "PR ready qa7".
