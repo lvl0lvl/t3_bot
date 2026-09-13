@@ -186,7 +186,7 @@ export type SweepConfig = typeof SweepConfig.Type;
 const decodeSweepConfig = Schema.decodeUnknownEffect(Schema.fromJsonString(SweepConfig));
 
 /**
- * Rows whose `file` is not a plain repo-relative path, which is a CONFIG defect and the only
+ * Rows whose `file` is not a normal repo-relative path, which is a CONFIG defect and the only
  * thing standing between a spelling and a false kill.
  *
  * TWO checks are defeated, and every other site is what makes it dangerous. `moved` comes from
@@ -209,6 +209,12 @@ const decodeSweepConfig = Schema.decodeUnknownEffect(Schema.fromJsonString(Sweep
  * rather than about a leading dot because a dotfile path is normal: `.github/workflows/ci.yml`
  * is a real target.
  */
+// One part per member of refusal 6's set, in order. Each names the input it refuses:
+//   `(?!\/)`                        an absolute path, `/etc/passwd`
+//   `(?!.*(?:^|\/)\.\.?(?:\/|$))`    a `.` or `..` segment anywhere: `./x`, `a/./b`, `a/../b`, `..`
+//   `(?!.*\/\/)` and `(?!.*\/$)`     an empty segment: `a//b`, and a trailing `/`
+//   `[^\0-\x1f\x7f]+`                the empty path, and any control byte — `x\n/../y` walks past
+//                                    the segment lookahead, whose `.*` stops at the newline
 const NORMAL_REPO_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))(?!.*\/\/)(?!.*\/$)[^\0-\x1f\x7f]+$/u;
 
 export const nonNormalMutationPaths = (
@@ -1213,7 +1219,7 @@ export const guardSweepCommand = Command.make(
         return yield* new GuardSweepConfigError({
           detail:
             `${nonNormal.length} ${nonNormal.length === 1 ? "mutation names" : "mutations name"} a path that is ` +
-            "not plain repo-relative, and this tool decides whether a row is measurable by " +
+            "not normal repo-relative, and this tool decides whether a row is measurable by " +
             "looking its file up in the output of `git status --porcelain`:\n  " +
             nonNormal
               .map((row) => `${JSON.stringify(row.id)}: ${JSON.stringify(row.file)}`)
