@@ -1,0 +1,95 @@
+{
+  "testCommand": [
+    "pnpm",
+    "exec",
+    "vp",
+    "test",
+    "run",
+    "apps/server/src/orchestration/decider.channels.test.ts",
+    "apps/server/src/orchestration/decider.issuer.test.ts",
+    "apps/server/src/mcp/toolkits/comms/commsLive.integration.test.ts"
+  ],
+  "setupCommand": ["pnpm", "install", "--frozen-lockfile"],
+  "mutations": [
+    {
+      "id": "reason-dropped-archived",
+      "guard": "requireChannelNotArchived/reason",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      { _tag: \"channel-archived\" },\n",
+      "replace": ""
+    },
+    {
+      "id": "reason-dropped-author",
+      "guard": "requireChannelAuthorIsMember/reason",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "    invariantError(input.command.type, `Author is not a member of channel '${input.channel.id}'.`, {\n      _tag: \"author-not-member\",\n    }),",
+      "replace": "    invariantError(input.command.type, `Author is not a member of channel '${input.channel.id}'.`),"
+    },
+    {
+      "id": "reason-dropped-mentions",
+      "guard": "requireChannelMentionsResolve/reason",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      { _tag: \"mentions-unresolved\", handles: unresolved },\n",
+      "replace": ""
+    },
+    {
+      "id": "reason-mentions-all",
+      "guard": "requireChannelMentionsResolve/reason.handles",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      { _tag: \"mentions-unresolved\", handles: unresolved },\n",
+      "replace": "      { _tag: \"mentions-unresolved\", handles: input.mentions },\n"
+    },
+    {
+      "id": "gateway-ignores-reason",
+      "guard": "createPost/mapError",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "if (error._tag === \"OrchestrationCommandInvariantError\" && error.reason !== undefined) {",
+      "replace": "if (error._tag === \"OrchestrationCommandInvariantError\" && error.reason === undefined) {"
+    },
+    {
+      "id": "gateway-author-to-conflict",
+      "guard": "createPost/mapError author-not-member",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "                case \"author-not-member\":\n                  return new ChannelMembershipRevoked();\n",
+      "replace": "                case \"author-not-member\":\n                  break;\n"
+    },
+    {
+      "id": "gateway-mentions-to-conflict",
+      "guard": "createPost/mapError mentions-unresolved",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "                case \"mentions-unresolved\":\n                  return new ChannelMentionUnresolvable({ handles: error.reason.handles });\n",
+      "replace": "                case \"mentions-unresolved\":\n                  break;\n"
+    },
+    {
+      "id": "gateway-archived-to-conflict",
+      "guard": "createPost/mapError channel-archived",
+      "axis": "inert",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "                case \"channel-archived\":\n                  return new ChannelArchived();\n",
+      "replace": "                case \"channel-archived\":\n                  break;\n"
+    },
+    {
+      "id": "gateway-every-refusal-revoked",
+      "guard": "createPost/mapError",
+      "axis": "wider",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "if (error._tag === \"OrchestrationCommandInvariantError\" && error.reason !== undefined) {",
+      "replace": "if (error._tag === \"OrchestrationCommandInvariantError\") {\n              if (error.reason === undefined) return new ChannelMembershipRevoked();"
+    },
+    {
+      "id": "gateway-arms-swapped",
+      "guard": "createPost/mapError",
+      "axis": "wider",
+      "file": "apps/server/src/mcp/toolkits/comms/channelGatewayLive.ts",
+      "find": "                case \"author-not-member\":\n                  return new ChannelMembershipRevoked();\n                case \"mentions-unresolved\":\n                  return new ChannelMentionUnresolvable({ handles: error.reason.handles });\n                case \"channel-archived\":\n                  return new ChannelArchived();\n",
+      "replace": "                case \"author-not-member\":\n                  return new ChannelArchived();\n                case \"mentions-unresolved\":\n                  return new ChannelMembershipRevoked();\n                case \"channel-archived\":\n                  return new ChannelMentionUnresolvable({ handles: [] });\n"
+    }
+  ]
+}
