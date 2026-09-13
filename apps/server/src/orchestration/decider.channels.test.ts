@@ -403,18 +403,21 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // `memberId` alone would refuse this, and this is exactly the roster
       // `requireChannelAuthorIsMember` compares both fields for, the one
       // `t3_bot-46h` was filed about, and the shape three fixtures in this tree
-      // depend on. Whether a channel may hold it at all is `t3_bot-7iw` and is
-      // not decided here — so this test is what stops that decision being made
-      // by accident.
+      // depend on. Whether a channel may hold it at all was `t3_bot-7iw`, decided
+      // at `thread.create` (`requireThreadIdIsNoHuman`), not here:
+      // `channel.member.add` deliberately still admits the pair, so a roster a
+      // database written before 7iw holds can still be completed — and this test
+      // is what pins that, so the decision is not remade here by accident.
       //
       // THE SHARED COLLISION (`collidingRoster.ts`), not a local spelling of it —
       // this was the eighth, and collapsing it is what `t3_bot-46h` closed.
       //
       // TAKEN MID-ORDERING, after step 2 and before step 3, because step 3 being
-      // ADMITTED is the whole subject: the human is seated while no thread carries
-      // the id, the thread is created, and this is the add that follows. So the
-      // roster here holds the human half only and the test adds the thread half
-      // itself. `collidingReadModel` is the state AFTER step 3, which is why it is
+      // ADMITTED is the whole subject: the human is seated and a thread carries
+      // the id — a replay state now, the one a database written before 7iw holds
+      // — and step 3 is the add that follows it. So the roster here holds the
+      // human half only and the test adds the thread half itself.
+      // `collidingReadModel` is the state AFTER step 3, which is why it is
       // narrowed rather than used as-is; both halves and the id they share still
       // come from the module.
       const afterStepTwo = collidingReadModel({ now: NOW, first: "human" });
@@ -474,10 +477,11 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // The fixture said that and did not do it until a review lane measured
       // it: `human-walt` beside `thread-pm` differs in BOTH fields, which is
       // the exact shape `t3_bot-46h` was filed about. It collides now. The
-      // roster is reachable by ordering — a human member added while no thread
-      // of that id exists, then the thread — and `makeReadModel` builds the
-      // read model directly in any case, which is why the pair is expressible
-      // here and refused at an `add` command.
+      // roster was reachable by ordering — a human member added while no thread
+      // of that id exists, then the thread — until `t3_bot-7iw` refused the
+      // thread; a database written before that still holds it, and
+      // `makeReadModel` builds the read model directly in any case, which is
+      // why the pair is expressible here and refused at an `add` command.
       const decided = yield* decideOrchestrationCommand({
         command: {
           type: "channel.member.remove",

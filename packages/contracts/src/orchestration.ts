@@ -518,12 +518,14 @@ export type CommandIssuer = typeof CommandIssuer.Type;
  * and nothing distinguishes two browser sessions, so every RPC client is issued
  * as this member.
  *
- * IT IS A CONSTANT IN CONTRACTS RATHER THAN ONE PER CALLER because two callers
- * are already using it: the hierarchy seeder writes it into the seeded channels'
- * membership, and the WebSocket layer stamps it onto every command. If those two
- * strings ever differ, the operator is a member of a channel they cannot post
- * to, and `requireChannelAuthorIsMember` refuses with a message about
- * membership that is true and useless. One definition cannot drift.
+ * IT IS A CONSTANT IN CONTRACTS RATHER THAN ONE PER CALLER because its callers
+ * must agree on the string: the hierarchy seeder writes it into the seeded
+ * channels' membership, and the WebSocket layer stamps it onto every command
+ * through `refFromOperatorSession` / `operatorCommandIssuer`
+ * (`channelMemberRef.ts`). If those strings ever differ, the operator is a
+ * member of a channel they cannot post to, and `requireChannelAuthorIsMember`
+ * refuses with a message about membership that is true and useless. One
+ * definition cannot drift.
  *
  * It is NOT a stand-in for authorization. Membership still decides what this
  * member may do, and `requireChannelAuthorIsMember` refuses a post to a channel
@@ -532,7 +534,15 @@ export type CommandIssuer = typeof CommandIssuer.Type;
  * nothing is refused on a fresh server; the check is load-bearing the moment a
  * channel exists that they are not in.
  *
- * Replace it when accounts exist, at both call sites, and delete this.
+ * WHEN ACCOUNTS EXIST, each use becomes something different, and the
+ * difference is why this is not one find-and-replace. The seeder and the two
+ * identity constructors in `channelMemberRef.ts` become session-bound: the
+ * account on this connection. `requireThreadIdIsNoHuman`'s constant clause
+ * does NOT — it refuses a thread named after ANY human, seated or not, so it
+ * becomes the set of known human account ids read from the aggregate. The
+ * decider has no session, and routing that clause through the session's id
+ * would admit a system issuer minting some other account's id as a thread.
+ * Make those replacements and delete this.
  */
 export const HUMAN_OPERATOR_MEMBER_ID = "human-walt";
 
@@ -1414,11 +1424,12 @@ const ChannelMemberAddCommand = Schema.Struct({
 
 /**
  * Keyed by handle. `memberId` alone is still not unique — a thread member and a human
- * member can share one (`t3_bot-46h`) — but since `t3_bot-1ez` the PAIR is unique per
- * channel, so keying by `(memberKind, memberId)` would also be well defined. The handle
- * stays because it is what the projector keys rows by and what an operator names. That
- * the removal resolves by handle while every authorization decision resolves by the pair
- * is the mismatch `t3_bot-s4l` is about, not a constraint.
+ * member can share one (`t3_bot-46h`), by replay of rows written before `t3_bot-7iw` —
+ * but since `t3_bot-1ez` the PAIR is unique per channel, so keying by
+ * `(memberKind, memberId)` would also be well defined. The handle stays because it is
+ * what the projector keys rows by and what an operator names. That the removal resolves
+ * by handle while every authorization decision resolves by the pair is the mismatch
+ * `t3_bot-s4l` is about, not a constraint.
  */
 const ChannelMemberRemoveCommand = Schema.Struct({
   type: Schema.Literal("channel.member.remove"),
@@ -2076,17 +2087,16 @@ export const ChannelMemberAddedPayload = Schema.Struct({
  * that is unique: `requireChannelMembersUnique` makes the handle AND the
  * `(memberKind, memberId)` pair unique within a channel at the command boundary
  * (`t3_bot-1ez`), so two same-kind members can no longer hold one id under two
- * handles. Two kinds of non-uniqueness are left. CROSS-KIND is still admitted — a
- * thread member and a human member can share one id (`t3_bot-46h`) BY ORDERING,
- * which is worth writing out because the obvious reading is that the aggregate
- * refuses it:
- *
- *   `requireChannelMemberShape` refuses a human member whose id names a thread,
- *   but it looks the id up in the roster AT ADD TIME and never re-validates an
- *   existing one. `thread.create` takes a caller-supplied `threadId`. So: add
- *   the human member with id X while no thread X exists (admitted), create
- *   thread X (admitted), add a thread member for X (admitted). One roster, two
- *   kinds, one id, no invariant broken.
+ * handles. Two kinds of non-uniqueness are left. CROSS-KIND — a thread member
+ * and a human member sharing one id (`t3_bot-46h`) — has three states worth
+ * telling apart: in one command it is refused by `requireChannelMemberShape`;
+ * BY ORDERING it WAS admitted (seat the human under id X, create thread X, add
+ * the thread member — the shape guard checks the roster at add time and never
+ * re-validates an existing row; #24); since `t3_bot-7iw` the middle step is
+ * refused by `requireThreadIdIsNoHuman` at `thread.create`. What remains is
+ * replay of rows written before either guard, which is the population every
+ * membership comparison keeps its kind clause for. The history is on
+ * `apps/server/src/orchestration/testing/collidingRoster.ts`.
  *
  * And the second: the projector filters by HANDLE and appends
  * (`projector.ts`), so a roster REPLAYED from events written before `t3_bot-1ez`

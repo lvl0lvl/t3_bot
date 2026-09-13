@@ -1403,10 +1403,11 @@ describe("the comms toolkit on the live gateway", () => {
         // THE COLLIDING ROSTER, shared (`orchestration/testing/collidingRoster.ts`),
         // written into the projection here because this test is about the
         // gateway's READ and does not need the engine. The module carries the
-        // account of why the roster exists and why it is constructible: this
-        // comment used to say the aggregate refuses the shape, and that was
-        // overturned on #24 — it is reachable by ordering, so criterion 5 holds
-        // without needing a replay-only path to justify the fixture.
+        // account of why the roster exists and how it arrives: this comment
+        // used to say the aggregate refuses the shape, #24 overturned that (it
+        // was reachable by ordering), and `t3_bot-7iw` made it true again —
+        // the roster arrives by replay of rows written before the guard, which
+        // is the path this projection write models.
         //
         // ORDER IS NOT THE MEASUREMENT HERE. `getChannelForMember` is a boolean
         // `some` over the roster and returns the channel, never the row, so with

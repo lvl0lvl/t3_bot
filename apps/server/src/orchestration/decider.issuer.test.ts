@@ -869,53 +869,27 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
     "resolves the author by KIND as well as id, so a colliding thread cannot post as a human",
     () =>
       Effect.gen(function* () {
-        // `t3_bot-ami`, found by the guard sweep: dropping the `memberKind` clause from
-        // `requireChannelAuthorIsMember` leaves every test in this directory green, because
-        // no fixture that reaches THIS guard holds a colliding pair — and that is the
-        // accurate form of the claim. Colliding rosters do exist in the tree:
-        // `decider.channels.test.ts`'s `COLLIDING_ROSTER` and one in
-        // `MentionWakeReactor.test.ts`, both one memberId under two memberKinds. They cannot
-        // kill this mutant because they are spent on other guards — the removal event's ref
-        // and the wake budget — and neither drives a post through the author lookup. The
-        // sweep measured the mutant surviving with both of them already present.
+        // THE GUARD UNDER TEST is the `memberKind` clause of `requireChannelAuthorIsMember`.
+        // `t3_bot-ami`, found by the guard sweep: dropping it left every test in this
+        // directory green, because no fixture that reached the author lookup held a
+        // colliding pair — the two colliding rosters then in the tree were spent on other
+        // guards (the removal event's ref, the wake budget) and neither drove a post
+        // through the lookup.
         //
-        // THE FIXTURE THAT SEPARATES THEM is one channel holding two members with the same
-        // `memberId` and different `memberKind`, with the WRONG one first — `find` returns the
-        // first match, so a fixture with the right member first passes under both
-        // implementations and measures nothing.
+        // THE FIXTURE THAT SEPARATES THE IMPLEMENTATIONS is one channel holding two members
+        // with the same `memberId` and different `memberKind`, with the WRONG one first:
+        // `find` returns the first match, so a fixture with the right member first passes
+        // under both and measures nothing. This test takes thread-first and posts as the
+        // HUMAN; the test below takes human-first and posts as the THREAD.
         //
-        // COMMAND-REACHABLE TODAY, which is the opposite of what this comment first said. I
-        // reasoned that `requireChannelMemberShape` makes the collision impossible to add —
-        // a `thread` member needs a thread with that id to exist, a `human` member needs no
-        // thread with that id to exist, so one of the two is always refused. That is true at
-        // a single instant and irrelevant, because the answer changes when the thread is
-        // created BETWEEN the two commands:
-        //
-        //   1. `channel.create` with a HUMAN member whose memberId is "thread-agent" —
-        //      accepted; the human branch refuses only when such a thread EXISTS NOW.
-        //   2. `thread.create` with threadId "thread-agent" — accepted; the id is
-        //      client-chosen and `ThreadId` carries no format constraint.
-        //   3. `channel.member.add` with a THREAD member naming "thread-agent" — accepted,
-        //      the thread is live now.
-        //
-        // Four ordinary commands, all as the human operator, no replay. This is
-        // `t3_bot-46h`'s criterion 4, already answered REACHABLE by PR #24, and
-        // `decider.channels.test.ts` in this tree says it too: "the roster is reachable by
-        // ordering — a human member added while no thread of that id exists, then the thread".
-        // `MentionWakeReactor.test.ts` builds the same roster. This file used to assert the
-        // opposite of all three.
-        //
-        // WHAT IS TRUE ABOUT THE SHAPE GUARD is narrower than what I claimed: it refuses the
-        // second member AT THE MOMENT OF THE ADD, and never re-validates a member already on
-        // the roster. So THIS ordering — thread first — is not command-producible, and the
-        // reverse one is. The test below this one covers the reachable ordering; this one
-        // covers a roster that only replay produces, and both are states the lookup can be
-        // handed.
-        //
-        // Which makes this guard a LIVE defence on a reachable impersonation rather than a
-        // last-ditch check on legacy rows. The fixture below is still a read model rather
-        // than a command sequence, because a unit test of the decider takes one; the shape it
-        // holds is one the aggregate will produce.
+        // HOW SUCH A ROSTER ARRIVES. Thread-first was never command-producible:
+        // `requireChannelMemberShape` refuses a human member whose id names a thread that
+        // exists. Human-first was — seat the human, create the thread, add the thread
+        // member — until `t3_bot-7iw` refused the `thread.create` (`requireThreadIdIsNoHuman`).
+        // Both orderings now arrive by replay of rows written before those guards;
+        // `./testing/collidingRoster.ts`'s header carries that history once. So the fixture
+        // is a read model rather than a command sequence, and this guard is the check on
+        // rows the aggregate no longer produces but a database may hold.
         //
         // The two fixtures above spend their collision proving the SHAPE guard (both assert
         // "is a thread id"), so neither can prove this one.
@@ -968,22 +942,22 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       }),
   );
   it.effect(
-    "resolves a THREAD author past a human row sharing its id, which is the reachable ordering",
+    "resolves a THREAD author past a human row sharing its id, which was the command-produced ordering",
     () =>
       Effect.gen(function* () {
-        // THE ORDERING COMMANDS ACTUALLY PRODUCE, and the mirror of the test above.
+        // THE ORDERING COMMANDS PRODUCED UNTIL `t3_bot-7iw`, and the mirror of the test above.
         // `requireChannelMemberShape` refuses a human member whose memberId names an EXISTING
-        // thread, so via commands the human is necessarily added FIRST and the thread of that
-        // name created after (`t3_bot-46h` criterion 4, answered by PR #24). The roster is
-        // therefore [human/X, thread/X] — the reverse of the fixture above, which only replay
-        // produces.
+        // thread, so by commands the human was necessarily added FIRST and the thread of that
+        // name created after (`t3_bot-46h` criterion 4, answered by PR #24). Since 7iw that
+        // `thread.create` is refused and this roster, like the one above, arrives by replay
+        // only. It is [human/X, thread/X] — the reverse of the fixture above.
         //
         // Under a memberId-only lookup this is the impersonation that runs the other way: an
         // AGENT's post is found against the human row and stored under a human's handle. In the
         // channel where agents read their instructions, a post that appears to come from Walt is
         // the worse direction of the two.
-        // THE SHARED ROSTER, human FIRST: the order the aggregate reaches, and the
-        // order that makes the WRONG row first for a thread author.
+        // THE SHARED ROSTER, human FIRST: the order the aggregate reached before
+        // `t3_bot-7iw`, and the order that makes the WRONG row first for a thread author.
         const colliding = collidingReadModel({
           now: NOW,
           channelId: CHANNEL,

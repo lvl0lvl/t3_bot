@@ -9231,13 +9231,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // appears here now. The input that separates them is a member whose id
       // MATCHES and whose kind does not.
       //
-      // The row is reachable through the aggregate by ordering — seat the human
-      // while no thread carries the id, then create the thread
-      // (`orchestration/testing/collidingRoster.ts` spells the commands) — and a
-      // row written before `requireChannelMemberShape` existed reaches this read
-      // path by replay too. Either way the roster this stream is handed can hold
-      // it, which is why the mention-wake reactor keeps its own kind check and
-      // this stream keeps this one.
+      // The row WAS reachable through the aggregate by ordering — seat the human
+      // while no thread carries the id, then create the thread — until
+      // `t3_bot-7iw` made `thread.create` refuse a human's member id. A row
+      // written before that guard, or before `requireChannelMemberShape`,
+      // reaches this read path by replay (`orchestration/testing/collidingRoster.ts`
+      // appends exactly those events). The roster this stream is handed can
+      // hold it, which is why the mention-wake reactor keeps its own kind check
+      // and this stream keeps this one.
       const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
 
       yield* buildAppUnderTest({
