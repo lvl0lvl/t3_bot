@@ -1,0 +1,55 @@
+{
+  "testCommand": [
+    "pnpm",
+    "exec",
+    "vp",
+    "test",
+    "run",
+    "apps/server/src/orchestration/decider.threadIdIsNoHuman.test.ts",
+    "apps/server/src/orchestration/decider.issuer.test.ts",
+    "apps/server/src/orchestration/Layers/MentionWakeReactor.test.ts"
+  ],
+  "setupCommand": ["pnpm", "install", "--frozen-lockfile"],
+  "mutations": [
+    {
+      "id": "thread-id-seated-check-dropped",
+      "guard": "commandInvariants/requireThreadIdIsNoHuman",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "    channel.members.some((member) => member.memberKind === \"human\" && member.memberId === id),",
+      "replace": "    channel.members.some((member) => member.memberKind === \"human\" && member.memberId === id && false),"
+    },
+    {
+      "id": "thread-id-operator-constant-dropped",
+      "guard": "commandInvariants/requireThreadIdIsNoHuman",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  if (seatedHuman === undefined && id !== HUMAN_OPERATOR_MEMBER_ID) {",
+      "replace": "  if (seatedHuman === undefined) {"
+    },
+    {
+      "id": "thread-id-archived-channels-skipped",
+      "guard": "commandInvariants/requireThreadIdIsNoHuman",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  const seatedHuman = input.readModel.channels.find((channel) =>",
+      "replace": "  const seatedHuman = input.readModel.channels.filter((channel) => channel.archivedAt === null).find((channel) =>"
+    },
+    {
+      "id": "thread-id-any-member-kind",
+      "guard": "commandInvariants/requireThreadIdIsNoHuman",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "    channel.members.some((member) => member.memberKind === \"human\" && member.memberId === id),",
+      "replace": "    channel.members.some((member) => member.memberId === id),"
+    },
+    {
+      "id": "thread-id-guard-not-called",
+      "guard": "decider/thread.create-calls-requireThreadIdIsNoHuman",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/decider.ts",
+      "find": "      yield* requireThreadIdIsNoHuman({\n        readModel,\n        command,\n        threadId: command.threadId,\n      });\n",
+      "replace": ""
+    }
+  ]
+}
