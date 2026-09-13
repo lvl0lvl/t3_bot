@@ -384,6 +384,23 @@ describe("pull request toolkit handlers", () => {
         .call("link_pull_request", { url: "https://github.com/t3tools/t3code/pull/123" })
         .pipe(Effect.flip);
       expect(error._tag).toBe("PullRequestLinkFailedError");
+      // The untagged fixture alone lets a predicate that accepts ANY tagged
+      // refusal pass; a refusal tagged with the OTHER door's tag is the input
+      // that breaks it.
+      const wrongTag = yield* makeHarness({
+        reject: (command) =>
+          command.type === "thread.pull-request.link"
+            ? new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "not linked",
+                reason: { _tag: "pull-request-not-linked" },
+              })
+            : null,
+      });
+      const tagged = yield* wrongTag
+        .call("link_pull_request", { url: "https://github.com/t3tools/t3code/pull/123" })
+        .pipe(Effect.flip);
+      expect(tagged._tag).toBe("PullRequestLinkFailedError");
     }),
   );
 
@@ -405,6 +422,22 @@ describe("pull request toolkit handlers", () => {
         .call("unlink_pull_request", { repository: "t3tools/t3code", number: 5 })
         .pipe(Effect.flip);
       expect(error._tag).toBe("PullRequestUnlinkFailedError");
+      // The wrong-tagged fixture alone lets a predicate that also accepts an
+      // UNTAGGED refusal pass; an untagged one is the input that breaks it.
+      const untagged = yield* makeHarness({
+        thread: makeThread([makeLink(5)]),
+        reject: (command) =>
+          command.type === "thread.pull-request.unlink"
+            ? new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "thread not found",
+              })
+            : null,
+      });
+      const bare = yield* untagged
+        .call("unlink_pull_request", { repository: "t3tools/t3code", number: 5 })
+        .pipe(Effect.flip);
+      expect(bare._tag).toBe("PullRequestUnlinkFailedError");
     }),
   );
 
