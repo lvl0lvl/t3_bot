@@ -9,6 +9,11 @@ import { SqlitePersistenceMemory } from "./Sqlite.ts";
 import { HUMAN_OPERATOR_MEMBER_ID, refFromOperatorSession } from "@t3tools/contracts";
 import type { ChannelMemberRef } from "@t3tools/contracts";
 import { ProjectionChannelRepository } from "../Services/ProjectionChannels.ts";
+import {
+  COLLIDING_HUMAN_MEMBER,
+  COLLIDING_HUMAN_REF,
+  COLLIDING_THREAD_REF,
+} from "../../orchestration/testing/collidingRoster.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const CHANNEL = ChannelId.make("channel-seniors");
@@ -51,10 +56,12 @@ function channel(channelId: ChannelId, name: string, handles: ReadonlyArray<stri
  *
  * The type is a class with a private field in `@t3tools/contracts` and its two
  * real constructors are named for their SOURCE — a credential or the operator's
- * session — so neither can express "a thread whose id is `kind-collide`", which
- * is exactly what a membership-filter test has to ask for. This is the way in,
- * and it is `unsafe` in the name because a reviewer must not read it as
- * production code. `makeRef` would not say that.
+ * session — so neither can express "a human whose id is `order-member`", which
+ * is what the ordering tests ask for. This is the way in, and it is `unsafe` in
+ * the name because a reviewer must not read it as production code. `makeRef`
+ * would not say that. The one ref the constructors CAN express — a thread
+ * carrying the operator's id — comes from the shared roster
+ * (`orchestration/testing/collidingRoster.ts`), not from here.
  *
  * These call sites were object literals until the nominal type moved into
  * contracts; that they stopped compiling is the type doing its job.
@@ -129,10 +136,9 @@ layer("ProjectionChannelRepository", (it) => {
 
       const rows = yield* repo.listChannelsForMember(refFromOperatorSession());
 
-      assert.deepStrictEqual(
-        rows.map((row) => row.name),
-        ["real-ref"],
-      );
+      // This file shares one database and the operator is seated elsewhere in
+      // it, so the list is named into rather than counted.
+      assert.ok(rows.some((row) => row.name === "real-ref"));
     }),
   );
 
@@ -437,26 +443,25 @@ layer("ProjectionChannelRepository", (it) => {
       // `m.member_kind` from the filter passes every other test in this file,
       // because every other fixture's members differ in both fields.
       //
-      // It is the same impersonation this repo refuses at the decider
-      // (`requireChannelMemberShape`), arriving on a READ path that has no
-      // decider to refuse it — so a thread aggregate named `human-walt` would
-      // read the operator's channels.
+      // The input is the shared collision's HUMAN half seated alone, asked
+      // about by both of the module's refs — made by the contract's own
+      // constructors, so this is the ref production hands the query. The
+      // thread half is reachable through the aggregate by ordering (the module
+      // says how); this is the read path it would then arrive on.
       const repo = yield* ProjectionChannelRepository;
       yield* repo.upsertChannel(
-        channelWithMembers(ChannelId.make("kind-only"), "kind-only", [
-          { handle: "walt", memberKind: "human", memberId: "kind-collide" },
-        ]),
+        channelWithMembers(ChannelId.make("kind-only"), "kind-only", [COLLIDING_HUMAN_MEMBER]),
       );
 
-      const asThread = yield* repo.listChannelsForMember(
-        unsafeRefForTest("thread", "kind-collide"),
-      );
-      const asHuman = yield* repo.listChannelsForMember(unsafeRefForTest("human", "kind-collide"));
+      const asThread = yield* repo.listChannelsForMember(COLLIDING_THREAD_REF);
+      const asHuman = yield* repo.listChannelsForMember(COLLIDING_HUMAN_REF);
 
       // Both directions. The refusal alone would pass for a filter that matched
-      // nobody at all, which is the mistake in the other direction.
+      // nobody at all, which is the mistake in the other direction. The human's
+      // list is not counted, because this file shares one database and the
+      // operator is seated elsewhere in it too; the channel is named instead.
       assert.deepStrictEqual(asThread, []);
-      assert.strictEqual(asHuman.length, 1);
+      assert.ok(asHuman.some((row) => row.channelId === "kind-only"));
     }),
   );
 

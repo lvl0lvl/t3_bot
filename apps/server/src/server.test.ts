@@ -118,6 +118,10 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
+import {
+  COLLIDING_THREAD_MEMBER,
+  COLLIDING_THREAD_PAYLOAD,
+} from "./orchestration/testing/collidingRoster.ts";
 import { ChannelPostWakeRepository } from "./persistence/Services/ChannelPostWakes.ts";
 import { ProjectionTurnRepository } from "./persistence/Services/ProjectionTurns.ts";
 import {
@@ -8770,13 +8774,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   /**
    * A removal of SOMEONE ELSE, from a channel this connection is not in.
    *
-   * THE FIXTURE IS A COLLIDING PAIR, and that is the whole of why it is written
-   * this way: the removed member is a THREAD whose memberId is the operator's
-   * own. It differs from the connection member in `memberKind` ALONE. Against a
-   * roster where the two differ in both fields — which is every other fixture in
-   * this repo — a comparison that ignored `memberKind` would pass, and
-   * `t3_bot-46h` is the bead that exists because that mutation has survived full
-   * suites four times.
+   * THE REMOVED MEMBER IS THE SHARED COLLISION'S THREAD HALF
+   * (`orchestration/testing/collidingRoster.ts`): a thread whose memberId is
+   * the operator's own, so it differs from the connection member in
+   * `memberKind` ALONE. Against every other fixture, where the two differ in
+   * both fields, a comparison that ignored `memberKind` would pass — which is
+   * why the value comes from the one module that owns the collision, in the
+   * payload shape production writes (`ChannelMemberRefPayload`, the plain
+   * struct), rather than being spelled here as another home-grown copy.
    */
   const foreignRemovalEvent = {
     sequence: 2,
@@ -8792,7 +8797,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     payload: {
       channelId: ChannelId.make("channel-project"),
       handle: ChannelMemberHandle.make("pm"),
-      removedMember: { memberKind: "thread", memberId: HUMAN_OPERATOR_MEMBER_ID },
+      removedMember: COLLIDING_THREAD_PAYLOAD,
       updatedAt: "2026-01-01T00:00:01.000Z",
     },
   } as unknown as OrchestrationEvent;
@@ -9226,11 +9231,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // appears here now. The input that separates them is a member whose id
       // MATCHES and whose kind does not.
       //
-      // It is the same impersonation route `requireChannelMemberShape` refuses
-      // at the decider, and the same reason the mention-wake reactor keeps its
-      // own kind check: that invariant runs on COMMANDS, and this is a read path
-      // replaying EVENTS, so a row written before the invariant reaches here
-      // untouched.
+      // The row is reachable through the aggregate by ordering — seat the human
+      // while no thread carries the id, then create the thread
+      // (`orchestration/testing/collidingRoster.ts` spells the commands) — and a
+      // row written before `requireChannelMemberShape` existed reaches this read
+      // path by replay too. Either way the roster this stream is handed can hold
+      // it, which is why the mention-wake reactor keeps its own kind check and
+      // this stream keeps this one.
       const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
 
       yield* buildAppUnderTest({
@@ -9243,13 +9250,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               Effect.succeedSome(
                 channelRow({
                   latestPostAt: "2026-01-01T00:00:01.000Z",
-                  members: [
-                    {
-                      handle: "impostor",
-                      memberKind: "thread",
-                      memberId: HUMAN_OPERATOR_MEMBER_ID,
-                    },
-                  ],
+                  // The shared collision's thread half, alone: a roster
+                  // the operator is NOT in, holding one row that matches
+                  // the operator's id and not their kind.
+                  members: [COLLIDING_THREAD_MEMBER],
                 }),
               ),
           },

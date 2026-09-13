@@ -13,6 +13,11 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import { decideOrchestrationCommand } from "./decider.ts";
+import {
+  COLLIDING_HUMAN_ISSUER,
+  COLLIDING_THREAD_ISSUER,
+  collidingReadModel,
+} from "./testing/collidingRoster.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const CHANNEL = ChannelId.make("channel-1");
@@ -914,26 +919,18 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
         //
         // The two fixtures above spend their collision proving the SHAPE guard (both assert
         // "is a thread id"), so neither can prove this one.
-        const colliding: OrchestrationReadModel = {
-          ...readModel(),
-          // The thread exists, so the THREAD member is a row the shape guard admits. The
-          // human member sharing its id is one the aggregate accepts too, as long as it was
-          // added before that thread was created — see above.
-          threads: threadsNamed([...CHANNEL_THREAD_IDS, "human-owner"]),
-          channels: [
-            {
-              id: CHANNEL,
-              name: "seniors",
-              members: [
-                { handle: BOSS1, memberKind: "thread", memberId: "human-owner" },
-                { handle: OWNER, memberKind: "human", memberId: "human-owner" },
-              ],
-              archivedAt: null,
-              createdAt: NOW,
-              updatedAt: NOW,
-            },
-          ],
-        };
+        // THE SHARED ROSTER (`./testing/collidingRoster.ts`), in the order this
+        // test needs: thread FIRST, the shape only replay produces. The file's own
+        // threads ride along so every other guard the probe crosses is satisfied.
+        const colliding = collidingReadModel({
+          now: NOW,
+          channelId: CHANNEL,
+          channelName: "seniors",
+          humanHandle: OWNER,
+          threadHandle: BOSS1,
+          first: "thread",
+          extra: { threads: threadsNamed(CHANNEL_THREAD_IDS) },
+        });
 
         // THE ORDER IS THE MEASUREMENT, so it is asserted rather than left to the comment
         // above. `find` returns the first match, so the WRONG member has to be first:
@@ -953,7 +950,7 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
           command: channelProbe("channel.post.create") as never,
           readModel: colliding,
           // The seated HUMAN, whose id the thread member shares.
-          issuer: MEMBER_HUMAN,
+          issuer: COLLIDING_HUMAN_ISSUER,
         });
         const events = Array.isArray(decided) ? decided : [decided];
         const event = events[0];
@@ -985,25 +982,17 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
         // AGENT's post is found against the human row and stored under a human's handle. In the
         // channel where agents read their instructions, a post that appears to come from Walt is
         // the worse direction of the two.
-        const colliding: OrchestrationReadModel = {
-          ...readModel(),
-          threads: threadsNamed([...CHANNEL_THREAD_IDS, "human-owner"]),
-          channels: [
-            {
-              id: CHANNEL,
-              name: "seniors",
-              members: [
-                // Human first: the order the aggregate reaches, and the order that makes the
-                // WRONG row first for a thread author.
-                { handle: OWNER, memberKind: "human", memberId: "human-owner" },
-                { handle: BOSS1, memberKind: "thread", memberId: "human-owner" },
-              ],
-              archivedAt: null,
-              createdAt: NOW,
-              updatedAt: NOW,
-            },
-          ],
-        };
+        // THE SHARED ROSTER, human FIRST: the order the aggregate reaches, and the
+        // order that makes the WRONG row first for a thread author.
+        const colliding = collidingReadModel({
+          now: NOW,
+          channelId: CHANNEL,
+          channelName: "seniors",
+          humanHandle: OWNER,
+          threadHandle: BOSS1,
+          first: "human",
+          extra: { threads: threadsNamed(CHANNEL_THREAD_IDS) },
+        });
 
         // The order is the measurement here too, mirrored.
         expect(colliding.channels[0]?.members[0]).toMatchObject({
@@ -1015,7 +1004,7 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
           command: channelProbe("channel.post.create") as never,
           readModel: colliding,
           // The THREAD, whose id the human member shares.
-          issuer: { memberKind: "thread", memberId: "human-owner" },
+          issuer: COLLIDING_THREAD_ISSUER,
         });
         const events = Array.isArray(decided) ? decided : [decided];
         const event = events[0];

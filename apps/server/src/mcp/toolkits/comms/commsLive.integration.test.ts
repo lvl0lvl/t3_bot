@@ -45,6 +45,11 @@ import { ServerConfig } from "../../../config.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { MentionWakeReactor } from "../../../orchestration/Services/MentionWakeReactor.ts";
 import { MentionWakeReactorLive } from "../../../orchestration/Layers/MentionWakeReactor.ts";
+import {
+  COLLIDING_HUMAN_REF,
+  COLLIDING_THREAD_REF,
+  collidingMembers,
+} from "../../../orchestration/testing/collidingRoster.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { refFromOperatorSession } from "@t3tools/contracts";
 import { ChannelGateway, type ChannelMemberRef, refFromMcpCredential } from "./channelGateway.ts";
@@ -1395,43 +1400,33 @@ describe("the comms toolkit on the live gateway", () => {
         yield* seed();
         const channels = yield* ProjectionChannelRepository;
 
-        // THE COLLIDING ROSTER, written straight into the projection rather
-        // than through the aggregate. `requireChannelMemberShape` refuses this
-        // shape on COMMANDS, while membership replays from EVENTS - so a row
-        // like this arrives by the path the command guard does not cover, which
-        // is exactly why the guard is not the answer here (`t3_bot-46h`,
-        // criterion 5: do not weaken it to make the fixture constructible).
+        // THE COLLIDING ROSTER, shared (`orchestration/testing/collidingRoster.ts`),
+        // written into the projection here because this test is about the
+        // gateway's READ and does not need the engine. The module carries the
+        // account of why the roster exists and why it is constructible: this
+        // comment used to say the aggregate refuses the shape, and that was
+        // overturned on #24 — it is reachable by ordering, so criterion 5 holds
+        // without needing a replay-only path to justify the fixture.
         //
-        // WHY IT HAS TO EXIST: every other channel fixture in this repo gives
-        // its members ids that differ in BOTH fields. Against those,
-        // `memberId === x` and `memberKind === k && memberId === x` return the
-        // same answer for every input - so the correct comparison and the
-        // impersonating one are indistinguishable, and the same mutation has
-        // survived a full suite three times in three files (`t3_bot-ami`,
-        // `t3_bot-8i2`, and the shell stream). This is the input that separates
-        // them.
-        const shared = "collides-with-a-thread";
-        yield* channels.replaceMembers({
-          channelId: CHANNEL_ID,
-          members: [
-            { handle: ChannelMemberHandle.make("ghost"), memberKind: "thread", memberId: shared },
-            { handle: ChannelMemberHandle.make("walt"), memberKind: "human", memberId: shared },
-          ],
+        // ORDER IS NOT THE MEASUREMENT HERE. `getChannelForMember` is a boolean
+        // `some` over the roster and returns the channel, never the row, so with
+        // both rows seated either order answers Some for both refs under an
+        // id-only comparison too. The measurement is the impostor phase below:
+        // the thread row ALONE, asked about by the human ref. Delete that phase
+        // and the id-only mutant survives.
+        const roster = collidingMembers({
+          humanHandle: ChannelMemberHandle.make("walt"),
+          threadHandle: ChannelMemberHandle.make("ghost"),
+          first: "thread",
         });
+        yield* channels.replaceMembers({ channelId: CHANNEL_ID, members: roster });
 
         const gateway = yield* ChannelGateway;
-        // The HUMAN resolves for the human ref and the THREAD for the thread
-        // ref, and both must be the channel - a comparison on memberId alone
-        // returns whichever row `some` reaches first for BOTH, which is a post
-        // attributed to the wrong member on a call that returns success.
-        const asHuman = yield* gateway.getChannelForMember(
-          "seniors",
-          unsafeRefForTest("human", shared),
-        );
-        const asThread = yield* gateway.getChannelForMember(
-          "seniors",
-          unsafeRefForTest("thread", shared),
-        );
+        // Both kinds are seated, so both refs must resolve to the channel: the
+        // admit side, which an inert comparison fails and which the negative
+        // below cannot prove on its own.
+        const asHuman = yield* gateway.getChannelForMember("seniors", COLLIDING_HUMAN_REF);
+        const asThread = yield* gateway.getChannelForMember("seniors", COLLIDING_THREAD_REF);
         expect(Option.isSome(asHuman)).toBe(true);
         expect(Option.isSome(asThread)).toBe(true);
 
@@ -1440,14 +1435,9 @@ describe("the comms toolkit on the live gateway", () => {
         // matches, so an id-only check admits a member that is not there.
         yield* channels.replaceMembers({
           channelId: CHANNEL_ID,
-          members: [
-            { handle: ChannelMemberHandle.make("ghost"), memberKind: "thread", memberId: shared },
-          ],
+          members: roster.filter((member) => member.memberKind === "thread"),
         });
-        const impostor = yield* gateway.getChannelForMember(
-          "seniors",
-          unsafeRefForTest("human", shared),
-        );
+        const impostor = yield* gateway.getChannelForMember("seniors", COLLIDING_HUMAN_REF);
         expect(Option.isNone(impostor)).toBe(true);
       }).pipe(Effect.provide(TestLayer)),
     30_000,

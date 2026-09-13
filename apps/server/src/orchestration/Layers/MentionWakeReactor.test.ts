@@ -64,6 +64,15 @@ import * as Logger from "effect/Logger";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { MentionWakeBudgetRepositoryLive } from "../../persistence/Layers/MentionWakeBudget.ts";
+import {
+  COLLIDING_CHANNEL_ID,
+  COLLIDING_CHANNEL_NAME,
+  COLLIDING_HUMAN_ISSUER,
+  COLLIDING_THREAD_HANDLE,
+  COLLIDING_THREAD_ID,
+  COLLIDING_THREAD_ISSUER,
+  seedCollidingRoster,
+} from "../testing/collidingRoster.ts";
 import { MentionWakeBudgetRepository } from "../../persistence/Services/MentionWakeBudget.ts";
 import { ChannelPostWakeRepository } from "../../persistence/Services/ChannelPostWakes.ts";
 import { wakesForPosts } from "../channelPostWakes.ts";
@@ -209,17 +218,17 @@ const channelMissing = Layer.effect(
  * The real channel repository, reporting the mentioned member as a HUMAN that
  * carries a thread's id.
  *
- * This used to be built by dispatching `channel.member.add`. It cannot be any
- * more: `t3_bot-8i2` added `requireChannelMemberShape`, and the decider now
- * refuses that command outright — the setup is rejected long before the reactor
- * is reached.
+ * This used to be built by dispatching one `channel.member.add` naming an
+ * existing thread's id. That one-command form is refused since `t3_bot-8i2`
+ * added `requireChannelMemberShape`; the ROW is still reachable, by ordering —
+ * seat the human while no thread carries the id, then create the thread
+ * (`../testing/collidingRoster.ts` spells the three commands) — and a
+ * `channel.member-added` accepted before 8i2 landed replays into the
+ * projection the same way. So the reactor's `memberKind` filter is not dead
+ * code and this test is not theatre.
  *
- * The ROW is still reachable, which is why the reactor's `memberKind` filter is
- * not dead code and this test is not theatre. That invariant runs on COMMANDS;
- * projections are built from EVENTS, and a `channel.member-added` accepted
- * before 8i2 landed replays into the projection untouched. So this is the exact
- * state a database upgraded across 8i2 holds, and on that database the reactor
- * is the only thing between an impostor row and a woken thread.
+ * The projection is overridden here because this test wants the row without
+ * the engine's three dispatches, not because the engine refuses it.
  */
 const mentionedMemberAsHuman = Layer.effect(
   ProjectionChannelRepository,
@@ -956,8 +965,9 @@ describe("MentionWakeReactor", () => {
 
   it("does not wake a thread because a HUMAN member carries its id", async () => {
     const { directory, databasePath } = await makeDatabasePath();
-    // The membership the decider would refuse today, which a database written
-    // before `t3_bot-8i2` still holds. See `mentionedMemberAsHuman`.
+    // The membership the aggregate admits by ordering (`collidingRoster.ts`)
+    // and a database written before `t3_bot-8i2` holds by replay, written to
+    // the projection directly. See `mentionedMemberAsHuman`.
     const system = await makeSystem(databasePath, { channels: mentionedMemberAsHuman });
     try {
       await seedChannel(system);
@@ -971,6 +981,66 @@ describe("MentionWakeReactor", () => {
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
       expect(await noWakes(system)).toHaveLength(0);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("wakes a thread mentioned by the HUMAN who shares its id", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      // THE COLLIDING ROSTER, through the aggregate rather than a fake row:
+      // one id, a human under it and a thread under it, seated in the only
+      // order the shape guard admits (`collidingRoster.ts`).
+      await system.run(
+        seedCollidingRoster({
+          engine: system.engine,
+          projectId: PROJECT_ID,
+          issuer: WALT,
+          now: NOW,
+        }),
+      );
+      await system.startReactor();
+
+      // THE HUMAN POSTS, MENTIONING THE TWIN. The author exclusion reads
+      // `!(authorRef.memberKind === "thread" && authorRef.memberId ===
+      // member.memberId)` — an agent is not woken by its own post. Drop the
+      // kind clause and it reads "not anyone with the author's id", which on
+      // this roster means the human can never wake the thread that shares
+      // their id. A sweep found that clause deletable with every test green:
+      // no fixture had a human author whose id matched a mentioned thread.
+      await post(system, {
+        id: "post-from-the-human-twin",
+        mentions: [COLLIDING_THREAD_HANDLE],
+        channelId: COLLIDING_CHANNEL_ID,
+        issuer: COLLIDING_HUMAN_ISSUER,
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // THE TWIN IS WOKEN. The author is a human; the thread of the same id is
+      // somebody else, and it was mentioned.
+      const woken = await wakeMessages(system, COLLIDING_THREAD_ID);
+      expect(woken).toHaveLength(1);
+      expect(woken[0]).toContain('post "post-from-the-human-twin"');
+
+      // AND THE OTHER DIRECTION, or this only proves the exclusion is gone: the
+      // twin mentioning ITSELF is not woken, because now the author IS the
+      // member — same id, same kind.
+      await post(system, {
+        id: "post-from-the-thread-twin",
+        mentions: [COLLIDING_THREAD_HANDLE],
+        channelId: COLLIDING_CHANNEL_ID,
+        issuer: COLLIDING_THREAD_ISSUER,
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+      expect(await wakeMessages(system, COLLIDING_THREAD_ID)).toHaveLength(1);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
@@ -2373,15 +2443,10 @@ describe("MentionWakeReactor wake budget", () => {
 
   const OTHER_CHANNEL_ID = ChannelId.make("channel-juniors");
 
-  /**
-   * One memberId held by BOTH a human member and a thread member — the fixture
-   * `t3_bot-46h` asks for, because against every other roster in this repo
-   * `memberId === x` and `memberKind === k && memberId === x` are the same
-   * function.
-   */
-  const COLLIDE_CHANNEL_ID = ChannelId.make("channel-collide");
-  const TWIN_MEMBER_ID = "human-walt";
-  const AS_TWIN = { memberKind: "thread", memberId: TWIN_MEMBER_ID } as const;
+  // THE COLLIDING ROSTER IS SHARED (`../testing/collidingRoster.ts`). This file
+  // held its own spelling — a channel id, a twin id, an issuer — and so did the
+  // other files that compare memberships; the module names them, and carries
+  // the reason it exists and the ordering that makes the collision constructible.
 
   /** A second channel with the same roster, to prove the budget is per channel. */
   const seedOtherChannel = async (system: System) => {
@@ -2674,58 +2739,31 @@ describe("MentionWakeReactor wake budget", () => {
     try {
       await seedChannel(system);
 
-      // THE COLLIDING ROSTER (`t3_bot-46h`), and it is reachable through the
-      // aggregate today rather than only through a pre-invariant event - which
-      // is that bead's open question, answered here by construction. The
-      // ORDERING is the whole fixture: `requireChannelMemberShape` refuses a
-      // HUMAN member whose memberId names an existing thread, so the human goes
-      // into the roster first and the thread of that name is created after.
-      // Nothing refuses the reverse, and no invariant makes memberId unique.
+      // THE COLLIDING ROSTER, seeded by the shared fixture: human seated first,
+      // the thread of that id created after, the thread member added last. The
+      // ordering and the reason it is the ONLY order the aggregate admits are on
+      // `collidingRoster.ts`; this test's claim is what the budget does with it.
       await system.run(
-        system.engine.dispatch(
-          {
-            type: "channel.create",
-            commandId: CommandId.make("cmd-channel-collide"),
-            channelId: COLLIDE_CHANNEL_ID,
-            name: "collide",
-            members: [
-              { handle: ChannelMemberHandle.make("woken"), memberKind: "thread", memberId: WOKEN },
-              {
-                handle: ChannelMemberHandle.make("walt"),
-                memberKind: "human",
-                memberId: TWIN_MEMBER_ID,
-              },
-            ],
-            createdAt: NOW,
-          },
-          { issuer: WALT },
-        ),
-      );
-      await system.run(
-        system.engine.dispatch({
-          type: "thread.create",
-          commandId: CommandId.make("cmd-thread-twin"),
+        seedCollidingRoster({
+          engine: system.engine,
           projectId: PROJECT_ID,
-          threadId: ThreadId.make(TWIN_MEMBER_ID),
-          title: "Twin",
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: null,
-          createdAt: NOW,
+          issuer: WALT,
+          now: NOW,
         }),
       );
+      // Plus the woken thread, which the budget test needs on the roster and the
+      // shared fixture does not carry: it is this file's member, not the
+      // collision's.
       await system.run(
         system.engine.dispatch(
           {
             type: "channel.member.add",
-            commandId: CommandId.make("cmd-member-twin"),
-            channelId: COLLIDE_CHANNEL_ID,
+            commandId: CommandId.make("cmd-collide-woken"),
+            channelId: COLLIDING_CHANNEL_ID,
             member: {
-              handle: ChannelMemberHandle.make("twin"),
+              handle: ChannelMemberHandle.make("woken"),
               memberKind: "thread",
-              memberId: TWIN_MEMBER_ID,
+              memberId: WOKEN,
             },
           },
           { issuer: WALT },
@@ -2734,10 +2772,12 @@ describe("MentionWakeReactor wake budget", () => {
 
       await system.startReactor();
       await agentPosts(system, "twin", WAKE_BUDGET_PER_CHANNEL + 1, {
-        channelId: COLLIDE_CHANNEL_ID,
-        issuer: AS_TWIN,
+        channelId: COLLIDING_CHANNEL_ID,
+        issuer: COLLIDING_THREAD_ISSUER,
       });
-      expect((await wakesFrom(system, "collide")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+      expect((await wakesFrom(system, COLLIDING_CHANNEL_NAME)).length).toBe(
+        WAKE_BUDGET_PER_CHANNEL,
+      );
 
       // THE ASSERTION THE FIXTURE EXISTS FOR. The twin is a THREAD whose
       // memberId is also a human member's, so a reset that resolved the author
@@ -2746,22 +2786,26 @@ describe("MentionWakeReactor wake budget", () => {
       // its own way out. Against every other fixture in this repository that
       // check and `authorRef.memberKind === "human"` are the same function.
       await agentPosts(system, "twin-again", 1, {
-        channelId: COLLIDE_CHANNEL_ID,
-        issuer: AS_TWIN,
+        channelId: COLLIDING_CHANNEL_ID,
+        issuer: COLLIDING_THREAD_ISSUER,
       });
-      expect((await wakesFrom(system, "collide")).length).toBe(WAKE_BUDGET_PER_CHANNEL);
+      expect((await wakesFrom(system, COLLIDING_CHANNEL_NAME)).length).toBe(
+        WAKE_BUDGET_PER_CHANNEL,
+      );
 
       // And the other direction, without which this proves only that nothing
       // resets it: the HUMAN of that same memberId does clear it.
-      await post(system, { id: "collide-human", mentions: [], channelId: COLLIDE_CHANNEL_ID });
+      await post(system, { id: "collide-human", mentions: [], channelId: COLLIDING_CHANNEL_ID });
       await system.run(
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
       await agentPosts(system, "twin-after-human", 1, {
-        channelId: COLLIDE_CHANNEL_ID,
-        issuer: AS_TWIN,
+        channelId: COLLIDING_CHANNEL_ID,
+        issuer: COLLIDING_THREAD_ISSUER,
       });
-      expect((await wakesFrom(system, "collide")).length).toBe(WAKE_BUDGET_PER_CHANNEL + 1);
+      expect((await wakesFrom(system, COLLIDING_CHANNEL_NAME)).length).toBe(
+        WAKE_BUDGET_PER_CHANNEL + 1,
+      );
     } finally {
       await system.dispose();
       await removeDirectory(directory);
