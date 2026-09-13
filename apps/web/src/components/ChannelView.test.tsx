@@ -607,6 +607,26 @@ describe("ChannelPostRegion", () => {
     // cursor, which is the one history this region can still walk continuously.
     expect(bodies(tree)).toEqual(["sixty", "sixty-one"]);
     expect(buttonLabels(tree)).toContain("Earlier posts");
+    // AND THE CURSOR IS CLEARED, which the label alone cannot show: a restart that
+    // replaced the posts but kept the old cursor still says "Earlier posts", and
+    // pressing it re-reads the OLD page (whose answer was null) — a control that lies,
+    // with "New posts" lit beside it. The pager's next ask must carry the newest
+    // page's cursor; the verifier's mutant that dropped `setCursor(undefined)`
+    // survived every assertion above this line.
+    expect(buttonLabels(tree)).not.toContain("New posts");
+    answer(
+      CHANNEL_A,
+      { posts: [post(59, "p-fifty-nine", "fifty-nine")], nextCursor: null },
+      "channel-a:backward:61",
+    );
+    const walk = tree.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      walk?.props.onClick?.();
+    });
+    // `some`, not `at(-1)`: both atoms ask on every render and the cursorless newest
+    // page asks last, so the last ask never carries a cursor. The walk is the ask that does.
+    expect(harness.asked.some((ask) => ask.cursor === "channel-a:backward:61")).toBe(true);
+    expect(bodies(tree)).toEqual(["fifty-nine", "sixty", "sixty-one"]);
   });
 
   it("withdraws the offer when the reader reaches the newest post by hand", async () => {
