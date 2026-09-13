@@ -190,7 +190,7 @@ const decodeSweepConfig = Schema.decodeUnknownEffect(Schema.fromJsonString(Sweep
 const NORMAL_REPO_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[^\0]+$/u;
 
 export const nonNormalMutationPaths = (
-  mutations: ReadonlyArray<Mutation>,
+  mutations: ReadonlyArray<{ readonly id: string; readonly file: string }>,
 ): ReadonlyArray<{ readonly id: string; readonly file: string }> =>
   mutations
     .filter((mutation) => !NORMAL_REPO_PATH.test(mutation.file))
