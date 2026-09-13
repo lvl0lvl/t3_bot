@@ -6548,20 +6548,27 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       // two sites: the raw string the gate admitted and the uuid it mints. A
       // third `TurnId.make(` is a merge landing outside the gate: route the
       // SDK value through `admitMessageTurnId`, or add a self-minted call to
-      // the list below. Only code counts: a comment naming the call is not a
-      // brand site. The pin sees the literal `TurnId.make(` only: a cast
-      // `as TurnId`, an aliased or destructured `make`, or a bracket access
-      // stays green (upstream writes none of these today; `vp fmt` normalises
-      // the whitespace forms into reach).
+      // the list below. Only code counts: a full-line `//`, `*`, or single
+      // `/* … */` comment naming the call is not a brand site; a same-line
+      // comment after code or after another comment, and a string literal,
+      // still red the pin and are reworded, not listed. The pin sees the
+      // literal `TurnId.make(` (and `TurnId?.make(`, `TurnId!.make(`) only: a
+      // cast `as TurnId`, an aliased or destructured `make`, a
+      // `.call`/`.apply`/`.bind` on it, or a bracket access stays green, and
+      // so does a same-string `.make` moved to another site: the pin sees
+      // which strings, in what order, not which line (upstream writes none of
+      // these today; `vp fmt` normalises the whitespace forms into reach).
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const source = yield* fileSystem.readFileString(
         path.join(import.meta.dirname, "OpenCodeAdapter.ts"),
       );
-      // A line is a comment only when no code follows it: `/* note */ const x`
-      // keeps its code, so a call after a leading block comment still counts.
-      const code = source.replace(/^\s*(?:\/\/|\/\*(?!.*\*\/[ \t]*\S)|\*).*$/gm, "");
-      NodeAssert.deepEqual(code.match(/TurnId\.make\([^)]*\)/g), [
+      // A line is a comment only when no code follows its `*/`: `/* note */ const x`
+      // and a block closed as ` */ const x` both keep their code, so a call after
+      // either still counts. The adapter names `TurnId.make(` in no comment today;
+      // the strip's subject is the comment a sync maintainer will write.
+      const code = source.replace(/^\s*(?:\/\/|(?!.*\*\/[ \t]*\S)(?:\/\*|\*)).*$/gm, "");
+      NodeAssert.deepEqual(code.match(/TurnId[?!]?\.make\([^)]*\)/g), [
         "TurnId.make(id)",
         "TurnId.make(`opencode-turn-${yield* randomUUIDv4}`)",
       ]);
