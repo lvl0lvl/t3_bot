@@ -2543,42 +2543,60 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   it.effect("answers a squashed defect on the HTTP door as an internal error with a trace", () =>
     Effect.gen(function* () {
       // What the engine hands this door when its worker throws: `Cause.squash`
-      // of the Die, failed into the Deferred as a typed failure with no `_tag`.
-      // `catchTags` cannot match it; removing the `Effect.catch` backstop
-      // answers it as an empty 500 with no traceId.
+      // of the Die, failed into the Deferred as a typed failure. Two shapes,
+      // because the backstop's predicate can tell them apart: a TypeError has
+      // no `_tag`; a thrown SchemaError carries `_tag: "SchemaError"`, which
+      // no arm names. `catchTags` matches neither; a backstop keyed on the
+      // ABSENCE of a `_tag` (the first version of this fix) answered the second
+      // as an empty 500 with no traceId.
+      const schemaExit = yield* Effect.exit(
+        Effect.sync(() => Schema.decodeUnknownSync(Schema.Number)("x")),
+      );
+      if (!Exit.isFailure(schemaExit)) {
+        assert.fail("decoding 'x' as a number did not throw");
+      }
+      const schemaDefect = Cause.squash(schemaExit.cause);
+      const squashedDefects: Array<unknown> = [new TypeError("boom-untagged"), schemaDefect];
+      let hit = 0;
       yield* buildAppUnderTest({
         layers: {
           orchestrationEngine: {
-            dispatch: () => Effect.fail(new TypeError("boom-untagged") as never),
+            dispatch: () => Effect.fail(squashedDefects[hit++] as never),
           },
         },
       });
 
-      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          cookie: yield* getAuthenticatedSessionCookieHeader(),
-        },
-        body: jsonRequestBody({
-          type: "thread.settle",
-          commandId: "cmd-http-squashed-defect",
-          threadId: "thread-http-squashed-defect",
-        }),
-      });
-      const body = yield* responseJsonEffect<{
-        readonly _tag: string;
-        readonly reason: string;
-        readonly traceId: unknown;
-      } | null>(response);
+      for (const commandId of ["cmd-http-squashed-defect", "cmd-http-squashed-schema-defect"]) {
+        const response = yield* fetchEffect(
+          yield* getHttpServerUrl("/api/orchestration/dispatch"),
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              cookie: yield* getAuthenticatedSessionCookieHeader(),
+            },
+            body: jsonRequestBody({
+              type: "thread.settle",
+              commandId,
+              threadId: "thread-http-squashed-defect",
+            }),
+          },
+        );
+        const body = yield* responseJsonEffect<{
+          readonly _tag: string;
+          readonly reason: string;
+          readonly traceId: unknown;
+        } | null>(response);
 
-      assert.equal(response.status, 500);
-      // An empty body parses as null; the status alone is what the door
-      // answered without the backstop.
-      assert.notEqual(body, null);
-      assert.equal(body?._tag, "EnvironmentInternalError");
-      assert.equal(body?.reason, "orchestration_dispatch_failed");
-      assert.equal(typeof body?.traceId, "string");
+        assert.equal(response.status, 500, commandId);
+        // An empty body parses as null; the status alone is what the door
+        // answered without the backstop.
+        assert.notEqual(body, null, commandId);
+        assert.equal(body?._tag, "EnvironmentInternalError", commandId);
+        assert.equal(body?.reason, "orchestration_dispatch_failed", commandId);
+        assert.equal(typeof body?.traceId, "string", commandId);
+      }
+      assert.equal(hit, 2);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
