@@ -225,6 +225,9 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       // satisfy the _tag and the test would survive deleting the one it names.
       if (error._tag === "OrchestrationCommandInvariantError") {
         expect(error.detail).toContain("does not exist");
+        // UNTAGGED: a `reason` here would tell a direct caller of the live
+        // gateway "you were removed" for "no such channel".
+        expect(error.reason).toBeUndefined();
       }
     }),
   );

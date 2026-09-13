@@ -307,6 +307,8 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
           expect(error.detail, type).toContain(
             "arrived without an issuer and cannot be authorized",
           );
+          // UNTAGGED: a missing issuer is not a cause the gateway names.
+          expect(error.reason, type).toBeUndefined();
         }
         refused.push(type);
       }
@@ -458,6 +460,8 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       expect(error._tag).toBe("OrchestrationCommandInvariantError");
       if (error._tag === "OrchestrationCommandInvariantError") {
         expect(error.detail).toContain("cannot author");
+        // UNTAGGED: a system issuer is not a cause the gateway names.
+        expect(error.reason).toBeUndefined();
       }
     }),
   );

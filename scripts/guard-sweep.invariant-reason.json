@@ -44,6 +44,30 @@
       "replace": "      { _tag: \"mentions-unresolved\", handles: input.mentions },\n"
     },
     {
+      "id": "reason-added-channel-missing",
+      "guard": "requireChannel/reason",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      `Channel '${input.channelId}' does not exist for command '${input.command.type}'.`,\n    ),",
+      "replace": "      `Channel '${input.channelId}' does not exist for command '${input.command.type}'.`,\n      { _tag: \"author-not-member\" },\n    ),"
+    },
+    {
+      "id": "reason-added-issuer-author",
+      "guard": "requireIssuerCanAuthor/reason",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      `A '${input.issuer.memberKind}' issuer has no handle and cannot author a channel post.`,\n    ),",
+      "replace": "      `A '${input.issuer.memberKind}' issuer has no handle and cannot author a channel post.`,\n      { _tag: \"author-not-member\" },\n    ),"
+    },
+    {
+      "id": "reason-added-issuer-missing",
+      "guard": "requireCommandIssuer/reason",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      `Command '${input.command.type}' arrived without an issuer and cannot be authorized.`,\n    ),",
+      "replace": "      `Command '${input.command.type}' arrived without an issuer and cannot be authorized.`,\n      { _tag: \"author-not-member\" },\n    ),"
+    },
+    {
       "id": "gateway-ignores-reason",
       "guard": "createPost/mapError",
       "axis": "inert",
