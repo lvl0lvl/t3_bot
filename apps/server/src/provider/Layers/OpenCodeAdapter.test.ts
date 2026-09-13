@@ -6409,7 +6409,9 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       Effect.gen(function* () {
         // The SDK types the id as string; "" and " " are the two values the
         // brand's decoder refuses that a `.make` treats differently ("" throws
-        // a Die inside the reader, " " is admitted as a garbage turn id).
+        // a Die inside the reader, " " is admitted as a garbage turn id). The
+        // 1 MiB id is the one the error would echo whole into a persisted
+        // activity row.
         const adapter = yield* OpenCodeAdapter;
         const threadId = asThreadId("thread-refused-message-id");
         yield* adapter.startSession({
@@ -6421,6 +6423,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         for (const [refused, quoted] of [
           ["", '""'],
           [" ", '" "'],
+          [" ".repeat(1024 * 1024), `"${" ".repeat(64)}"… (1048576 chars)`],
         ] as const) {
           runtimeMock.state.messages = [
             { info: { id: "user-1", role: "user" }, parts: [] },
@@ -6440,6 +6443,9 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
             }
             NodeAssert.equal(error.provider, "opencode");
             NodeAssert.equal(error.method, "session.messages");
+            // Length first: an equal over a 1 MiB detail spends minutes in
+            // the assertion's own diff before it reports.
+            NodeAssert.ok(error.detail.length < 512, `detail is ${error.detail.length} chars`);
             NodeAssert.equal(
               error.detail,
               `OpenCode returned an assistant message whose id ${quoted} is not a turn id.`,

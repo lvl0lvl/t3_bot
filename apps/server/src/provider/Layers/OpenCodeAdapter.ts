@@ -486,13 +486,21 @@ const toRequestError = (cause: OpenCodeRuntimeError): ProviderAdapterRequestErro
 // " msg_x " rolled back nothing and reported Success. The `.make` after the
 // gate cannot die; the gate refused everything it throws on.
 const decodeMessageTurnId = Schema.decodeUnknownOption(TurnId);
+// The refused id is echoed into `detail`, which the checkpoint reactor
+// persists as an activity row per revert attempt; a 1 MiB id would be
+// copied whole into each.
+const REFUSED_ID_PREVIEW_LENGTH = 64;
+const previewRefusedId = (id: string) =>
+  id.length <= REFUSED_ID_PREVIEW_LENGTH
+    ? JSON.stringify(id)
+    : `${JSON.stringify(id.slice(0, REFUSED_ID_PREVIEW_LENGTH))}… (${id.length} chars)`;
 const decodeAssistantMessageId = (id: string) =>
   Option.isNone(decodeMessageTurnId(id))
     ? Effect.fail(
         new ProviderAdapterRequestError({
           provider: PROVIDER,
           method: "session.messages",
-          detail: `OpenCode returned an assistant message whose id ${JSON.stringify(id)} is not a turn id.`,
+          detail: `OpenCode returned an assistant message whose id ${previewRefusedId(id)} is not a turn id.`,
         }),
       )
     : Effect.succeed(TurnId.make(id));
