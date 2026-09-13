@@ -892,8 +892,22 @@ const decodeProviderItemId = Schema.decodeUnknownOption(ProviderItemId);
 
 type RefusedId = {
   readonly field: string;
-  readonly value: unknown;
+  readonly preview: string;
 };
+
+// The refused value is echoed in the error event, the session's lastError and
+// the response written back to the app-server; a 1 MiB id would be copied
+// into all three at full size.
+const REFUSED_PREVIEW_LENGTH = 64;
+function previewRefusedValue(value: unknown): string {
+  if (typeof value !== "string") {
+    return typeof value;
+  }
+  if (value.length <= REFUSED_PREVIEW_LENGTH) {
+    return JSON.stringify(value);
+  }
+  return `${JSON.stringify(value.slice(0, REFUSED_PREVIEW_LENGTH))}… (${value.length} chars)`;
+}
 
 function refusedIds(params: unknown): ReadonlyArray<RefusedId> {
   if (!Predicate.isObject(params)) {
@@ -906,7 +920,7 @@ function refusedIds(params: unknown): ReadonlyArray<RefusedId> {
     decode: (input: unknown) => Option.Option<unknown>,
   ) => {
     if (value !== undefined && value !== null && Option.isNone(decode(value))) {
-      refused.push({ field, value });
+      refused.push({ field, preview: previewRefusedValue(value) });
     }
   };
   check("turnId", params.turnId, decodeTurnId);
@@ -1374,7 +1388,7 @@ export const makeCodexSessionRuntime = (
         threadId: options.threadId,
         method: "codex/malformed-id",
         message: `codex sent ${method} with ${refused
-          .map((entry) => `${entry.field} ${JSON.stringify(entry.value)}`)
+          .map((entry) => `${entry.field} ${entry.preview}`)
           .join(", ")}, which is not an id; the message was dropped`,
         payload: { method, refused },
       });

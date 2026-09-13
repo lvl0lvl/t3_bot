@@ -231,6 +231,67 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("echoes a refused id as a bounded preview, not at full size", () =>
+    Effect.gen(function* () {
+      // The refused value goes into the error event, the session's lastError
+      // and the response written back over stdin. A 1 MiB id copied into all
+      // three at full size is the input this bounds.
+      const oversized = " ".repeat(1024 * 1024);
+      yield* writeScript({
+        rootThreadId: ROOT,
+        recordRequests: false,
+        holdTurnOpen: true,
+        completeTurnOnServerResponse: true,
+        notifications: [],
+        serverRequests: [
+          {
+            id: 43,
+            method: "item/commandExecution/requestApproval",
+            params: {
+              threadId: ROOT,
+              turnId: oversized,
+              itemId: "item-approval",
+              command: "rm -rf build",
+              cwd: NodeOS.tmpdir(),
+              reason: null,
+              startedAtMs: 1,
+            },
+          },
+        ],
+      });
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-ingestion-oversized-turn-id"),
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
+        runtimeMode: "auto",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      });
+      const collected = yield* runtime.events.pipe(
+        Stream.takeUntil((event) => event.method === "turn/completed"),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* runtime.start();
+      yield* runtime.sendTurn({ input: "an oversized turn id follows" });
+      const events = Array.from(yield* Fiber.join(collected));
+
+      const refusals = events.filter((event) => event.method === "codex/malformed-id");
+      assert.equal(refusals.length, 1, events.map(summarize).join("\n"));
+      const refusal = refusals[0]!;
+      assert.equal(refusal.kind, "error");
+      assert.include(refusal.message, `(${oversized.length} chars)`);
+      assert.isBelow(refusal.message?.length ?? 0, 512);
+      const recorded = NodeFS.readFileSync(`${scriptPath}.responses`, "utf8")
+        .trim()
+        .split("\n")[0]!;
+      assert.include(recorded, '"id":43');
+      assert.isBelow(recorded.length, 512);
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("delivers a thread-scoped hook/started whose turnId is null", () =>
     Effect.gen(function* () {
       // The admit side. `null` is the protocol's spelling of "no turn
