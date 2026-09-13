@@ -1251,16 +1251,31 @@ function updateSession(
   });
 }
 
+// A response's turn id is outside input the same as a notification's; it is
+// decoded here, failing the same typed error as the response payload itself.
+const decodeResponseTurnId = Schema.decodeUnknownEffect(TurnId);
+function decodeTurnIdFromResponse(
+  method: string,
+  id: string,
+): Effect.Effect<TurnId, CodexErrors.CodexAppServerProtocolParseError> {
+  return decodeResponseTurnId(id).pipe(
+    Effect.mapError((error) =>
+      CodexErrors.CodexAppServerProtocolParseError.fromSchemaError(
+        "decode-response-payload",
+        error,
+        { method },
+      ),
+    ),
+  );
+}
+
 function parseThreadSnapshot(
+  method: string,
   response: EffectCodexSchema.V2ThreadReadResponse | EffectCodexSchema.V2ThreadRollbackResponse,
-): CodexThreadSnapshot {
-  return {
-    threadId: response.thread.id,
-    turns: response.thread.turns.map((turn) => ({
-      id: TurnId.make(turn.id),
-      items: turn.items,
-    })),
-  };
+): Effect.Effect<CodexThreadSnapshot, CodexErrors.CodexAppServerProtocolParseError> {
+  return Effect.forEach(response.thread.turns, (turn) =>
+    decodeTurnIdFromResponse(method, turn.id).pipe(Effect.map((id) => ({ id, items: turn.items }))),
+  ).pipe(Effect.map((turns) => ({ threadId: response.thread.id, turns })));
 }
 
 export const makeCodexSessionRuntime = (
@@ -2548,7 +2563,7 @@ export const makeCodexSessionRuntime = (
               ),
             ),
           );
-          const turnId = TurnId.make(response.turn.id);
+          const turnId = yield* decodeTurnIdFromResponse("turn/start", response.turn.id);
           yield* updateSession(sessionRef, (session) => ({
             status: "running",
             // Codex accepts follow-ups while the current turn is still
@@ -2605,7 +2620,7 @@ export const makeCodexSessionRuntime = (
           threadId: providerThreadId,
           includeTurns: true,
         });
-        return parseThreadSnapshot(response);
+        return yield* parseThreadSnapshot("thread/read", response);
       }),
       rollbackThread: (numTurns) =>
         Effect.gen(function* () {
@@ -2618,7 +2633,7 @@ export const makeCodexSessionRuntime = (
             status: "ready",
             activeTurnId: undefined,
           });
-          return parseThreadSnapshot(response);
+          return yield* parseThreadSnapshot("thread/rollback", response);
         }),
       uploadFeedback: (reason) =>
         Effect.gen(function* () {

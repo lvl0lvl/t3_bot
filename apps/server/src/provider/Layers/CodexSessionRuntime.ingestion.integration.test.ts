@@ -15,9 +15,12 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { type ProviderEvent, ThreadId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
+import * as CodexErrors from "effect-codex-app-server/errors";
 import { assert, describe } from "vite-plus/test";
 
 import wireFixture from "../testFixtures/codexMultiAgentWire.json" with { type: "json" };
@@ -37,6 +40,7 @@ type Script = {
   readonly notifications: ReadonlyArray<{ readonly method: string; readonly params: unknown }>;
   readonly holdTurnOpen?: boolean;
   readonly completeTurnOnServerResponse?: boolean;
+  readonly turnIds?: ReadonlyArray<string>;
   readonly serverRequests?: ReadonlyArray<{
     readonly id: number;
     readonly method: string;
@@ -229,6 +233,40 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
 
         yield* runtime.close;
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("fails sendTurn with a typed error when the turn/start response's id is refused", () =>
+    Effect.gen(function* () {
+      // A RESPONSE is not a notification and never meets the door. The peer
+      // mints the turn id from its script; whitespace is the value `.make`
+      // admits and the decoder refuses, so a `.make` here succeeds and hands
+      // a garbage id to the session where the decoder fails typed.
+      yield* writeScript({
+        rootThreadId: ROOT,
+        recordRequests: false,
+        turnIds: [" "],
+        notifications: [],
+      });
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-ingestion-refused-response-turn-id"),
+        binaryPath: peerPath,
+        cwd: NodeOS.tmpdir(),
+        runtimeMode: "full-access",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+      });
+      yield* runtime.start();
+      const exit = yield* runtime
+        .sendTurn({ input: "a whitespace turn id comes back" })
+        .pipe(Effect.exit);
+
+      assert.isTrue(Exit.isFailure(exit));
+      const failure = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
+      assert.instanceOf(failure, CodexErrors.CodexAppServerProtocolParseError);
+      assert.equal(failure.method, "turn/start");
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("echoes a refused id as a bounded preview, not at full size", () =>
