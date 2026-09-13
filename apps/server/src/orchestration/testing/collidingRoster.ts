@@ -8,14 +8,18 @@
  * authors — every fixture in the repository gave its members ids that differed
  * in BOTH fields, so `memberId === x` and `memberKind === k && memberId === x`
  * returned the same answer for every input any test supplied. The comparison
- * was not under-tested; it was UNTESTABLE with the data we had. Six sites in
- * five files then grew their own colliding fixture, each spelling the collision
- * differently, and a seventh comparison had none. This is the one spelling.
+ * was not under-tested; it was UNTESTABLE with the data we had. The sites that
+ * then grew their own colliding fixture each spelled the collision differently:
+ * `MentionWakeReactor.test.ts`, `decider.issuer.test.ts` (twice),
+ * `commsLive.integration.test.ts`, `server.test.ts` (twice),
+ * `ProjectionChannels.test.ts` — and the reactor's author exclusion had no
+ * colliding test at all. This is the one spelling.
  *
  * THE ID IS THE OPERATOR'S ON PURPOSE. `HUMAN_OPERATOR_MEMBER_ID` is a name
- * every test already has a reason to know, and two of the home-grown fixtures
- * had already picked it by accident. A thread that happens to be
- * created with that id is exactly the shape of the real collision.
+ * every test already has a reason to know; the reactor's fixture used the
+ * literal, and `server.test.ts` imported the constant by name because its
+ * connection member IS the operator. A thread that happens to be created with
+ * that id is exactly the shape of the real collision.
  *
  * WHY THE COLLISION IS REACHABLE AT ALL, and why the fixture is an ORDERING.
  * `requireChannelMemberShape` refuses a human member whose id names a thread
@@ -135,20 +139,23 @@ export const COLLIDING_THREAD_MEMBER: ChannelMember = {
 /**
  * The two colliding members, with the caller's HANDLES, in the caller's ORDER.
  *
- * HANDLES ARE THE TEST'S BUSINESS. `requireChannelHandlesUnique` is the one
- * uniqueness invariant a roster has, so a fixed handle here collides with any
- * test that already seats one — `decider.issuer.test.ts` seats `walt` in a
- * test about exactly that guard. The id collision is this module's; the names
- * are not.
+ * HANDLES ARE THE TEST'S BUSINESS. The decider's tests assert the persisted
+ * `authorHandle` against their own names, so the handle is the assertion's
+ * subject and has to be the test's. The id collision is this module's; the
+ * names are not.
  *
- * ORDER IS THE MEASUREMENT, not a detail. `find` returns the FIRST row with a
- * matching id, so the wrong row has to come first for the issuer under test:
- * human first when the author is the THREAD, thread first when the author is
- * the HUMAN. Reversed, a test passes under an id-only lookup and measures
- * nothing — a review lane proved that with all 685 tests green over a broken
- * guard. The aggregate itself produces human-first (the only order the shape
- * guard admits); thread-first is what REPLAY of pre-invariant events produces,
- * and both are states a lookup can be handed.
+ * ORDER IS THE MEASUREMENT FOR THE DECIDER, not a detail. Its lookup is `find`,
+ * which returns the FIRST row with a matching id, so the wrong row has to come
+ * first for the issuer under test: human first when the author is the THREAD,
+ * thread first when the author is the HUMAN. Reversed, that test passes under
+ * an id-only lookup and measures nothing — a review lane proved that with all
+ * 685 tests green over a broken guard. The aggregate itself produces
+ * human-first (the only order the shape guard admits); thread-first is what
+ * REPLAY of pre-invariant events produces, and both are states a lookup can be
+ * handed. `some` (the gateway, the shell stream) and the projection's SQL
+ * `WHERE` answer a set question and are order-insensitive; their tests
+ * distinguish by a NEGATIVE — a roster holding only the other kind, asked
+ * about by this one.
  */
 export const collidingMembers = (input: {
   readonly humanHandle: ChannelMemberHandle;
