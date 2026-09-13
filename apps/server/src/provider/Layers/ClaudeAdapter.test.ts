@@ -6108,7 +6108,9 @@ describe("ClaudeAdapterLive", () => {
     // ThreadId.make and refused by decode: the one input whose behaviour the
     // gate changes, so it runs first. "" is refused by both (the truthiness
     // guard the gate replaced dropped it too); a guard that reaches `.make`
-    // with it dies here instead of failing an assertion.
+    // with it dies here instead of failing an assertion. "claude-thread-abc"
+    // decodes; only the synthetic-id conjunct refuses it, and the drop log
+    // fires for it too: the value was dropped, whichever conjunct did it.
     const harness = makeHarness();
     const spans: Array<Tracer.NativeSpan> = [];
     const tracer = Tracer.make({
@@ -6136,6 +6138,7 @@ describe("ClaudeAdapterLive", () => {
       const cursors = [
         { threadId: "  ", dropped: true },
         { threadId: "", dropped: true },
+        { threadId: "claude-thread-abc", dropped: true },
         { threadId: "resume-thread-1", dropped: false },
       ];
       for (const { threadId, dropped } of cursors) {
