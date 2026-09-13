@@ -776,6 +776,26 @@ describe("ChannelPostRegion", () => {
     expect(buttonLabels(tree)).toContain("Newer posts didn’t load. Try again");
     expect(buttonLabels(tree)).toContain("Earlier posts");
     expect(buttonLabels(tree)).not.toContain("Earlier posts didn’t load. Try again");
+
+    // AND THE OFFER IS HONOURED: the click pages, it does not re-issue the newest
+    // read. `page` IS the failed newest atom here, so a pager that branched on the
+    // atom's failure rather than on its OWN (`pageFailed`) refreshed the newest page
+    // and never advanced.
+    answer(
+      CHANNEL_A,
+      { posts: [post(1, "p-one", "one")], nextCursor: null },
+      "channel-a:backward:1",
+    );
+    const before = harness.refreshes;
+    const pager = tree.root
+      .findAll((node) => node.type === "button")
+      .find((button) => text(button) === "Earlier posts");
+    await act(async () => {
+      pager?.props.onClick?.();
+    });
+    expect(harness.refreshes).toBe(before);
+    expect(harness.asked.some((ask) => ask.cursor === "channel-a:backward:1")).toBe(true);
+    expect(bodies(tree)).toEqual(["one", "two"]);
   });
 
   it("keeps offering the pager while the NEWEST read is in flight on the newest page", async () => {
