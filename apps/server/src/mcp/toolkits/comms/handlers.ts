@@ -78,7 +78,7 @@ export { canonicalChannelHandle, canonicalChannelName };
  *
  * What it buys is the COLLIDING roster - two members sharing one canonical key,
  * which only a pre-canonicalisation read model can hold, since
- * `requireChannelHandlesUnique` runs on canonical handles now. The forgiving
+ * `requireChannelMembersUnique` runs on canonical handles now. The forgiving
  * map keeps whichever came last, so without this an agent typing one member's
  * exact bytes wakes the OTHER one: a different memberId, on a call that returns
  * success. Trying the raw spelling first means the byte-exact spelling reaches

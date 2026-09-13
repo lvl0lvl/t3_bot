@@ -10,6 +10,11 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import { decideOrchestrationCommand } from "./decider.ts";
+import {
+  COLLIDING_HUMAN_MEMBER,
+  COLLIDING_THREAD_MEMBER,
+  collidingReadModel,
+} from "./testing/collidingRoster.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const CHANNEL = ChannelId.make("channel-1");
@@ -261,6 +266,176 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       if (error._tag === "OrchestrationCommandInvariantError") {
         expect(error.detail).toContain("is used twice");
       }
+    }),
+  );
+
+  it.effect("rejects a create that puts one member on the roster under two handles", () =>
+    Effect.gen(function* () {
+      // `t3_bot-1ez`, and ONE command was enough to reach it. Two rows, one
+      // `(memberKind, memberId)`, two handles: nothing refused this, and then
+      // `requireChannelAuthorIsMember` returned whichever row came first, so the
+      // handle a post was stored under and the `@handle` a wake prompt carried
+      // were decided by array position. `find` -> `findLast` changed the answer
+      // and survived all 685 tests. The position is not even stable across a
+      // restart: the projector appends in memory and reloads
+      // `ORDER BY handle ASC`, so the winner flips and an attacker picks it by
+      // choosing a handle that sorts first.
+      //
+      // THE HANDLES DIFFER, which is what makes this test discriminating: give
+      // both rows the same handle and the older handle check refuses it for a
+      // different reason, and this passes with the ref check deleted.
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.create",
+          commandId: CommandId.make("cmd-create-dup-ref"),
+          channelId: ChannelId.make("channel-3"),
+          name: "juniors",
+          members: [
+            {
+              handle: ChannelMemberHandle.make("alias"),
+              memberKind: "thread",
+              memberId: "thread-boss1",
+            },
+            { handle: BOSS1, memberKind: "thread", memberId: "thread-boss1" },
+          ],
+          createdAt: NOW,
+        },
+        readModel: makeReadModel(),
+        issuer: ADMIN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        // Names THIS guard, not merely that something refused: the shape and handle
+        // checks run on the same roster and either would satisfy `_tag`.
+        expect(error.detail).toContain("are the same member");
+        expect(error.detail).toContain("thread-boss1");
+        // BOTH HANDLES. The operator who reads this refusal is the one who has to act
+        // on it, and on a roster they did not write the memberId is not something they
+        // can act on — they need to know which handle to remove. A guard that tracked
+        // refs in a Set could not name the seated handle at all, so this pair of
+        // assertions is what separates that implementation from this one.
+        expect(error.detail).toContain("alias");
+        expect(error.detail).toContain("boss1");
+      }
+    }),
+  );
+
+  it.effect("rejects a second handle for a member already on the roster", () =>
+    Effect.gen(function* () {
+      // THE OTHER CALL SITE. A guard wired at `channel.create` and not at
+      // `channel.member.add` would leave the same channel reachable in two
+      // commands instead of one, and this repo has shipped exactly that shape of
+      // miss before — which is why the check is one function walking the roster
+      // rather than two that can drift apart.
+      //
+      // `t3_bot-s4l` is closed by this: with one row per ref, removing a handle
+      // removes the only row carrying that ref, so an eviction can no longer
+      // report success while the member keeps post rights, read visibility and
+      // wake eligibility through a second row.
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add-dup-ref"),
+          channelId: CHANNEL,
+          member: {
+            handle: ChannelMemberHandle.make("alias"),
+            memberKind: "thread",
+            memberId: "thread-boss1",
+          },
+        },
+        readModel: makeReadModel(),
+        issuer: ADMIN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("are the same member");
+        // The handle already on the roster and the one being added, for the reason the
+        // create test gives: this is the refusal an operator has to act on.
+        expect(error.detail).toContain("boss1");
+        expect(error.detail).toContain("alias");
+      }
+    }),
+  );
+
+  it.effect("admits an unrelated add to a roster that ALREADY holds a duplicated ref", () =>
+    Effect.gen(function* () {
+      // THE DELTA RULE, and this is the only test that can see it. Every other test here
+      // passes under both readings, because none of their rosters already violates the
+      // invariant. This one's does — and it can only be built by handing the read model
+      // the rows directly, which is precisely the population the projector can replay and
+      // no command can create (`t3_bot-z7u`).
+      //
+      // A command answers for the rows it admits, not for rows written before the
+      // invariant existed. Re-validating the whole roster made a legacy duplicate refuse
+      // every later add, with an error naming a member the operator never mentioned — a
+      // wall where a diagnosis belongs. Repairing that population needs a command
+      // add/remove cannot express (`t3_bot-uw9`).
+      //
+      // WHAT THIS DOES NOT SAY: that a second handle for a seated ref is admitted. It is
+      // not, whether or not the roster is already broken — the two tests above cover that
+      // and they stay red under any reading.
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add-to-legacy-roster"),
+          channelId: CHANNEL,
+          member: {
+            handle: ChannelMemberHandle.make("boss3"),
+            memberKind: "thread",
+            memberId: "thread-boss3",
+          },
+        },
+        readModel: makeReadModel([
+          { handle: "boss1", memberKind: "thread", memberId: "thread-boss1" },
+          // The duplicate: one ref, two handles, already seated.
+          { handle: "alias", memberKind: "thread", memberId: "thread-boss1" },
+        ]),
+        issuer: ADMIN,
+      });
+      const event = Array.isArray(decided) ? decided[0] : decided;
+      expect(event?.type).toBe("channel.member-added");
+    }),
+  );
+
+  it.effect("still ADMITS one id under two kinds, which is a different collision", () =>
+    Effect.gen(function* () {
+      // THE WIDER AXIS, and the reason the check keys on the PAIR. Keying it on
+      // `memberId` alone would refuse this, and this is exactly the roster
+      // `requireChannelAuthorIsMember` compares both fields for, the one
+      // `t3_bot-46h` was filed about, and the shape three fixtures in this tree
+      // depend on. Whether a channel may hold it at all is `t3_bot-7iw` and is
+      // not decided here — so this test is what stops that decision being made
+      // by accident.
+      //
+      // THE SHARED COLLISION (`collidingRoster.ts`), not a local spelling of it —
+      // this was the eighth, and collapsing it is what `t3_bot-46h` closed.
+      //
+      // TAKEN MID-ORDERING, after step 2 and before step 3, because step 3 being
+      // ADMITTED is the whole subject: the human is seated while no thread carries
+      // the id, the thread is created, and this is the add that follows. So the
+      // roster here holds the human half only and the test adds the thread half
+      // itself. `collidingReadModel` is the state AFTER step 3, which is why it is
+      // narrowed rather than used as-is; both halves and the id they share still
+      // come from the module.
+      const afterStepTwo = collidingReadModel({ now: NOW, first: "human" });
+      const decided = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.add",
+          commandId: CommandId.make("cmd-add-other-kind"),
+          channelId: afterStepTwo.channels[0]!.id,
+          member: COLLIDING_THREAD_MEMBER,
+        },
+        readModel: {
+          ...afterStepTwo,
+          channels: afterStepTwo.channels.map((channel) => ({
+            ...channel,
+            members: [COLLIDING_HUMAN_MEMBER],
+          })),
+        },
+        issuer: ADMIN,
+      });
+      const event = Array.isArray(decided) ? decided[0] : decided;
+      expect(event?.type).toBe("channel.member-added");
     }),
   );
 

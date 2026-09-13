@@ -68,10 +68,10 @@
     },
     {
       "id": "handles-unique-inert",
-      "guard": "requireChannelHandlesUnique",
+      "guard": "requireChannelMembersUnique",
       "axis": "inert",
       "file": "apps/server/src/orchestration/commandInvariants.ts",
-      "find": "    if (seen.has(member.handle)) {",
+      "find": "    if (handles.has(member.handle)) {",
       "replace": "    if (false as boolean) {"
     },
     {
@@ -81,6 +81,22 @@
       "file": "apps/server/src/orchestration/commandInvariants.ts",
       "find": "  if (namedThread !== undefined) {",
       "replace": "  if (true as boolean) {"
+    },
+    {
+      "id": "member-refs-unique-inert",
+      "guard": "requireChannelMembersUnique",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "    if (seated !== undefined) {",
+      "replace": "    if (false as boolean && seated !== undefined) {"
+    },
+    {
+      "id": "member-refs-unique-refuses-two-kinds",
+      "guard": "requireChannelMembersUnique",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  return JSON.stringify([member.memberKind, member.memberId]);",
+      "replace": "  return JSON.stringify([member.memberId]);"
     }
   ]
 }
