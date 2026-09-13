@@ -51,10 +51,6 @@ type ReactorInput =
       readonly event: OrchestrationEvent;
     };
 
-function toTurnId(value: string | undefined): TurnId | null {
-  return value === undefined ? null : TurnId.make(String(value));
-}
-
 function sameId(left: string | null | undefined, right: string | null | undefined): boolean {
   if (left === null || left === undefined || right === null || right === undefined) {
     return false;
@@ -359,7 +355,7 @@ const make = Effect.gen(function* () {
   // Capture the files left by a completed or interrupted turn.
   const captureCheckpointFromTurnCompletion = Effect.fn("captureCheckpointFromTurnCompletion")(
     function* (event: Extract<ProviderRuntimeEvent, { type: "turn.completed" | "turn.aborted" }>) {
-      const turnId = toTurnId(event.turnId);
+      const turnId = event.turnId ?? null;
       if (!turnId) {
         return;
       }
@@ -427,7 +423,7 @@ const make = Effect.gen(function* () {
 
   const ensurePreTurnBaselineFromTurnStart = Effect.fn("ensurePreTurnBaselineFromTurnStart")(
     function* (event: Extract<ProviderRuntimeEvent, { type: "turn.started" }>) {
-      const turnId = toTurnId(event.turnId);
+      const turnId = event.turnId ?? null;
       if (!turnId) {
         return;
       }
@@ -501,7 +497,7 @@ const make = Effect.gen(function* () {
       });
       yield* refreshPullRequestAfterTurn({
         threadId: event.threadId,
-        turnId: toTurnId(event.turnId),
+        turnId: event.turnId ?? null,
         cwd: sessionRuntime.value.cwd,
         local,
       });
@@ -849,7 +845,7 @@ const make = Effect.gen(function* () {
     }
 
     if (event.type === "turn.started") {
-      const turnId = toTurnId(event.turnId);
+      const turnId = event.turnId ?? null;
       const activeTurnId = (yield* providerService.listSessions()).find((session) =>
         sameId(session.threadId, event.threadId),
       )?.activeTurnId;
@@ -863,7 +859,7 @@ const make = Effect.gen(function* () {
     }
 
     if (event.type === "turn.completed" || event.type === "turn.aborted") {
-      const turnId = toTurnId(event.turnId);
+      const turnId = event.turnId ?? null;
       const thread = yield* resolveThreadDetail(event.threadId);
       const startedTurnId = startedTurns.get(event.threadId);
       const isTrackedTurn = sameId(startedTurnId, turnId);

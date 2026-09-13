@@ -6099,6 +6099,36 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("starts a session whose resume cursor carries a thread id the brand refuses", () => {
+    // The cursor is a persisted row an operator can edit. Its threadId is
+    // a trace annotation; "" and "  " are the two values ThreadId.make
+    // treats differently ("" throws inside startSession, "  " is admitted).
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      for (const refused of ["", "  "]) {
+        const session = yield* adapter.startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          resumeCursor: {
+            threadId: refused,
+            resume: "550e8400-e29b-41d4-a716-446655440000",
+          },
+          runtimeMode: "full-access",
+        });
+
+        assert.equal(session.threadId, RESUME_THREAD_ID);
+        const createInput = harness.getLastCreateQueryInput();
+        assert.equal(createInput?.options.resume, "550e8400-e29b-41d4-a716-446655440000");
+        yield* adapter.stopSession(RESUME_THREAD_ID);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("passes Claude resume ids without pinning a stale assistant checkpoint", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

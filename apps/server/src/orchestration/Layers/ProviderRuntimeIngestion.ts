@@ -123,10 +123,6 @@ type RuntimeIngestionInput =
       event: TurnStartRequestedDomainEvent;
     };
 
-function toTurnId(value: TurnId | string | undefined): TurnId | undefined {
-  return value === undefined ? undefined : TurnId.make(String(value));
-}
-
 function toApprovalRequestId(value: string | undefined): ApprovalRequestId | undefined {
   return value === undefined ? undefined : ApprovalRequestId.make(value);
 }
@@ -184,7 +180,7 @@ function proposedPlanIdForTurn(threadId: ThreadId, turnId: TurnId): string {
 }
 
 function proposedPlanIdFromEvent(event: ProviderRuntimeEvent, threadId: ThreadId): string {
-  const turnId = toTurnId(event.turnId);
+  const turnId = event.turnId;
   if (turnId) {
     return proposedPlanIdForTurn(threadId, turnId);
   }
@@ -389,7 +385,7 @@ export function runtimeEventToActivities(
             ...(event.payload.appName ? { appName: event.payload.appName } : {}),
             ...(event.payload.options ? { options: event.payload.options } : {}),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -413,7 +409,7 @@ export function runtimeEventToActivities(
             requestType: event.payload.requestType,
             ...(event.payload.decision ? { decision: event.payload.decision } : {}),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -430,7 +426,7 @@ export function runtimeEventToActivities(
           payload: {
             message: truncateDetail(event.payload.message),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -450,7 +446,7 @@ export function runtimeEventToActivities(
             ...(event.payload.reason ? { detail: truncateDetail(event.payload.reason) } : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -470,7 +466,7 @@ export function runtimeEventToActivities(
             message: truncateDetail(event.payload.message),
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -490,7 +486,7 @@ export function runtimeEventToActivities(
               ? { explanation: event.payload.explanation }
               : {}),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -509,7 +505,7 @@ export function runtimeEventToActivities(
             questions: event.payload.questions,
             ...(event.payload.responseMode ? { responseMode: event.payload.responseMode } : {}),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -527,7 +523,7 @@ export function runtimeEventToActivities(
             ...(event.requestId ? { requestId: event.requestId } : {}),
             answers: event.payload.answers,
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -554,7 +550,7 @@ export function runtimeEventToActivities(
               : {}),
             ...taskLinkageActivityFields(event.payload as Record<string, unknown>),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -610,7 +606,7 @@ export function runtimeEventToActivities(
                   ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
                   ...identityLinkage,
                 },
-                turnId: toTurnId(event.turnId) ?? null,
+                turnId: event.turnId ?? null,
                 ...maybeSequence,
               },
             ]
@@ -630,7 +626,7 @@ export function runtimeEventToActivities(
                   usageSnapshot: true,
                   typedUsage: event.payload.typedUsage,
                 },
-                turnId: toTurnId(event.turnId) ?? null,
+                turnId: event.turnId ?? null,
                 ...maybeSequence,
               },
             ]
@@ -662,7 +658,7 @@ export function runtimeEventToActivities(
               : {}),
             ...taskLinkageActivityFields(event.payload as Record<string, unknown>),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -696,7 +692,7 @@ export function runtimeEventToActivities(
               ? { parentToolUseId: event.payload.parentToolUseId }
               : {}),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -730,7 +726,7 @@ export function runtimeEventToActivities(
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
             ...taskLinkageActivityFields(event.payload as Record<string, unknown>),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -761,7 +757,7 @@ export function runtimeEventToActivities(
             ...(event.requestId !== undefined ? { requestId: event.requestId } : {}),
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -781,7 +777,7 @@ export function runtimeEventToActivities(
           kind: "context-window.updated",
           summary: "Context window updated",
           payload,
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -820,7 +816,7 @@ export function runtimeEventToActivities(
               ? { parentToolUseId: event.payload.parentToolUseId }
               : {}),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         }),
       ];
@@ -852,7 +848,7 @@ export function runtimeEventToActivities(
               ? { parentToolUseId: event.payload.parentToolUseId }
               : {}),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -884,7 +880,7 @@ export function runtimeEventToActivities(
               ? { parentToolUseId: event.payload.parentToolUseId }
               : {}),
           },
-          turnId: toTurnId(event.turnId) ?? null,
+          turnId: event.turnId ?? null,
           ...maybeSequence,
         },
       ];
@@ -1484,7 +1480,7 @@ const make = Effect.gen(function* () {
       if (!thread) return;
 
       const now = event.createdAt;
-      const eventTurnId = toTurnId(event.turnId);
+      const eventTurnId = event.turnId;
       const activeTurnId = thread.session?.activeTurnId ?? null;
       const isTerminalTurn = event.type === "turn.completed" || event.type === "turn.aborted";
       const isCompactedThreadState =
@@ -1656,7 +1652,7 @@ const make = Effect.gen(function* () {
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
       if (assistantDelta && assistantDelta.length > 0) {
-        const turnId = toTurnId(event.turnId);
+        const turnId = event.turnId;
         const assistantMessageId = yield* getOrCreateAssistantMessageId({
           threadId: thread.id,
           event,
@@ -1699,7 +1695,7 @@ const make = Effect.gen(function* () {
       const pauseForUserTurnId =
         event.type === "request.opened" ||
         (event.type === "user-input.requested" && event.payload.responseMode !== "message")
-          ? toTurnId(event.turnId)
+          ? event.turnId
           : undefined;
       if (pauseForUserTurnId) {
         const hasProjectedMessage = yield* projectionThreadMessages.hasAssistantMessageForTurn({
@@ -1760,13 +1756,13 @@ const make = Effect.gen(function* () {
         event.type === "turn.proposed.completed"
           ? {
               planId: proposedPlanIdFromEvent(event, thread.id),
-              turnId: toTurnId(event.turnId),
+              turnId: event.turnId,
               planMarkdown: event.payload.planMarkdown,
             }
           : undefined;
 
       if (assistantCompletion) {
-        const turnId = toTurnId(event.turnId);
+        const turnId = event.turnId;
         const activeAssistantMessageId = turnId
           ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
           : Option.none<MessageId>();
@@ -1834,7 +1830,7 @@ const make = Effect.gen(function* () {
       }
 
       if (isTerminalTurn) {
-        const turnId = toTurnId(event.turnId);
+        const turnId = event.turnId;
         if (turnId) {
           const userInputActivities =
             yield* projectionThreadActivityRepository.listUserInputLifecycleByThreadId({
@@ -1955,7 +1951,7 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "turn.diff.updated") {
-        const turnId = toTurnId(event.turnId);
+        const turnId = event.turnId;
         const checkpointContext = turnId
           ? yield* projectionSnapshotQuery
               .getThreadCheckpointContext(thread.id)

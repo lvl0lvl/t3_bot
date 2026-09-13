@@ -73,6 +73,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -844,6 +845,12 @@ function asRuntimeRequestId(value: ApprovalRequestId): RuntimeRequestId {
   return RuntimeRequestId.make(value);
 }
 
+// A persisted resume cursor is a row the adapter wrote and an operator can
+// edit. Its threadId feeds a trace annotation only, and every other field
+// here is dropped when malformed; a refused thread id ("" or whitespace) is
+// dropped the same way instead of throwing in `.make` while the session starts.
+const decodeCursorThreadId = Schema.decodeUnknownOption(ThreadId);
+
 function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undefined {
   if (!resumeCursor || typeof resumeCursor !== "object") {
     return undefined;
@@ -858,7 +865,9 @@ function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undef
 
   const threadIdCandidate = typeof cursor.threadId === "string" ? cursor.threadId : undefined;
   const threadId =
-    threadIdCandidate && !isSyntheticClaudeThreadId(threadIdCandidate)
+    threadIdCandidate !== undefined &&
+    !isSyntheticClaudeThreadId(threadIdCandidate) &&
+    Option.isSome(decodeCursorThreadId(threadIdCandidate))
       ? ThreadId.make(threadIdCandidate)
       : undefined;
   const resumeCandidate =
