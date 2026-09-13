@@ -97,7 +97,9 @@ describe("makeClientDispatch", () => {
           streamReads += 1;
           return Stream.empty;
         },
-        latestSequence: Effect.succeed(0),
+        // Not the documented default `0`: a hand-off that returns
+        // `Effect.succeed(0)` instead of the engine's member reads the same.
+        latestSequence: Effect.succeed(7),
       };
       const handed = withClientDispatch(engine, makeClientDispatch(engine));
       yield* handed.dispatch(command);
@@ -107,7 +109,7 @@ describe("makeClientDispatch", () => {
       void handed.streamDomainEvents;
       void handed.streamDomainEvents;
       expect(streamReads).toBe(2);
-      expect(yield* handed.latestSequence).toBe(0);
+      expect(yield* handed.latestSequence).toBe(7);
     }),
   );
 });
