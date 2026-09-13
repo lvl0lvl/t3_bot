@@ -69,7 +69,7 @@ import type { OrchestrationDispatchError } from "../Errors.ts";
 import type { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 
 /** The one id both members carry. */
-export const COLLIDING_MEMBER_ID = HUMAN_OPERATOR_MEMBER_ID;
+const COLLIDING_MEMBER_ID = HUMAN_OPERATOR_MEMBER_ID;
 
 export const COLLIDING_CHANNEL_ID = ChannelId.make("channel-collide");
 export const COLLIDING_CHANNEL_NAME = "collide";
@@ -77,7 +77,7 @@ export const COLLIDING_CHANNEL_NAME = "collide";
 /** The thread that shares the operator's id. */
 export const COLLIDING_THREAD_ID = ThreadId.make(COLLIDING_MEMBER_ID);
 
-export const COLLIDING_HUMAN_HANDLE = ChannelMemberHandle.make("walt");
+const COLLIDING_HUMAN_HANDLE = ChannelMemberHandle.make("walt");
 export const COLLIDING_THREAD_HANDLE = ChannelMemberHandle.make("twin");
 
 /**
@@ -115,7 +115,10 @@ export const COLLIDING_THREAD_ISSUER = {
  * contract types as `ChannelMemberRefPayload` and says the nominal ref must
  * not occupy. Same two fields as the issuer; the name says where it goes.
  */
-export const COLLIDING_THREAD_PAYLOAD: ChannelMemberRefPayload = COLLIDING_THREAD_ISSUER;
+export const COLLIDING_THREAD_PAYLOAD: ChannelMemberRefPayload = {
+  memberKind: "thread",
+  memberId: COLLIDING_MEMBER_ID,
+};
 
 export const COLLIDING_HUMAN_MEMBER: ChannelMember = {
   handle: COLLIDING_HUMAN_HANDLE,
@@ -164,13 +167,6 @@ export const collidingMembers = (input: {
   };
   return input.first === "human" ? [human, thread] : [thread, human];
 };
-
-/** This module's own handles, human first: the roster `seedCollidingRoster` seats. */
-export const COLLIDING_MEMBERS: ReadonlyArray<ChannelMember> = collidingMembers({
-  humanHandle: COLLIDING_HUMAN_HANDLE,
-  threadHandle: COLLIDING_THREAD_HANDLE,
-  first: "human",
-});
 
 /**
  * A read model holding the colliding roster, with the twin thread present.
