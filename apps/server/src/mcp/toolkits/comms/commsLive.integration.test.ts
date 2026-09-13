@@ -1471,13 +1471,15 @@ describe("the comms toolkit on the live gateway", () => {
         const gateway = yield* ChannelGateway;
 
         // The seam used to take a bare string and `ChannelId.make` it, and a
-        // malformed one threw while `getPost` was being CALLED - before any
-        // Effect existed, past every `catchTags` the caller had piped (#13's
-        // `comms_reply` on "a:b"). It takes the brand now, so the call below
-        // does not compile: THAT is the pin. Widening the parameter back to
-        // `string` makes this directive unused and `tsc` reds it (TS2578);
-        // the runtime suite cannot see the widening, and says so here rather
-        // than pretending to.
+        // malformed one would have thrown while `getPost` was being CALLED -
+        // before any Effect existed, past every `catchTags` the caller had
+        // piped. #13's `comms_reply` on "a:b" hit the same shape one argument
+        // over - `ChannelPostId.make` on the parent id; the channel-id `.make`
+        // beside it had the same shape and no incident yet. It takes the brand
+        // now, so the call below does not compile: THAT is the pin. Widening
+        // the parameter back to `string` makes this directive unused and `tsc`
+        // reds it (TS2578); the runtime suite cannot see the widening, and
+        // says so here rather than pretending to.
         const raw: string = "not a channel id";
         // @ts-expect-error a bare string is not a ChannelId; decode at the door
         const post = () => gateway.getPost(raw, "post-1");
