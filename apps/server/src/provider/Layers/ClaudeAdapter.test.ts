@@ -30,11 +30,14 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as Tracer from "effect/Tracer";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -6104,15 +6107,41 @@ describe("ClaudeAdapterLive", () => {
     // a trace annotation; "" and "  " are the two values ThreadId.make
     // treats differently ("" throws inside startSession, "  " is admitted).
     const harness = makeHarness();
+    const spans: Array<Tracer.NativeSpan> = [];
+    const tracer = Tracer.make({
+      span: (options) => {
+        const span = new Tracer.NativeSpan(options);
+        spans.push(span);
+        return span;
+      },
+    });
+    const dropLogs: Array<Record<string, unknown>> = [];
+    const logger = Logger.make(({ message }) => {
+      if (Array.isArray(message) && message[0] === "claude.resume.cursor_thread_id_dropped") {
+        dropLogs.push(message[1] as Record<string, unknown>);
+      }
+    });
+    const lastStartSessionThreadIdAttribute = () =>
+      spans
+        .filter((span) => span.name === "startSession")
+        .at(-1)
+        ?.attributes.get("claude.resume.thread_id");
+
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      for (const refused of ["", "  "]) {
+      const cursors = [
+        { threadId: "  ", dropped: true },
+        { threadId: "", dropped: true },
+        { threadId: "resume-thread-1", dropped: false },
+      ];
+      for (const { threadId, dropped } of cursors) {
+        const dropsBefore = dropLogs.length;
         const session = yield* adapter.startSession({
           threadId: RESUME_THREAD_ID,
           provider: ProviderDriverKind.make("claudeAgent"),
           resumeCursor: {
-            threadId: refused,
+            threadId,
             resume: "550e8400-e29b-41d4-a716-446655440000",
           },
           runtimeMode: "full-access",
@@ -6121,11 +6150,23 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(session.threadId, RESUME_THREAD_ID);
         const createInput = harness.getLastCreateQueryInput();
         assert.equal(createInput?.options.resume, "550e8400-e29b-41d4-a716-446655440000");
+        assert.equal(lastStartSessionThreadIdAttribute(), dropped ? "" : threadId);
+        assert.equal(dropLogs.length, dropped ? dropsBefore + 1 : dropsBefore);
+        if (dropped) {
+          assert.equal(dropLogs.at(-1)?.cursorThreadIdLength, threadId.length);
+        }
         yield* adapter.stopSession(RESUME_THREAD_ID);
       }
     }).pipe(
+      Effect.withTracer(tracer),
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
+      Effect.provide(
+        Layer.mergeAll(
+          harness.layer,
+          Logger.layer([logger], { mergeWithExisting: false }),
+          Layer.succeed(References.MinimumLogLevel, "Debug"),
+        ),
+      ),
     );
   });
 
