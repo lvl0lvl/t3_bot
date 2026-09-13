@@ -6257,6 +6257,39 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           options: { issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID } },
         },
       ]);
+
+      // The same import from a socket that carries a surface. The bare socket
+      // above cannot tell the connection's bound engine from one bound without
+      // its origin (`withClientDispatch(engine, makeClientDispatch(engine))`):
+      // both stamp `{ issuer }` alone. Nothing here records an import, so the
+      // second connection imports the same transcript again.
+      const surfacedWsUrl = yield* getWsServerUrl("/ws?clientSurface=web&clientAppVersion=1.2.3");
+      const surfacedResult = yield* Effect.scoped(
+        withWsRpcClient(surfacedWsUrl, (client) =>
+          Effect.gen(function* () {
+            yield* client[WS_METHODS.agentSessionsScan]({});
+            return yield* client[WS_METHODS.agentSessionsImport]({ projectId });
+          }),
+        ),
+      );
+
+      assert.deepEqual(surfacedResult, { importedCount: 1, skippedCount: 0 });
+      assert.deepStrictEqual(dispatched.slice(2), [
+        {
+          type: "thread.create",
+          options: {
+            origin: { surface: "web", appVersion: "1.2.3" },
+            issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+          },
+        },
+        {
+          type: "thread.history.import",
+          options: {
+            origin: { surface: "web", appVersion: "1.2.3" },
+            issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+          },
+        },
+      ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
