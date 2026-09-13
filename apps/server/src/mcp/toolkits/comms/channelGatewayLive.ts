@@ -287,7 +287,7 @@ const make = Effect.gen(function* () {
       // did or an operator fixes by retrying, and it must not arrive as one of
       // the seam's typed refusals.
       // DECODED, NOT CONSTRUCTED. `.make` throws on an id the brand refuses,
-      // and this function declares five typed failures - so a direct caller
+      // and this function declares four typed failures - so a direct caller
       // writing an exhaustive `catchTags` would look correct and still take a
       // raw schema Die carrying a serialised AST. The toolkit happens not to
       // reach it, because `comms_reply` passes the postId the projection
