@@ -182,7 +182,7 @@ export const collidingReadModel = (input: {
   readonly channelName?: string;
   readonly humanHandle?: ChannelMemberHandle;
   readonly threadHandle?: ChannelMemberHandle;
-  readonly first?: "human" | "thread";
+  readonly first: "human" | "thread";
   readonly extra?: {
     readonly threads?: OrchestrationReadModel["threads"];
     readonly channels?: OrchestrationReadModel["channels"];
@@ -204,7 +204,7 @@ export const collidingReadModel = (input: {
       members: collidingMembers({
         humanHandle: input.humanHandle ?? COLLIDING_HUMAN_HANDLE,
         threadHandle: input.threadHandle ?? COLLIDING_THREAD_HANDLE,
-        first: input.first ?? "human",
+        first: input.first,
       }),
       archivedAt: null,
       createdAt: input.now,
