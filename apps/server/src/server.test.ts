@@ -2272,6 +2272,52 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("issues an HTTP command with no issuer invariant as the operator, with no origin", () =>
+    Effect.gen(function* () {
+      // THE HTTP TWIN of the socket's unconditional-stamp test, over the WHOLE
+      // options object. The test above reads `options?.issuer` off a channel
+      // command, so two mutants of this door survived it: routing every
+      // non-`channel.*` command to `orchestrationEngine.dispatch(command)`
+      // bare (the stamp keyed on the command someone thought of), and binding
+      // `clientDispatch(orchestrationEngine, { surface: "web" })` (an origin
+      // nothing on the request says). A command with no issuer invariant sees
+      // the first; `deepStrictEqual` on the full object sees the extra key of
+      // the second.
+      const options: Array<unknown> = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (_command, dispatchOptions) =>
+              Effect.sync(() => {
+                options.push(dispatchOptions);
+                return { sequence: 1 };
+              }),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "thread.session.stop",
+          commandId: "cmd-http-stop",
+          threadId: defaultThreadId,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      });
+
+      assert.equal(response.status, 200);
+      assert.deepStrictEqual(options, [
+        { issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID } },
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("answers a decider refusal on the HTTP door as a refusal, not an internal error", () =>
     Effect.gen(function* () {
       // MEASURED before the fix: 500 `orchestration_dispatch_failed`. One
