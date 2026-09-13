@@ -12395,6 +12395,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         _tag: "mentions-unresolved",
         handles: [ChannelMemberHandle.make("nobody")],
       });
+      // A refusal classified by tag carries nothing in `cause` that `message`
+      // and `refusal` do not; re-attaching the invariant error here puts a
+      // second copy of the sentence plus a server class name on the wire.
+      assert.equal(error.cause, undefined);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
