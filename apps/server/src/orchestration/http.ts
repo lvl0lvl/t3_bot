@@ -15,6 +15,7 @@ import { withMemberChannels } from "./channelShell.ts";
 import { cleanupFailedUploadedAttachments, normalizeDispatchCommand } from "./Normalizer.ts";
 import {
   annotateEnvironmentRequest,
+  failEnvironmentCommandRefused,
   failEnvironmentInternal,
   failEnvironmentInvalidRequest,
   failEnvironmentNotFound,
@@ -155,9 +156,38 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
               Effect.tapError(() =>
                 cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
               ),
-              Effect.catch((cause) =>
-                failEnvironmentInternal("orchestration_dispatch_failed", cause),
-              ),
+              // EVERY TAG LISTED, as on `channelPosts` above. One `Effect.catch`
+              // here answered a decider refusal - not a member, archived, a
+              // mention nobody holds - as `orchestration_dispatch_failed`, a
+              // 500, so a caller refused for a stated reason was told the
+              // server broke (`t3_bot-nqf`). The two rejections are the
+              // caller's situation; the rest are the server's. A new member of
+              // `OrchestrationDispatchError` is a type error here, not a 500.
+              Effect.catchTags({
+                OrchestrationCommandInvariantError: (error) =>
+                  failEnvironmentCommandRefused({
+                    commandType: error.commandType,
+                    message: error.message,
+                    ...(error.reason !== undefined ? { refusal: error.reason } : {}),
+                  }),
+                OrchestrationThreadSettleBlockedError: (error) =>
+                  failEnvironmentCommandRefused({
+                    commandType: normalizedCommand.type,
+                    message: error.message,
+                  }),
+                PersistenceSqlError: (cause) =>
+                  failEnvironmentInternal("orchestration_dispatch_failed", cause),
+                PersistenceDecodeError: (cause) =>
+                  failEnvironmentInternal("orchestration_dispatch_failed", cause),
+                OrchestrationCommandIdConflictError: (cause) =>
+                  failEnvironmentInternal("orchestration_dispatch_failed", cause),
+                OrchestrationCommandPreviouslyRejectedError: (cause) =>
+                  failEnvironmentInternal("orchestration_dispatch_failed", cause),
+                OrchestrationProjectorDecodeError: (cause) =>
+                  failEnvironmentInternal("orchestration_dispatch_failed", cause),
+                OrchestrationListenerCallbackError: (cause) =>
+                  failEnvironmentInternal("orchestration_dispatch_failed", cause),
+              }),
             );
         }),
       );

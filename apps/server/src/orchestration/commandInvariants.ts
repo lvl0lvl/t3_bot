@@ -3,6 +3,7 @@ import type {
   ChannelId,
   ChannelMember,
   ChannelMemberHandle,
+  CommandInvariantRefusal,
   CommandIssuer,
   OrchestrationChannel,
   OrchestrationCommand,
@@ -22,7 +23,7 @@ import {
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Effect from "effect/Effect";
 
-import { type CommandInvariantRefusal, OrchestrationCommandInvariantError } from "./Errors.ts";
+import { OrchestrationCommandInvariantError } from "./Errors.ts";
 
 // `reason` only where a caller tells refusals apart; `detail` is a log line
 // and the one thing a caller must never classify from.

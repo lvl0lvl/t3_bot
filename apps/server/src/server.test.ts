@@ -125,6 +125,7 @@ import {
 import { ChannelPostWakeRepository } from "./persistence/Services/ChannelPostWakes.ts";
 import { ProjectionTurnRepository } from "./persistence/Services/ProjectionTurns.ts";
 import {
+  OrchestrationCommandInvariantError,
   OrchestrationListenerCallbackError,
   OrchestrationThreadSettleBlockedError,
 } from "./orchestration/Errors.ts";
@@ -2263,6 +2264,159 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepStrictEqual(issuers, [
         { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
       ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("answers a decider refusal on the HTTP door as a refusal, not an internal error", () =>
+    Effect.gen(function* () {
+      // MEASURED before the fix: 500 `orchestration_dispatch_failed`. One
+      // `Effect.catch` folded every typed failure into the internal error, so
+      // a caller refused for a reason the decider states precisely - not a
+      // member, archived, a mention nobody holds - was told the server broke
+      // (`t3_bot-nqf`). The socket door forwarded the same input as the
+      // refusal's own message; the two doors disagreed about one input.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.fail(
+                new OrchestrationCommandInvariantError({
+                  commandType: "channel.post.create",
+                  detail: "Author is not a member of channel 'channel-project'.",
+                  reason: { _tag: "author-not-member" },
+                }),
+              ),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "channel.post.create",
+          commandId: "cmd-http-refused",
+          channelId: "channel-project",
+          postId: "post-http-refused",
+          body: "posted by a non-member",
+          mentions: [],
+          parentPostId: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      });
+      const body = yield* responseJsonEffect<{
+        readonly _tag: string;
+        readonly code: string;
+        readonly commandType: string;
+        readonly refusal: unknown;
+        readonly message: string;
+        readonly traceId: string;
+      }>(response);
+
+      // The status, the tag AND the reason: pointing the invariant arm back at
+      // `failEnvironmentInternal` reds the first two; dropping `refusal` from
+      // the helper reds the third while the status stays 409.
+      assert.equal(response.status, 409);
+      assert.equal(body._tag, "EnvironmentCommandRefusedError");
+      assert.equal(body.code, "command_refused");
+      assert.equal(body.commandType, "channel.post.create");
+      assert.deepStrictEqual(body.refusal, { _tag: "author-not-member" });
+      assert.equal(
+        body.message,
+        "Orchestration command invariant failed (channel.post.create): Author is not a member of channel 'channel-project'.",
+      );
+      assert.equal(typeof body.traceId, "string");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("answers a blocked settlement on the HTTP door as a refusal with no tag", () =>
+    Effect.gen(function* () {
+      // THE SECOND ARM. `OrchestrationThreadSettleBlockedError` is the other
+      // member of `OrchestrationCommandRejection`, and an arm of its own in the
+      // door's mapping; the invariant test above cannot see this one re-pointed
+      // at the internal error. No `refusal`: the decider gave no tag, and the
+      // prose is the friendly sentence the socket door already forwards.
+      const threadId = ThreadId.make("thread-http-settle-blocked");
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () => Effect.fail(new OrchestrationThreadSettleBlockedError({ threadId })),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "thread.settle",
+          commandId: "cmd-http-settle-blocked",
+          threadId,
+        }),
+      });
+      const body = yield* responseJsonEffect<{
+        readonly _tag: string;
+        readonly commandType: string;
+        readonly refusal?: unknown;
+        readonly message: string;
+      }>(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body._tag, "EnvironmentCommandRefusedError");
+      assert.equal(body.commandType, "thread.settle");
+      assert.equal(body.refusal, undefined);
+      assert.equal(
+        body.message,
+        "This thread still needs attention. Resolve or interrupt it first, then try again.",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("still answers a dispatch failure on the HTTP door as an internal error", () =>
+    Effect.gen(function* () {
+      // The other side of the split, so a fix that widened the refusal arm to
+      // "everything typed" would show here: a listener failure is the server's
+      // situation, and it keeps its 500 and its reason.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.fail(
+                new OrchestrationListenerCallbackError({
+                  listener: "domain-event",
+                  detail: "simulated dispatch failure",
+                }),
+              ),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "thread.settle",
+          commandId: "cmd-http-dispatch-failed",
+          threadId: "thread-http-dispatch-failed",
+        }),
+      });
+      const body = yield* responseJsonEffect<{
+        readonly _tag: string;
+        readonly reason: string;
+      }>(response);
+
+      assert.equal(response.status, 500);
+      assert.equal(body._tag, "EnvironmentInternalError");
+      assert.equal(body.reason, "orchestration_dispatch_failed");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -11865,6 +12019,56 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         error.message,
         "This thread still needs attention. Resolve or interrupt it first, then try again.",
       );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("forwards a decider refusal's tag over websocket rpc", () =>
+    Effect.gen(function* () {
+      // This door already forwarded the refusal's prose (the settle test
+      // above); what it dropped was the TAG, so a client could tell WHY only
+      // by reading English that names an internal channel id. The HTTP door
+      // answers the same input with the same tag (`t3_bot-nqf`).
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.fail(
+                new OrchestrationCommandInvariantError({
+                  commandType: "channel.post.create",
+                  detail: "Mentions did not resolve: nobody.",
+                  reason: {
+                    _tag: "mentions-unresolved",
+                    handles: [ChannelMemberHandle.make("nobody")],
+                  },
+                }),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const error = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "channel.post.create",
+            commandId: CommandId.make("cmd-ws-refused"),
+            channelId: ChannelId.make("channel-project"),
+            postId: ChannelPostId.make("post-ws-refused"),
+            body: "hello @nobody",
+            mentions: [ChannelMemberHandle.make("nobody")],
+            parentPostId: null,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }),
+        ).pipe(Effect.flip),
+      );
+
+      assert.equal(error._tag, "OrchestrationDispatchCommandError");
+      assert.equal(
+        error.message,
+        "Orchestration command invariant failed (channel.post.create): Mentions did not resolve: nobody.",
+      );
+      // The handles come back through the wire schema, not only the tag.
+      assert.deepStrictEqual(error.refusal, { _tag: "mentions-unresolved", handles: ["nobody"] });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

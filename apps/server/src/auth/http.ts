@@ -8,8 +8,10 @@ import {
   AuthRelayWriteScope,
   AuthReviewWriteScope,
   AuthTerminalOperateScope,
+  type CommandInvariantRefusal,
   EnvironmentAuthInvalidError,
   type EnvironmentAuthInvalidReason,
+  EnvironmentCommandRefusedError,
   EnvironmentHttpApi,
   EnvironmentInternalError,
   type EnvironmentInternalErrorReason,
@@ -142,6 +144,31 @@ function failEnvironmentOperationForbidden(reason: "current_session_revoke_not_a
         new EnvironmentOperationForbiddenError({
           code: "operation_forbidden",
           reason,
+          traceId,
+        }),
+      ),
+    ),
+  );
+}
+
+/**
+ * A decider refusal, answered as one. The prose is the decider's and the tag
+ * is the caller's to branch on; nothing is logged, because a refused command
+ * is the caller's situation and not an operator's (`t3_bot-nqf`).
+ */
+export function failEnvironmentCommandRefused(input: {
+  readonly commandType: string;
+  readonly message: string;
+  readonly refusal?: CommandInvariantRefusal;
+}) {
+  return currentEnvironmentTraceId.pipe(
+    Effect.flatMap((traceId) =>
+      Effect.fail(
+        new EnvironmentCommandRefusedError({
+          code: "command_refused",
+          commandType: input.commandType,
+          message: input.message,
+          ...(input.refusal !== undefined ? { refusal: input.refusal } : {}),
           traceId,
         }),
       ),

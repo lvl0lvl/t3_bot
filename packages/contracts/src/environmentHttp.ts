@@ -36,6 +36,7 @@ import {
   CHANNEL_POST_PAGE_LIMIT_MAX,
   ChannelPostReadDirection,
   ClientOrchestrationCommand,
+  CommandInvariantRefusal,
   DispatchResult,
   OrchestrationChannelPostPage,
   OrchestrationReadModel,
@@ -199,6 +200,37 @@ export class EnvironmentInternalError extends Schema.TaggedError<EnvironmentInte
 }
 
 /**
+ * THE DECIDER SAID NO, and that is not the server failing. A command an
+ * invariant refuses - the author is not a member, the channel is archived, a
+ * mention names nobody, the thread still needs attention - used to leave this
+ * door as `orchestration_dispatch_failed`, a 500, because one `Effect.catch`
+ * folded every typed failure into the internal one (`t3_bot-nqf`). A caller
+ * refused for a reason the decider states precisely was told the server broke.
+ *
+ * 409: the command conflicts with the aggregate's current state, which is what
+ * every invariant refusal is; the ones that are about authority
+ * (`author-not-member`) are still a state the caller can change, not a scope
+ * it lacks - `insufficient_scope` is the 403 here. `message` is the decider's
+ * prose, the same sentence the socket door forwards; `refusal` is the tag a
+ * caller branches on, when the decider gave one.
+ */
+export class EnvironmentCommandRefusedError extends Schema.TaggedError<EnvironmentCommandRefusedError>()(
+  "EnvironmentCommandRefusedError",
+  {
+    code: Schema.Literal("command_refused"),
+    commandType: Schema.String,
+    refusal: Schema.optional(CommandInvariantRefusal),
+    message: TrimmedNonEmptyString,
+    traceId: TrimmedNonEmptyString,
+  },
+  { httpApiStatus: 409 },
+) {
+  [HttpServerRespondable.symbol]() {
+    return HttpServerResponse.schemaJson(EnvironmentCommandRefusedError)(this, { status: 409 });
+  }
+}
+
+/**
  * `channel_not_found` covers a channel that does not exist AND one the caller is
  * not a member of, which is one answer on purpose: two would let a caller
  * enumerate the channels it cannot read by asking for each and reading which
@@ -351,6 +383,7 @@ const EnvironmentOrchestrationThreadSnapshotErrors = [
 const EnvironmentOrchestrationDispatchErrors = [
   EnvironmentRequestInvalidError,
   EnvironmentScopeRequiredError,
+  EnvironmentCommandRefusedError,
   EnvironmentInternalError,
 ] as const;
 /**

@@ -99,6 +99,7 @@ import {
   cleanupFailedUploadedAttachments,
   normalizeDispatchCommand,
 } from "./orchestration/Normalizer.ts";
+import { OrchestrationCommandInvariantError } from "./orchestration/Errors.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
 import { readChannelPostPage } from "./orchestration/channelPosts.ts";
@@ -178,6 +179,7 @@ import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
+const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvariantError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
@@ -755,13 +757,23 @@ const makeWsRpcLayer = (
           authorizeEffect(requiredScopeForRpcMethod(method), effect),
           traceAttributes,
         );
+      // A decider refusal keeps its tag on the way out, beside the prose it
+      // already carried; the HTTP door answers the same input with the same
+      // tag on `EnvironmentCommandRefusedError` (`t3_bot-nqf`). Every other
+      // cause is a failure and folds as before.
       const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
         isOrchestrationDispatchCommandError(cause)
           ? cause
-          : new OrchestrationDispatchCommandError({
-              message: cause instanceof Error ? cause.message : fallbackMessage,
-              cause,
-            });
+          : isOrchestrationCommandInvariantError(cause) && cause.reason !== undefined
+            ? new OrchestrationDispatchCommandError({
+                message: cause.message,
+                refusal: cause.reason,
+                cause,
+              })
+            : new OrchestrationDispatchCommandError({
+                message: cause instanceof Error ? cause.message : fallbackMessage,
+                cause,
+              });
       const randomUUID = crypto.randomUUIDv4.pipe(
         Effect.mapError((cause) =>
           toDispatchCommandError(cause, "Failed to generate orchestration command identifier."),
