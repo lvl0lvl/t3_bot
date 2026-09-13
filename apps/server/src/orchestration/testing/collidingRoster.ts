@@ -58,6 +58,7 @@ import {
   refFromThreadCredential,
   type ChannelMember,
   type ChannelMemberRef,
+  type ChannelMemberRefPayload,
   type CommandIssuer,
   type OrchestrationReadModel,
   type ProjectId,
@@ -107,6 +108,14 @@ export const COLLIDING_THREAD_ISSUER = {
   memberKind: "thread",
   memberId: COLLIDING_MEMBER_ID,
 } as const satisfies CommandIssuer;
+
+/**
+ * The thread half in the shape an EVENT PAYLOAD holds
+ * (`ChannelMemberRemovedPayload.removedMember`): the plain struct, which the
+ * contract types as `ChannelMemberRefPayload` and says the nominal ref must
+ * not occupy. Same two fields as the issuer; the name says where it goes.
+ */
+export const COLLIDING_THREAD_PAYLOAD: ChannelMemberRefPayload = COLLIDING_THREAD_ISSUER;
 
 export const COLLIDING_HUMAN_MEMBER: ChannelMember = {
   handle: COLLIDING_HUMAN_HANDLE,

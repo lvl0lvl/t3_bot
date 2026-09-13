@@ -120,7 +120,7 @@ import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngi
 import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
 import {
   COLLIDING_THREAD_MEMBER,
-  COLLIDING_THREAD_REF,
+  COLLIDING_THREAD_PAYLOAD,
 } from "./orchestration/testing/collidingRoster.ts";
 import { ChannelPostWakeRepository } from "./persistence/Services/ChannelPostWakes.ts";
 import { ProjectionTurnRepository } from "./persistence/Services/ProjectionTurns.ts";
@@ -8779,9 +8779,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
    * the operator's own, so it differs from the connection member in
    * `memberKind` ALONE. Against every other fixture, where the two differ in
    * both fields, a comparison that ignored `memberKind` would pass — which is
-   * why the value comes from the one module that exists to supply that input,
-   * made by the contract's constructor, rather than being spelled here as the
-   * fourth home-grown copy.
+   * why the value comes from the one module that owns the collision, in the
+   * payload shape production writes (`ChannelMemberRefPayload`, the plain
+   * struct), rather than being spelled here as another home-grown copy.
    */
   const foreignRemovalEvent = {
     sequence: 2,
@@ -8797,7 +8797,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     payload: {
       channelId: ChannelId.make("channel-project"),
       handle: ChannelMemberHandle.make("pm"),
-      removedMember: COLLIDING_THREAD_REF,
+      removedMember: COLLIDING_THREAD_PAYLOAD,
       updatedAt: "2026-01-01T00:00:01.000Z",
     },
   } as unknown as OrchestrationEvent;
