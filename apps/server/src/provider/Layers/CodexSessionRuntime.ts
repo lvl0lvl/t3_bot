@@ -867,7 +867,7 @@ export function makeMemoryConsolidationNotificationFilter(): (
 }
 
 /**
- * THE APP-SERVER'S IDS ARE OUTSIDE INPUT, decoded once here and never `.make`d
+ * THE APP-SERVER'S IDS ARE OUTSIDE INPUT, checked once here and never `.make`d
  * on the way in. The generated protocol types every id as `Schema.String`;
  * `TurnId` and `ProviderItemId` refuse an empty or whitespace value, and a
  * `.make` on one throws inside the handler that runs it. Measured
@@ -875,9 +875,10 @@ export function makeMemoryConsolidationNotificationFilter(): (
  * succeed and then nothing - the throw ended the client's reader loop and the
  * runtime's own notification consumer, so no later notification arrived, no
  * error was logged, and the turn never closed. Every handler below runs only
- * after this has admitted the payload's ids; the `.make` calls that remain in
- * them re-brand a value this already decoded, the way a decoded wire command's
- * ids are re-branded downstream.
+ * after this has checked the payload's ids with the brand's decoder and
+ * dropped the message on refusal; the handlers then brand the RAW wire
+ * string, not the decoded value, so a padded id (" turn-1 ") is admitted
+ * here and carried untrimmed, by design.
  *
  * Read from the four field shapes the protocol uses (`turnId`, `itemId`,
  * `turn.id`, `item.id`) rather than from a per-method table, so a method that
