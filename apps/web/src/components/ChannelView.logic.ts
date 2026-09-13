@@ -194,10 +194,12 @@ export function mergeChannelPosts<
  * `OrchestrationChannelPostWakeOutcome` docstring carries the two greps). The word
  * here says the turn is off the record, and does not call the wake a failure.
  *
- * PAST TENSE, NEVER A CONTROL. The turn id a wake carries is provider-shaped: on
- * Claude a steered post has no turn of its own and reports the FOLDED turn's
- * outcome; on Codex the queued id is neither the active turn nor the one a cancel
- * acts on. `running` is the one outcome that is not yet a fact, so it is not
+ * PAST TENSE, NEVER A CONTROL. The turn id a wake carries is provider-shaped —
+ * which turn it names differs per adapter, and on neither is it one a cancel would
+ * act on; `OrchestrationChannelPostWake`'s docstring in `@t3tools/contracts`
+ * (`packages/contracts/src/orchestration.ts`) states the mechanism with adapter
+ * citations. The id is a fact about the past; nothing here is a control.
+ * `running` is the one outcome that is not yet a fact, so it is not
  * rendered: the wake is the past-tense fact, and the outcome becomes one when the
  * turn settles. The pane re-reads its page only when a NEW post lands in the
  * channel (`ChannelView.tsx`'s `latestPostAt` effect) or on reopen, so a settled
