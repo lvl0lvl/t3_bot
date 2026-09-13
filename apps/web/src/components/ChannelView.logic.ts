@@ -4,6 +4,7 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import type { ChannelSupport, EnvironmentChannelShell } from "@t3tools/client-runtime/state/shell";
+import type { OrchestrationChannelPostWake } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 /**
@@ -175,4 +176,52 @@ export function mergeChannelPosts<
   // channel. A tie-break here would be dead code hiding the fact that the old
   // comparator needed one.
   return [...byId.values()].sort((left, right) => left.sequence - right.sequence);
+}
+
+/**
+ * What a post's `wakes` say, as lines a reader can scan: which thread, and what
+ * became of the turn — five words, one per wire outcome.
+ *
+ * ABSENT IS NULL, NOT AN EMPTY LIST, and the pane must render NOTHING for it. Most
+ * posts wake nobody, and the wire spells that as a missing field (an empty array is
+ * refused at the schema), so the rule most likely to rot is "a post that woke
+ * nobody looks exactly as it did before this existed". Returning `[]` would tempt a
+ * caller to render an empty container, which is a layout change for every post.
+ *
+ * "UNKNOWN" IS A WARNING, NOT AN AGE. Turn rows persist — the projection has no age
+ * sweep — so a link whose turn row is gone means the thread was reverted past that
+ * turn or its id was recreated, both facts a reader wants (measured; the contract's
+ * `OrchestrationChannelPostWakeOutcome` docstring carries the two greps). The word
+ * here says the turn is off the record, and does not call the wake a failure.
+ *
+ * PAST TENSE, NEVER A CONTROL. The turn id a wake carries is provider-shaped: on
+ * Claude a steered post has no turn of its own and reports the FOLDED turn's
+ * outcome; on Codex the queued id is neither the active turn nor the one a cancel
+ * acts on. So "running" here can describe a turn an operator is not looking at,
+ * and an affordance that looks live would imply a cancellation the runtime ignores.
+ * The lines are statements of what happened, and nothing on them is clickable.
+ */
+export type ChannelPostWakeLine = {
+  readonly threadId: OrchestrationChannelPostWake["threadId"];
+  readonly outcome: string;
+};
+
+const WAKE_OUTCOME_WORDS: Record<OrchestrationChannelPostWake["outcome"], string> = {
+  running: "running",
+  completed: "completed",
+  failed: "failed",
+  cancelled: "cancelled",
+  unknown: "turn no longer on record",
+};
+
+export function describeChannelPostWakes(
+  wakes: ReadonlyArray<OrchestrationChannelPostWake> | undefined,
+): ReadonlyArray<ChannelPostWakeLine> | null {
+  if (wakes === undefined) {
+    return null;
+  }
+  return wakes.map((wake) => ({
+    threadId: wake.threadId,
+    outcome: WAKE_OUTCOME_WORDS[wake.outcome],
+  }));
 }

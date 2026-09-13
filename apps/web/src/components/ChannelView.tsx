@@ -1,16 +1,22 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { mentionedHandles } from "@t3tools/client-runtime/channel-mentions";
 import type { EnvironmentChannelShell } from "@t3tools/client-runtime/state/shell";
-import type { ChannelId, EnvironmentId, OrchestrationChannelPost } from "@t3tools/contracts";
+import type {
+  ChannelId,
+  EnvironmentId,
+  OrchestrationChannelPost,
+  ThreadId,
+} from "@t3tools/contracts";
 import { ArchiveIcon, HashIcon, SendIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { useChannel, useChannelSupport } from "../state/entities";
+import { useChannel, useChannelSupport, useThreadShell } from "../state/entities";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import {
   canSendChannelPost,
+  describeChannelPostWakes,
   mergeChannelPosts,
   resolveChannelComposerState,
   resolveChannelViewState,
@@ -363,6 +369,7 @@ function ChannelPost({
   readonly post: OrchestrationChannelPost;
 }) {
   const settings = useEnvironmentSettings(environmentId);
+  const wakes = describeChannelPostWakes(post.wakes);
   return (
     <article className="flex flex-col gap-1">
       <div className="flex items-baseline gap-2">
@@ -388,7 +395,49 @@ function ChannelPost({
         `whitespace-pre-wrap wrap-break-word` for the same reason.
       */}
       <p className="whitespace-pre-wrap wrap-break-word text-sm text-foreground">{post.body}</p>
+      {wakes === null ? null : (
+        // ONE LINE PER WAKE, and a list rather than a sentence because the field
+        // is an array: a post mentioning three handles wakes three threads, and a
+        // sentence built for one stretches badly at three. `wrap-break-word` for
+        // the same reason as the body — a thread title is free text.
+        <ul className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+          {wakes.map((wake) => (
+            <ChannelPostWakeLine
+              key={wake.threadId}
+              environmentId={environmentId}
+              threadId={wake.threadId}
+              outcome={wake.outcome}
+            />
+          ))}
+        </ul>
+      )}
     </article>
+  );
+}
+
+/**
+ * "Woke <thread> · <outcome>", as text. The thread is named by its shell title;
+ * a thread this client does not hold a shell for is named by its id, which is
+ * still a fact and is the only one available.
+ *
+ * NOT A LINK. The turn id behind this line is provider-shaped (see
+ * `describeChannelPostWakes`), so a control here would act on a turn the reader
+ * is not looking at. A reader who wants the thread has the sidebar.
+ */
+function ChannelPostWakeLine({
+  environmentId,
+  threadId,
+  outcome,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly outcome: string;
+}) {
+  const shell = useThreadShell({ environmentId, threadId });
+  return (
+    <li className="wrap-break-word">
+      Woke <span className="text-foreground">{shell?.title ?? threadId}</span> · {outcome}
+    </li>
   );
 }
 
