@@ -104,8 +104,9 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
       const refusal = refusals[0]!;
       assert.equal(refusal.kind, "error");
       assert.equal(refusal.provider, "codex");
-      assert.include(refusal.message, "codex sent turn/started");
+      assert.include(refusal.message, "Codex sent turn/started");
       assert.include(refusal.message, 'turn.id ""');
+      assert.include(refusal.message, "which is not an id; the message was dropped.");
       // No event was built from the refused id, and the later valid
       // notification arrived — the consumer outlived the bad one.
       assert.isFalse(
@@ -128,7 +129,7 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
         notifications: [
           {
             method: "item/agentMessage/delta",
-            params: { threadId: ROOT, turnId: "turn-live", itemId: "", delta: "hello" },
+            params: { threadId: ROOT, turnId: " ", itemId: "", delta: "hello" },
           },
           {
             method: "turn/completed",
@@ -158,8 +159,11 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
       const refusals = events.filter((event) => event.method === "codex/malformed-id");
       assert.equal(refusals.length, 1, events.map(summarize).join("\n"));
       const refusal = refusals[0]!;
-      assert.include(refusal.message, "codex sent item/agentMessage/delta");
-      assert.include(refusal.message, 'itemId ""');
+      assert.include(refusal.message, "Codex sent item/agentMessage/delta");
+      assert.include(
+        refusal.message,
+        'turnId " ", itemId "", which are not ids; the message was dropped.',
+      );
       assert.isFalse(events.some((event) => event.method === "item/agentMessage/delta"));
       assert.equal(events[events.length - 1]?.method, "turn/completed");
 
@@ -217,8 +221,12 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
         const refusals = events.filter((event) => event.method === "codex/malformed-id");
         assert.equal(refusals.length, 1, events.map(summarize).join("\n"));
         const refusal = refusals[0]!;
-        assert.include(refusal.message, "codex sent item/commandExecution/requestApproval");
+        assert.include(refusal.message, "Codex sent item/commandExecution/requestApproval");
         assert.include(refusal.message, 'turnId ""');
+        assert.include(
+          refusal.message,
+          "which is not an id; the request was answered with an error.",
+        );
         // No approval was raised for the operator, and the app-server got an
         // error response (the peer records what it was answered with).
         assert.isFalse(events.some((event) => event.kind === "request"));

@@ -1399,14 +1399,20 @@ export const makeCodexSessionRuntime = (
     // the same way and the pump keeps running, so the NEXT unforeseen defect
     // is visible too rather than a silent stall. `dispatchNotification` in the
     // client catches typed failures only; a defect there ends the stdin reader.
-    const reportRefusedIds = (method: string, refused: ReadonlyArray<RefusedId>) =>
+    const reportRefusedIds = (
+      method: string,
+      refused: ReadonlyArray<RefusedId>,
+      outcome: "the message was dropped" | "the request was answered with an error",
+    ) =>
       emitEvent({
         kind: "error",
         threadId: options.threadId,
         method: "codex/malformed-id",
-        message: `codex sent ${method} with ${refused
+        message: `Codex sent ${method} with ${refused
           .map((entry) => `${entry.field} ${entry.preview}`)
-          .join(", ")}, which is not an id; the message was dropped`,
+          .join(
+            ", ",
+          )}, which ${refused.length === 1 ? "is not an id" : "are not ids"}; ${outcome}.`,
         payload: { method, refused },
       });
     const reportHandlerFailure = (method: string, cause: Cause.Cause<unknown>) =>
@@ -1429,7 +1435,7 @@ export const makeCodexSessionRuntime = (
       client.handleServerRequest(method, (payload) => {
         const refused = refusedIds(payload);
         if (refused.length > 0) {
-          return reportRefusedIds(method, refused).pipe(
+          return reportRefusedIds(method, refused, "the request was answered with an error").pipe(
             Effect.flatMap(() =>
               Effect.fail(
                 CodexErrors.CodexAppServerRequestError.invalidParams(
@@ -2363,7 +2369,7 @@ export const makeCodexSessionRuntime = (
       client.handleServerNotification(method, (payload) => {
         const refused = refusedIds(payload);
         if (refused.length > 0) {
-          return reportRefusedIds(method, refused);
+          return reportRefusedIds(method, refused, "the message was dropped");
         }
         const direct = directNotificationHandlers.get(method);
         // The handler is invoked only once the ids are admitted: an eager
