@@ -9231,11 +9231,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // appears here now. The input that separates them is a member whose id
       // MATCHES and whose kind does not.
       //
-      // It is the same impersonation route `requireChannelMemberShape` refuses
-      // at the decider, and the same reason the mention-wake reactor keeps its
-      // own kind check: that invariant runs on COMMANDS, and this is a read path
-      // replaying EVENTS, so a row written before the invariant reaches here
-      // untouched.
+      // The row is reachable through the aggregate by ordering — seat the human
+      // while no thread carries the id, then create the thread
+      // (`orchestration/testing/collidingRoster.ts` spells the commands) — and a
+      // row written before `requireChannelMemberShape` existed reaches this read
+      // path by replay too. Either way the roster this stream is handed can hold
+      // it, which is why the mention-wake reactor keeps its own kind check and
+      // this stream keeps this one.
       const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
 
       yield* buildAppUnderTest({
