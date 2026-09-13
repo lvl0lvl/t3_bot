@@ -6403,6 +6403,142 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect(
+    "fails readThread and rollbackThread typed when an assistant message id is refused",
+    () =>
+      Effect.gen(function* () {
+        // The SDK types the id as string; "" and " " are the two values the
+        // brand's decoder refuses that a `.make` treats differently ("" throws
+        // a Die inside the reader, " " is admitted as a garbage turn id). The
+        // 1 MiB id is the one the error would echo whole into a persisted
+        // activity row.
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-refused-message-id");
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+
+        // The non-string rows are what a broken server can send past the
+        // SDK's `string`; the id-less row needs a boundary present, or the
+        // raw boundary compare would end the snapshot before the gate.
+        const rows: ReadonlyArray<readonly [unknown, string, string | undefined]> = [
+          ["", '""', undefined],
+          [" ", '" "', undefined],
+          [" ".repeat(1024 * 1024), `"${" ".repeat(64)}"… (1048576 chars)`, undefined],
+          [null, "null", undefined],
+          [42, "42", undefined],
+          [{ a: 1 }, '{"a":1}', undefined],
+          [{ a: "x".repeat(1024) }, `${'{"a":"'}${"x".repeat(58)}… (1032 chars)`, undefined],
+          [undefined, "undefined", "never-matches"],
+        ];
+        for (const [refused, quoted, boundary] of rows) {
+          runtimeMock.state.messages = [
+            { info: { id: "user-1", role: "user" }, parts: [] },
+            {
+              info: { id: "assistant-1", role: "assistant" },
+              parts: [{ id: "part-1", type: "text", text: "first answer" }],
+            },
+            { info: { id: refused as string, role: "assistant" }, parts: [] },
+          ];
+          runtimeMock.state.revertMessageID = boundary;
+          runtimeMock.state.revertCalls.length = 0;
+
+          for (const read of [adapter.readThread(threadId), adapter.rollbackThread(threadId, 1)]) {
+            const error = yield* read.pipe(Effect.flip);
+            NodeAssert.equal(error._tag, "ProviderAdapterRequestError");
+            if (error._tag !== "ProviderAdapterRequestError") {
+              throw new Error("Unexpected error type");
+            }
+            NodeAssert.equal(error.provider, "opencode");
+            NodeAssert.equal(error.method, "session.messages");
+            // Length first: an equal over a 1 MiB detail spends minutes in
+            // the assertion's own diff before it reports.
+            NodeAssert.ok(error.detail.length < 512, `detail is ${error.detail.length} chars`);
+            NodeAssert.equal(
+              error.detail,
+              `OpenCode returned an assistant message whose id ${quoted} is not a turn id.`,
+            );
+          }
+          NodeAssert.deepEqual(runtimeMock.state.revertCalls, []);
+        }
+
+        runtimeMock.state.messages[2] = {
+          info: { id: "assistant-2", role: "assistant" },
+          parts: [],
+        };
+        NodeAssert.deepEqual(
+          (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
+          ["assistant-1", "assistant-2"],
+        );
+
+        // The admit side. A user message's id is never branded, so a refused
+        // one beside well-formed assistants is not the reader's business.
+        runtimeMock.state.messages[0] = { info: { id: "", role: "user" }, parts: [] };
+        NodeAssert.deepEqual(
+          (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
+          ["assistant-1", "assistant-2"],
+        );
+        // The revert boundary is compared raw and reached before the gate: a
+        // refused id AT the boundary ends the read with the turns before it.
+        runtimeMock.state.messages = [
+          { info: { id: "user-1", role: "user" }, parts: [] },
+          {
+            info: { id: "assistant-1", role: "assistant" },
+            parts: [{ id: "part-1", type: "text", text: "first answer" }],
+          },
+          { info: { id: " ", role: "assistant" }, parts: [] },
+        ];
+        runtimeMock.state.revertMessageID = " ";
+        NodeAssert.deepEqual(
+          (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
+          ["assistant-1"],
+        );
+      }),
+  );
+
+  it.effect("carries a padded assistant id untrimmed and echoes it to session.revert", () =>
+    Effect.gen(function* () {
+      // The brand's decoder trims. The id the adapter sends back to
+      // `session.revert` must be the one OpenCode minted, byte for byte: a
+      // trimmed "assistant-2" names no message, and the revert is a no-op
+      // that reports Success.
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-padded-message-id");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      runtimeMock.state.messages = [
+        { info: { id: "user-1", role: "user" }, parts: [] },
+        {
+          info: { id: "assistant-1", role: "assistant" },
+          parts: [{ id: "part-1", type: "text", text: "first answer" }],
+        },
+        { info: { id: "user-2", role: "user" }, parts: [] },
+        {
+          info: { id: " assistant-2 ", role: "assistant" },
+          parts: [{ id: "part-2", type: "text", text: "second answer" }],
+        },
+      ];
+
+      NodeAssert.deepEqual(
+        (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
+        ["assistant-1", " assistant-2 "],
+      );
+      const snapshot = yield* adapter.rollbackThread(threadId, 1);
+      NodeAssert.equal(runtimeMock.state.revertCalls.length, 1);
+      NodeAssert.equal(runtimeMock.state.revertCalls[0]?.messageID, " assistant-2 ");
+      NodeAssert.deepEqual(
+        snapshot.turns.map((turn) => turn.id),
+        ["assistant-1"],
+      );
+    }),
+  );
+
   it.effect("classifies a confirmed not-found across the shapes the SDK/runtime can produce", () =>
     Effect.sync(() => {
       // The real production shape: runOpenCodeSdk wraps the thrown Error
