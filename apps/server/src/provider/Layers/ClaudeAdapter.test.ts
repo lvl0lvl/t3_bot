@@ -6135,27 +6135,34 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
+      // One resume uuid per row: `getLastCreateQueryInput` is a last-write
+      // slot, so a shared uuid would let a row that never reached
+      // `createQuery` read the previous row's input.
       const cursors = [
-        { threadId: "  ", dropped: true },
-        { threadId: "", dropped: true },
-        { threadId: "claude-thread-abc", dropped: true },
-        { threadId: "resume-thread-1", dropped: false },
+        { threadId: "  ", resume: "550e8400-e29b-41d4-a716-446655440000", dropped: true },
+        { threadId: "", resume: "6ba7b810-9dad-11d1-80b4-00c04fd430c8", dropped: true },
+        {
+          threadId: "claude-thread-abc",
+          resume: "6ba7b811-9dad-11d1-80b4-00c04fd430c8",
+          dropped: true,
+        },
+        {
+          threadId: "resume-thread-1",
+          resume: "6ba7b812-9dad-11d1-80b4-00c04fd430c8",
+          dropped: false,
+        },
       ];
-      for (const { threadId, dropped } of cursors) {
+      for (const { threadId, resume, dropped } of cursors) {
         const dropsBefore = dropLogs.length;
         const session = yield* adapter.startSession({
           threadId: RESUME_THREAD_ID,
           provider: ProviderDriverKind.make("claudeAgent"),
-          resumeCursor: {
-            threadId,
-            resume: "550e8400-e29b-41d4-a716-446655440000",
-          },
+          resumeCursor: { threadId, resume },
           runtimeMode: "full-access",
         });
 
         assert.equal(session.threadId, RESUME_THREAD_ID);
-        const createInput = harness.getLastCreateQueryInput();
-        assert.equal(createInput?.options.resume, "550e8400-e29b-41d4-a716-446655440000");
+        assert.equal(harness.getLastCreateQueryInput()?.options.resume, resume);
         assert.equal(lastStartSessionThreadIdAttribute(), dropped ? "" : threadId);
         assert.equal(dropLogs.length, dropped ? dropsBefore + 1 : dropsBefore);
         if (dropped) {
