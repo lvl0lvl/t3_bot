@@ -111,11 +111,14 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
     // the strip's subject is the comment a sync maintainer will write.
     const code = source.replace(/^\s*(?:\/\/|(?!.*\*\/[ \t]*\S)(?:\/\*|\*)).*$/gm, "");
     assert.deepEqual(code.match(/TurnId[?!]?\.make\([^)]*\)/g), [
+      // readRouteFields, over a notification refusedIds admitted
       "TurnId.make(notification.params.turn.id)",
       "TurnId.make(notification.params.turnId)",
       "TurnId.make(notification.params.turnId)",
       "TurnId.make(notification.params.turnId)",
       "TurnId.make(notification.params.turnId)",
+      // handler bodies that run after refusedIds: turn/started behind
+      // handleNotification, then the four guardRequest handlers
       "TurnId.make(payload.turn.id)",
       "TurnId.make(payload.turnId)",
       "TurnId.make(payload.turnId)",
