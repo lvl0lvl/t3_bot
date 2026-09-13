@@ -868,13 +868,14 @@ export function makeMemoryConsolidationNotificationFilter(): (
 
 /**
  * THE APP-SERVER'S IDS ARE OUTSIDE INPUT, checked once here and never `.make`d
- * on the way in. The generated protocol types every id as `Schema.String`;
- * `TurnId` and `ProviderItemId` refuse an empty or whitespace value, and a
- * `.make` on one throws inside the handler that runs it. Measured
- * (`t3_bot-a50`): a `turn/started` whose `turn.id` is "" made `sendTurn`
- * succeed and then nothing - the throw ended the client's reader loop and the
- * runtime's own notification consumer, so no later notification arrived, no
- * error was logged, and the turn never closed. Every handler below runs only
+ * on the way in. The generated protocol types every id as `Schema.String`.
+ * `TurnId.make` throws on an empty string and admits whitespace; the decoder
+ * refuses both, so this door refuses the whitespace-only ids the old runtime
+ * passed through as garbage. Measured (`t3_bot-a50`): a `turn/started` whose
+ * `turn.id` is "" made `sendTurn` succeed and then nothing - the throw ended
+ * the client's reader loop and the runtime's own notification consumer, so no
+ * later notification arrived, no error was logged, and the turn never
+ * closed. Every handler below runs only
  * after this has checked the payload's ids with the brand's decoder and
  * dropped the message on refusal; the handlers then brand the RAW wire
  * string, not the decoded value, so a padded id (" turn-1 ") is admitted
