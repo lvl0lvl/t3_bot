@@ -218,17 +218,17 @@ const channelMissing = Layer.effect(
  * The real channel repository, reporting the mentioned member as a HUMAN that
  * carries a thread's id.
  *
- * This used to be built by dispatching `channel.member.add`. It cannot be any
- * more: `t3_bot-8i2` added `requireChannelMemberShape`, and the decider now
- * refuses that command outright — the setup is rejected long before the reactor
- * is reached.
+ * This used to be built by dispatching one `channel.member.add` naming an
+ * existing thread's id. That one-command form is refused since `t3_bot-8i2`
+ * added `requireChannelMemberShape`; the ROW is still reachable, by ordering —
+ * seat the human while no thread carries the id, then create the thread
+ * (`../testing/collidingRoster.ts` spells the three commands) — and a
+ * `channel.member-added` accepted before 8i2 landed replays into the
+ * projection the same way. So the reactor's `memberKind` filter is not dead
+ * code and this test is not theatre.
  *
- * The ROW is still reachable, which is why the reactor's `memberKind` filter is
- * not dead code and this test is not theatre. That invariant runs on COMMANDS;
- * projections are built from EVENTS, and a `channel.member-added` accepted
- * before 8i2 landed replays into the projection untouched. So this is the exact
- * state a database upgraded across 8i2 holds, and on that database the reactor
- * is the only thing between an impostor row and a woken thread.
+ * The projection is overridden here because this test wants the row without
+ * the engine's three dispatches, not because the engine refuses it.
  */
 const mentionedMemberAsHuman = Layer.effect(
   ProjectionChannelRepository,
@@ -965,8 +965,9 @@ describe("MentionWakeReactor", () => {
 
   it("does not wake a thread because a HUMAN member carries its id", async () => {
     const { directory, databasePath } = await makeDatabasePath();
-    // The membership the decider would refuse today, which a database written
-    // before `t3_bot-8i2` still holds. See `mentionedMemberAsHuman`.
+    // The membership the aggregate admits by ordering (`collidingRoster.ts`)
+    // and a database written before `t3_bot-8i2` holds by replay, written to
+    // the projection directly. See `mentionedMemberAsHuman`.
     const system = await makeSystem(databasePath, { channels: mentionedMemberAsHuman });
     try {
       await seedChannel(system);
