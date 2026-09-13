@@ -121,8 +121,9 @@ describe("a path git would print differently is refused", () => {
         expect(output).toContain("GuardSweepConfigError");
         expect(output).toContain("1 mutation names a path");
         // NAMES THE ROW AND THE SPELLING, because the operator has to fix the config and the
-        // only actionable thing is which row and what is wrong with it.
-        expect(output).toContain("the-row");
+        // only actionable thing is which row and what is wrong with it. The row list follows
+        // the command directly: an example path between them read as if it were the operator's.
+        expect(output).toContain('`git status --porcelain`:\n  "the-row"');
         expect(output).toContain(file);
         // THE ASSERTION THAT PINS THE ORDER. This refusal must precede the baseline; placed
         // after it the status and the tag are identical, so nothing above this line

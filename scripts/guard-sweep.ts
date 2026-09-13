@@ -1209,8 +1209,7 @@ export const guardSweepCommand = Command.make(
           detail:
             `${nonNormal.length} ${nonNormal.length === 1 ? "mutation names" : "mutations name"} a path that is ` +
             "not plain repo-relative, and this tool decides whether a row is measurable by " +
-            "looking its file up in the output of `git status --porcelain`, which prints " +
-            "`src/thing.ts`:\n  " +
+            "looking its file up in the output of `git status --porcelain`:\n  " +
             nonNormal
               .map((row) => `${JSON.stringify(row.id)}: ${JSON.stringify(row.file)}`)
               .join("\n  ") +
