@@ -6420,19 +6420,29 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           runtimeMode: "full-access",
         });
 
-        for (const [refused, quoted] of [
-          ["", '""'],
-          [" ", '" "'],
-          [" ".repeat(1024 * 1024), `"${" ".repeat(64)}"… (1048576 chars)`],
-        ] as const) {
+        // The non-string rows are what a broken server can send past the
+        // SDK's `string`; the id-less row needs a boundary present, or the
+        // raw boundary compare would end the snapshot before the gate.
+        const rows: ReadonlyArray<readonly [unknown, string, string | undefined]> = [
+          ["", '""', undefined],
+          [" ", '" "', undefined],
+          [" ".repeat(1024 * 1024), `"${" ".repeat(64)}"… (1048576 chars)`, undefined],
+          [null, "null", undefined],
+          [42, "42", undefined],
+          [{ a: 1 }, '{"a":1}', undefined],
+          [{ a: "x".repeat(1024) }, `${'{"a":"'}${"x".repeat(58)}… (1032 chars)`, undefined],
+          [undefined, "undefined", "never-matches"],
+        ];
+        for (const [refused, quoted, boundary] of rows) {
           runtimeMock.state.messages = [
             { info: { id: "user-1", role: "user" }, parts: [] },
             {
               info: { id: "assistant-1", role: "assistant" },
               parts: [{ id: "part-1", type: "text", text: "first answer" }],
             },
-            { info: { id: refused, role: "assistant" }, parts: [] },
+            { info: { id: refused as string, role: "assistant" }, parts: [] },
           ];
+          runtimeMock.state.revertMessageID = boundary;
           runtimeMock.state.revertCalls.length = 0;
 
           for (const read of [adapter.readThread(threadId), adapter.rollbackThread(threadId, 1)]) {

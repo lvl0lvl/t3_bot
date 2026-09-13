@@ -488,12 +488,21 @@ const toRequestError = (cause: OpenCodeRuntimeError): ProviderAdapterRequestErro
 const decodeMessageTurnId = Schema.decodeUnknownOption(TurnId);
 // The refused id is echoed into `detail`, which the checkpoint reactor
 // persists as an activity row per revert attempt; a 1 MiB id would be
-// copied whole into each.
+// copied whole into each. The SDK types the id as string; a null or an
+// object from a broken server is refused by the decoder too, and reading
+// `.length` off it here would be the Die this gate exists to prevent.
 const REFUSED_ID_PREVIEW_LENGTH = 64;
-const previewRefusedId = (id: string) =>
-  id.length <= REFUSED_ID_PREVIEW_LENGTH
-    ? JSON.stringify(id)
-    : `${JSON.stringify(id.slice(0, REFUSED_ID_PREVIEW_LENGTH))}… (${id.length} chars)`;
+const previewRefusedId = (id: unknown) => {
+  if (typeof id === "string") {
+    return id.length <= REFUSED_ID_PREVIEW_LENGTH
+      ? JSON.stringify(id)
+      : `${JSON.stringify(id.slice(0, REFUSED_ID_PREVIEW_LENGTH))}… (${id.length} chars)`;
+  }
+  const text = String(JSON.stringify(id) ?? id);
+  return text.length <= REFUSED_ID_PREVIEW_LENGTH
+    ? text
+    : `${text.slice(0, REFUSED_ID_PREVIEW_LENGTH)}… (${text.length} chars)`;
+};
 const admitMessageTurnId = (id: string) =>
   Option.isNone(decodeMessageTurnId(id))
     ? Effect.fail(
