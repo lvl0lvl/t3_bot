@@ -31,6 +31,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Tool } from "effect/unstable/ai";
 
@@ -55,7 +56,12 @@ import {
 } from "../../../orchestration/testing/collidingRoster.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { refFromOperatorSession } from "@t3tools/contracts";
-import { ChannelGateway, type ChannelMemberRef, refFromMcpCredential } from "./channelGateway.ts";
+import {
+  type Channel,
+  ChannelGateway,
+  type ChannelMemberRef,
+  refFromMcpCredential,
+} from "./channelGateway.ts";
 import { ChannelGatewayLive } from "./channelGatewayLive.ts";
 import { CommsToolkitHandlersLive } from "./handlers.ts";
 import { CommsToolkit } from "./tools.ts";
@@ -64,6 +70,7 @@ const PROJECT_ID = ProjectId.make("project-comms-live");
 const BOSS3 = ThreadId.make("thread-boss3-live");
 const BOSS1 = ThreadId.make("thread-boss1-live");
 const CHANNEL_ID = ChannelId.make("channel-seniors-live");
+const decodeChannelId = Schema.decodeUnknownOption(ChannelId);
 const NOW = "2026-01-01T00:00:00.000Z";
 const ADMIN = { memberKind: "human", memberId: "human-walt" } as const;
 
@@ -1458,25 +1465,62 @@ describe("the comms toolkit on the live gateway", () => {
   );
 
   it.effect(
-    "reports a malformed channel id rather than throwing while being called",
+    "refuses a raw channel id at the type, so nothing can throw while being called",
     () =>
       Effect.gen(function* () {
-        yield* seed();
         const gateway = yield* ChannelGateway;
 
-        // `Effect.exit` can only produce an Exit VALUE if the Effect was built
-        // at all. A throw while the function is being CALLED never reaches it
-        // and fails the test uncatchably instead - which looks identical in a
-        // summary line, so an assertion that only checks THAT it failed cannot
-        // tell the two apart. That distinction is the whole of what the
-        // `Effect.suspend` buys.
-        //
-        // What comes back is a DEFECT, not a typed failure: a Failure whose
-        // cause is a Die. `getPost` declares only `ChannelStoreUnavailable`, so
-        // a malformed id is still a caller bug - the suspend makes the bug
-        // reportable rather than escaping.
-        const unbrandable = yield* gateway.getPost("not a channel id", "post-1").pipe(Effect.exit);
-        expect(unbrandable._tag).toBe("Failure");
+        // The seam used to take a bare string and `ChannelId.make` it, and a
+        // malformed one would have thrown while `getPost` was being CALLED -
+        // before any Effect existed, past every `catchTags` the caller had
+        // piped. #13's `comms_reply` on "a:b" hit the same shape one argument
+        // over - `ChannelPostId.make` on the parent id; the channel-id `.make`
+        // beside it had the same shape and no incident yet. It takes the brand
+        // now, so the call below does not compile: THAT is the pin. Widening
+        // the parameter back to `string` makes this directive unused and `tsc`
+        // reds it (TS2578); the runtime suite cannot see the widening, and
+        // says so here rather than pretending to.
+        const raw: string = "not a channel id";
+        // @ts-expect-error a bare string is not a ChannelId; decode at the door
+        const post = () => gateway.getPost(raw, "post-1");
+        const create = () =>
+          gateway.createPost({
+            // @ts-expect-error a bare string is not a ChannelId; decode at the door
+            channelId: raw,
+            threadId: BOSS3,
+            body: "x",
+            mentions: [],
+            parentPostId: null,
+          });
+        const read = () =>
+          gateway.readPosts({
+            // @ts-expect-error a bare string is not a ChannelId; decode at the door
+            channelId: raw,
+            limit: 1,
+            direction: "forward",
+            cursor: undefined,
+          });
+        const channel: Channel = {
+          // @ts-expect-error a bare string is not a ChannelId; decode at the door
+          channelId: raw,
+          name: "seniors",
+          archivedAt: null,
+          members: [],
+        };
+        // Never called. The pin is the directive above each `channelId: raw`,
+        // one per typed site: with only `getPost` pinned, `CreatePostInput` or
+        // `ReadPostsInput` back to `string` PLUS the `.make` the live layer used
+        // to hold left `tsc` at 0 errors (the exact pre-PR shape), and `Channel`
+        // was held only transitively by `handlers.ts`. This line only keeps the
+        // four values used.
+        expect([post, create, read, channel]).toHaveLength(4);
+
+        // The door's answer for the same string is an Option, not a throw. The
+        // browser door (`orchestration/channelPosts.ts`, #25) decodes
+        // `ChannelId` at the wire contract; nothing from a browser reaches
+        // this seam.
+        expect(Option.isNone(decodeChannelId(raw))).toBe(true);
+        expect(Option.isSome(decodeChannelId(CHANNEL_ID))).toBe(true);
       }).pipe(Effect.provide(TestLayer)),
     30_000,
   );

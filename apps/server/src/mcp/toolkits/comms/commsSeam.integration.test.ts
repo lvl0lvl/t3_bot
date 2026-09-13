@@ -64,7 +64,7 @@ import { CommsToolkit } from "./tools.ts";
 
 const THREAD_ID = ThreadId.make("thread-boss3");
 const OTHER_THREAD_ID = ThreadId.make("thread-boss1");
-const CHANNEL_ID = "channel-seniors";
+const CHANNEL_ID = ChannelId.make("channel-seniors");
 
 const invocation = (threadId: ThreadId): McpInvocationContext.McpInvocationScope => ({
   environmentId: EnvironmentId.make("environment-1"),
@@ -138,7 +138,7 @@ const makeSeam = Effect.fn("commsSeam")(function* (opts: {
             Effect.flatMap((mentions) =>
               requireChannelMentionsResolve({
                 command: { type: "channel.post.create" } as never,
-                channel: { id: ChannelId.make(CHANNEL_ID), members: opts.members } as never,
+                channel: { id: CHANNEL_ID, members: opts.members } as never,
                 mentions: mentions as never,
               }),
             ),
