@@ -83,6 +83,42 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
     assert.deepEqual(raw, ["client.handleServerRequest(", "client.handleServerNotification("]);
   });
 
+  it("brands a turn id from the app-server only behind the doors", () => {
+    // Upstream's history restore (fd5553f1a, #11338) adds `readCodexThread`,
+    // which pages `thread/turns/list` and builds each turn with
+    // `TurnId.make(turn.id)`; the sync conflicts at the `readThread` and
+    // `rollbackThread` call sites, ~1400 lines from that `.make`, which
+    // merges clean. A resolution that keeps upstream's helper re-admits the
+    // input `t3_bot-a50` closed, with nothing that names it. The runtime may
+    // brand a turn id only on a value the doors admitted: the route fields
+    // read from a notification `refusedIds` passed, and the handlers that run
+    // after it. A response's turn id goes through `decodeTurnIdFromResponse`
+    // and is never `.make`d. An eleventh `TurnId.make(` is a merge landing
+    // outside the doors: route the value through `decodeTurnIdFromResponse`,
+    // or add a post-door site to the list below. Only code counts: a comment
+    // naming the call is not a brand site. The pin sees the literal
+    // `TurnId.make(` only: a cast `as TurnId`, an aliased or destructured
+    // `make`, or a bracket access stays green (upstream writes none of these
+    // today; `vp fmt` normalises the whitespace forms into reach).
+    const source = NodeFS.readFileSync(
+      NodePath.join(import.meta.dirname, "CodexSessionRuntime.ts"),
+      "utf8",
+    );
+    const code = source.replace(/^\s*(?:\/\/|\/\*(?!.*\*\/[ \t]*\S)|\*).*$/gm, "");
+    assert.deepEqual(code.match(/TurnId\.make\([^)]*\)/g), [
+      "TurnId.make(notification.params.turn.id)",
+      "TurnId.make(notification.params.turnId)",
+      "TurnId.make(notification.params.turnId)",
+      "TurnId.make(notification.params.turnId)",
+      "TurnId.make(notification.params.turnId)",
+      "TurnId.make(payload.turn.id)",
+      "TurnId.make(payload.turnId)",
+      "TurnId.make(payload.turnId)",
+      "TurnId.make(payload.turnId)",
+      "TurnId.make(payload.turnId)",
+    ]);
+  });
+
   it.effect("reports an empty turn id as a codex error and keeps delivering", () =>
     Effect.gen(function* () {
       const scriptPath = yield* writeScript("empty-turn-id", {
