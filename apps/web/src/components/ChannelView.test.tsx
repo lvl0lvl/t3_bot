@@ -501,6 +501,46 @@ describe("ChannelPostRegion", () => {
     expect(buttonLabels(pagedUp)).not.toContain("New posts");
   });
 
+  it("restarts at the newest page when it shares no post with what is held", async () => {
+    // THE HISTORY HOLE. A paged-up reader whose socket dropped while more than a page
+    // of posts landed: the newest read answers posts none of which are held, and a
+    // cursor. Merging renders {1,2,3,4} then {60,61} as one list, "Earlier posts" is
+    // gone because the pager's page said null, and the "New posts" control scrolls
+    // through the hole as though 5..59 were on screen. The PM's ruling (board 201):
+    // restart at the newest page, since the paged-up position is already lost.
+    reset();
+    answer(CHANNEL_A, {
+      posts: [post(3, "p-three", "three"), post(4, "p-four", "four")],
+      nextCursor: "channel-a:backward:2",
+    });
+    answer(
+      CHANNEL_A,
+      { posts: [post(1, "p-one", "one"), post(2, "p-two", "two")], nextCursor: null },
+      "channel-a:backward:2",
+    );
+    const { ChannelView } = await import("./ChannelView");
+    const tree = await mount(CHANNEL_A);
+    const pager = tree.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      pager?.props.onClick?.();
+    });
+    expect(bodies(tree)).toEqual(["one", "two", "three", "four"]);
+    expect(buttonLabels(tree)).not.toContain("Earlier posts");
+
+    answer(CHANNEL_A, {
+      posts: [post(60, "p-sixty", "sixty"), post(61, "p-sixty-one", "sixty-one")],
+      nextCursor: "channel-a:backward:61",
+    });
+    harness.latestPostAtForA = "2026-01-01T00:06:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    // Only the newest page, and the pager back — pointing at the newest page's
+    // cursor, which is the one history this region can still walk continuously.
+    expect(bodies(tree)).toEqual(["sixty", "sixty-one"]);
+    expect(buttonLabels(tree)).toContain("Earlier posts");
+  });
+
   it("withdraws the offer when the reader reaches the newest post by hand", async () => {
     // THE INPUT THAT DISTINGUISHES: a paged-up reader who wheels down to the newest post
     // without clicking. Only the click and the layout effect marked a post seen, and the

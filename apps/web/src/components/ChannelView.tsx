@@ -304,8 +304,36 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // The newest page merges too, and says nothing about `moreAbove`: while the
   // reader is paged up, "is there more above" is the PAGER's page's answer, and
   // the newest page's cursor points at history the region already holds.
+  //
+  // UNLESS IT DOES NOT. The input: a socket outage while more than
+  // `CHANNEL_POST_PAGE_SIZE` posts land between two newest reads. That newest page
+  // shares no post with what is held and still carries a cursor, so the region no
+  // longer holds a continuous history — merged, the two runs render as one list
+  // with a hole nothing on screen can fetch. The region restarts at the newest
+  // page instead. The reader loses a paged-up position exactly when continuity
+  // was already lost; a seam fetch into the middle of the list would pretend it
+  // was not (PM ruling, board 201).
+  //
+  // `held` mirrors `posts` for this effect to read without depending on it: a
+  // dependency on `posts` re-runs the merge on its own result, and the merge
+  // returns a new array every time.
+  const held = useRef(posts);
+  useEffect(() => {
+    held.current = posts;
+  }, [posts]);
   useEffect(() => {
     if (newestArrived === undefined) {
+      return;
+    }
+    const existing = held.current;
+    const continuous =
+      existing.length === 0 ||
+      newestArrived.nextCursor === null ||
+      newestArrived.posts.some((post) => existing.some((heldPost) => heldPost.id === post.id));
+    if (!continuous) {
+      setPosts(newestArrived.posts);
+      setCursor(undefined);
+      setMoreAbove(newestArrived.nextCursor !== null);
       return;
     }
     setPosts((existing) => mergeChannelPosts({ existing, incoming: newestArrived.posts }));
@@ -465,6 +493,11 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
         // and departure changed the scroll extent under the reader. Outside the
         // scroller neither happens. `onPointerDown` keeps the composer's focus,
         // as the sibling does.
+        //
+        // THE ONE INPUT THAT RESETS THE READER'S PLACE instead of offering this: a
+        // newest page that shares no post with what is held (an outage that dropped
+        // more than a page). The newest merge effect restarts at that page, because
+        // there is no continuous history left for this control to scroll through.
         <div className="pointer-events-none absolute bottom-3 left-1/2 z-30 flex -translate-x-1/2 justify-center py-1.5">
           <Button
             variant="glass"
