@@ -231,6 +231,46 @@ export const describeApplyFailure = (
       ? `anchor occurs ${outcome.occurrences} times in ${file}; it must occur once, or the mutation lands somewhere you did not choose`
       : "the replacement is identical to the anchor, so this would run the suite against unmodified code";
 
+/**
+ * The rows whose mutation could not be applied AS THE CONFIG IS WRITTEN, decided from the
+ * config and the sources alone.
+ *
+ * PURE, AND IT CALLS `applyMutation` RATHER THAN COUNTING AGAIN. A pre-flight with its own
+ * occurrence-counting can drift from the function that applies the mutation — passing a row
+ * the real application then fails on, or refusing one that would have applied — and a
+ * pre-flight that disagrees with the sweep is a second thing to be wrong. One function, one
+ * verdict, and the verdicts are unit-testable without a worktree or a suite.
+ *
+ * `read` returns `undefined` for a file this could not read. Those rows are LEFT ALONE: the
+ * row loop distinguishes untracked from unreadable from outside-the-swept-tree and names
+ * which, and a refusal here would replace three accurate reasons with one vague one.
+ *
+ * `moved` rows are left alone too. A `setupCommand` that writes a mutation target makes that
+ * row unmeasurable, but it is not the config's anchor being wrong, and the per-row NOT RUN
+ * says so in the terms the operator can act on.
+ */
+export const unappliableRows = (input: {
+  readonly mutations: ReadonlyArray<Mutation>;
+  readonly moved: ReadonlySet<string>;
+  readonly read: (file: string) => string | undefined;
+}): ReadonlyArray<string> => {
+  const out: Array<string> = [];
+  for (const mutation of input.mutations) {
+    if (input.moved.has(mutation.file)) {
+      continue;
+    }
+    const source = input.read(mutation.file);
+    if (source === undefined) {
+      continue;
+    }
+    const outcome = applyMutation(source, mutation);
+    if (outcome._tag !== "applied") {
+      out.push(`${mutation.id}: ${describeApplyFailure(outcome, mutation.file)}`);
+    }
+  }
+  return out;
+};
+
 // ---------------------------------------------------------------------------
 // Reading a run, and deciding what a mutation proved
 // ---------------------------------------------------------------------------
@@ -713,6 +753,49 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
   // `--in-place`, where the handler has already refused a dirty tree; on the worktree
   // path the only writer between `git worktree add` and here is `setupCommand`.
   const moved = statusPaths(yield* mustSucceed(["git", "status", "--porcelain"], root));
+
+  // PRE-FLIGHT, BEFORE THE BASELINE, because an anchor that does not resolve exactly once
+  // is a property of the CONFIG and is knowable without running anything. It used to be
+  // found per row, four minutes in, after the baseline and every earlier row had been paid
+  // for — and NOT RUN says "no measurement was taken" where the truth is "this row cannot
+  // be measured as written". Twice in one PR (`t3_bot-2wm`) a refactor moved the line a row
+  // anchored on and the dark row was the one pinning that PR's own new guard; both times the
+  // author had already pushed.
+  //
+  // `applyMutation` IS THE CHECK, called rather than reimplemented. A pre-flight that counted
+  // occurrences itself could drift from the function that applies the mutation — passing a row
+  // the real application then fails on, or refusing one that would have applied — which would
+  // make this a second thing to be wrong. One pure function, one verdict.
+  //
+  // `replace-is-a-no-op` belongs here and is the worse failure of the three: a row whose
+  // replacement equals its anchor runs a full suite against unmodified code and reports a
+  // SURVIVOR, which reads as a finding rather than as an absence.
+  //
+  // A row `setupCommand` wrote to is NOT pre-flighted: that is not the config's anchor being
+  // wrong, and the per-row NOT RUN below names the cause better than a refusal could.
+  const sources = new Map<string, string>();
+  for (const mutation of config.mutations) {
+    if (sources.has(mutation.file) || moved.has(mutation.file)) {
+      continue;
+    }
+    const read = yield* fs.readFileString(path.join(root, mutation.file)).pipe(Effect.result);
+    if (read._tag === "Success") {
+      sources.set(mutation.file, read.success);
+    }
+  }
+  const unmeasurable = unappliableRows({
+    mutations: config.mutations,
+    moved,
+    read: (file) => sources.get(file),
+  });
+  if (unmeasurable.length > 0) {
+    return yield* new GuardSweepConfigError({
+      detail:
+        `${unmeasurable.length} of ${config.mutations.length} mutations could not be applied, ` +
+        `so the sweep would report them as NOT RUN after measuring everything else:\n  ` +
+        unmeasurable.join("\n  "),
+    });
+  }
 
   yield* Console.log("baseline…");
   const baseline = yield* runSuite(config, root);
