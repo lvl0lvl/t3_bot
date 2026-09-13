@@ -8,7 +8,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { ArchiveIcon, HashIcon, SendIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { useChannel, useChannelSupport, useThreadShell } from "../state/entities";
 import * as Option from "effect/Option";
@@ -233,7 +233,26 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   const page = useAtomValue(request);
   const refresh = useAtomRefresh(request);
 
+  // THE NEWEST PAGE STAYS MOUNTED WHILE THE READER PAGES UP. It is the same atom as
+  // `request` until the first "Earlier posts" click, and after it the one the live
+  // arrival below keeps re-reading. Unmounting it was what killed live arrival for
+  // the rest of the instance: `setCursor` has one caller and nothing clears it.
+  //
+  // Clearing the cursor to "return" was the alternative, and it has two holes the
+  // atom's cache policy makes: `Atom.swr` re-reads on a remount only past its
+  // `staleTime`, so within it the effect would have to force the read, and past it
+  // the remount and the effect would BOTH read — the open-ran-twice defect the effect
+  // comment below was written to keep out. And the pager would then walk history the
+  // region already holds. Keeping the atom mounted costs one subscription and no read.
+  const newestRequest = orchestrationEnvironment.channelPosts({
+    environmentId,
+    input: { channelId, direction: "backward", limit: CHANNEL_POST_PAGE_SIZE },
+  });
+  const newestPage = useAtomValue(newestRequest);
+  const refreshNewest = useAtomRefresh(newestRequest);
+
   const arrived = Option.getOrUndefined(AsyncResult.value(page));
+  const newestArrived = Option.getOrUndefined(AsyncResult.value(newestPage));
 
   // LIVE ARRIVAL, from the shell rather than from a per-post event.
   //
@@ -244,23 +263,25 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // carrying the newer timestamp, so the event cannot carry a post and the
   // client has to re-read.
   //
-  // Only when the channel is showing its newest page. A reader who has paged
-  // upward is holding an older cursor, and re-reading under it would answer
-  // with the same old page while the new post sat unread below them; the next
-  // return to the bottom picks it up.
+  // ALWAYS THE NEWEST PAGE, whatever the pager is holding. This used to return
+  // early while the reader was paged up, with a comment saying "the next return
+  // to the bottom picks it up" — and there was no return to the bottom in the
+  // code, so one click on "Earlier posts" ended live arrival for good. The input
+  // that distinguishes: a `latestPostAt` change AFTER a page-up must still be
+  // answered with a read of the newest page.
   //
-  // AND ONLY ON A CHANGE. `cursor === undefined` is true on the FIRST commit too, so
-  // this fired on mount — while the atom was already fetching, because every query
-  // here goes through `Atom.swr({ revalidateOnMount: true })` and a manual refresh is
-  // forceful and always forwarded. Every channel open ran the read TWICE and pulled up
-  // to two pages over the socket, on the most frequent interaction in the feature.
+  // AND ONLY ON A CHANGE. On the FIRST commit the atom is already fetching, because
+  // every query here goes through `Atom.swr({ revalidateOnMount: true })` and a manual
+  // refresh is forceful and always forwarded. Firing here on mount ran every channel
+  // open TWICE and pulled up to two pages over the socket, on the most frequent
+  // interaction in the feature.
   useEffect(() => {
-    if (cursor !== undefined || readThrough.current === channel.latestPostAt) {
+    if (readThrough.current === channel.latestPostAt) {
       return;
     }
     readThrough.current = channel.latestPostAt;
-    refresh();
-  }, [channel.latestPostAt, cursor, refresh]);
+    refreshNewest();
+  }, [channel.latestPostAt, refreshNewest]);
 
   // DEPENDS ON `arrived` BY REFERENCE, which is only safe because the atom
   // memoises its value. A component test that handed back a fresh page object per
@@ -275,14 +296,43 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
     setPosts((existing) => mergeChannelPosts({ existing, incoming: arrived.posts }));
     setMoreAbove(arrived.nextCursor !== null);
   }, [arrived]);
+  // The newest page merges too, and says nothing about `moreAbove`: while the
+  // reader is paged up, "is there more above" is the PAGER's page's answer, and
+  // the newest page's cursor points at history the region already holds.
+  useEffect(() => {
+    if (newestArrived === undefined) {
+      return;
+    }
+    setPosts((existing) => mergeChannelPosts({ existing, incoming: newestArrived.posts }));
+  }, [newestArrived]);
 
   // ANCHORED ON THE NEWEST POST, not on every merge. Scrolling to the bottom
   // when an OLDER page arrives would throw the reader back to the present the
   // moment they paged up, which is the one thing paging upward must not do.
+  //
+  // AND NOT WHILE THE READER IS UP IN HISTORY. With live arrival no longer gated on
+  // the cursor, a new post can land while they are reading an older page, and
+  // scrolling them to it is the same theft as scrolling on an older page. The
+  // cursor is the proxy for "up in history" — there is no scroll handler yet
+  // (`t3_bot-cdo`) — so a reader who paged up and scrolled back down is offered the
+  // control instead of the jump; the control is one click and the jump is a theft.
+  //
+  // A LAYOUT EFFECT, so the scroll and the "seen" mark land before the paint. With a
+  // passive effect the frame between commit and effect shows the newest post
+  // unscrolled and the "New posts" control lit for a reader who is on the newest
+  // page — one frame, on every post, which is the flicker this app's users notice.
   const newestId = posts[posts.length - 1]?.id;
-  useEffect(() => {
+  const [seenNewestId, setSeenNewestId] = useState<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (cursor !== undefined) {
+      return;
+    }
     bottom.current?.scrollIntoView({ block: "end" });
-  }, [newestId]);
+    setSeenNewestId(newestId);
+  }, [cursor, newestId]);
+  // Not gated on the cursor a second time: on the newest page the effect above marks
+  // every newest post seen before paint, so the id comparison alone is the fact.
+  const unseenBelow = newestId !== undefined && newestId !== seenNewestId;
 
   if (AsyncResult.isFailure(page) && posts.length === 0) {
     return <PostsUnavailable onRetry={refresh} />;
@@ -355,6 +405,24 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
           <ChannelPost key={post.id} environmentId={environmentId} post={post} />
         ))}
         <div ref={bottom} />
+        {unseenBelow ? (
+          // THE WAY BACK, for a reader who paged up while the channel moved on. It
+          // scrolls; it does not re-read or touch the cursor, because the posts are
+          // already merged in and the pager's place in history is theirs to keep.
+          // `sticky bottom-3` keeps it at the bottom edge of the scroller for as long as
+          // the newest post is below the fold.
+          <Button
+            variant="secondary"
+            size="sm"
+            className="sticky bottom-3 self-center"
+            onClick={() => {
+              bottom.current?.scrollIntoView({ block: "end" });
+              setSeenNewestId(newestId);
+            }}
+          >
+            New posts
+          </Button>
+        ) : null}
       </div>
     </div>
   );

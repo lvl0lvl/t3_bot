@@ -381,6 +381,99 @@ describe("ChannelPostRegion", () => {
     expect(harness.refreshes).toBe(1);
   });
 
+  it("keeps re-reading the newest page after the reader pages up", async () => {
+    // THE INPUT THAT DISTINGUISHES: a `latestPostAt` change AFTER a page-up. Before this
+    // change the live-arrival effect returned early whenever the cursor was set, and
+    // `setCursor` has one caller and nothing clears it — so one click on "Earlier posts"
+    // ended live arrival for the life of the instance. A change on the newest page
+    // (the test above) agrees with both implementations.
+    reset();
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-newest", "newest")],
+      nextCursor: "channel-a:backward:1",
+    });
+    answer(
+      CHANNEL_A,
+      { posts: [post(1, "p-older", "older")], nextCursor: null },
+      "channel-a:backward:1",
+    );
+    const { ChannelView } = await import("./ChannelView");
+    const tree = await mount(CHANNEL_A);
+
+    const pager = tree.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      pager?.props.onClick?.();
+    });
+    expect(bodies(tree)).toEqual(["older", "newest"]);
+    const before = harness.refreshes;
+
+    harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(harness.refreshes).toBe(before + 1);
+  });
+
+  it("offers the way back to a post that landed while the reader was up in history", async () => {
+    // Two readers, one new post. The one on the newest page is scrolled to it and offered
+    // nothing; the one who paged up is NOT scrolled — that is the theft paging upward exists
+    // to prevent — and is offered a control that takes them there. An implementation that
+    // renders the control regardless of the cursor fails the first half; one that never
+    // renders it fails the second.
+    reset();
+    answer(CHANNEL_A, { posts: [post(1, "p-one", "one")], nextCursor: null });
+    const { ChannelView } = await import("./ChannelView");
+    const onNewest = await mount(CHANNEL_A);
+    answer(CHANNEL_A, {
+      posts: [post(1, "p-one", "one"), post(2, "p-two", "two")],
+      nextCursor: null,
+    });
+    harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
+    await act(async () => {
+      onNewest.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(bodies(onNewest)).toEqual(["one", "two"]);
+    expect(buttonLabels(onNewest)).not.toContain("New posts");
+
+    reset();
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-two", "two")],
+      nextCursor: "channel-a:backward:1",
+    });
+    answer(
+      CHANNEL_A,
+      { posts: [post(1, "p-one", "one")], nextCursor: null },
+      "channel-a:backward:1",
+    );
+    const pagedUp = await mount(CHANNEL_A);
+    const pager = pagedUp.root.findAll((node) => node.type === "button")[0];
+    await act(async () => {
+      pager?.props.onClick?.();
+    });
+    expect(bodies(pagedUp)).toEqual(["one", "two"]);
+
+    // The newest page grows under a reader who is up in history.
+    answer(CHANNEL_A, {
+      posts: [post(2, "p-two", "two"), post(3, "p-three", "three")],
+      nextCursor: "channel-a:backward:1",
+    });
+    harness.latestPostAtForA = "2026-01-01T00:06:00.000Z";
+    await act(async () => {
+      pagedUp.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(bodies(pagedUp)).toEqual(["one", "two", "three"]);
+    expect(buttonLabels(pagedUp)).toContain("New posts");
+
+    // Taking it is one click, and the offer is withdrawn once taken.
+    const back = pagedUp.root
+      .findAll((node) => node.type === "button")
+      .find((button) => JSON.stringify(button.children).includes("New posts"));
+    await act(async () => {
+      back?.props.onClick?.();
+    });
+    expect(buttonLabels(pagedUp)).not.toContain("New posts");
+  });
+
   it("says a page failed, and the control retries it", async () => {
     // `BUG-25-02`. The failure branch is gated on `posts.length === 0`, so a page that
     // failed AFTER one had landed rendered the previous screen unchanged: no error, and
