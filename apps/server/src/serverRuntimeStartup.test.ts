@@ -306,7 +306,8 @@ it.effect.each([
     );
     if (!existing) {
       assert.equal("defaultModelSelection" in commands[0]!, false);
-      // WHICH root: the :224 dispatch; the baseDir fixture above is the path it would otherwise carry.
+      // WHICH root: the project.create dispatch; the baseDir fixture above is the
+      // path it would otherwise carry.
       assert.equal(commands[0]?.workspaceRoot, "/tmp/startup-project");
     }
     assert.deepStrictEqual(yield* Ref.get(rootsRead), ["/tmp/startup-project"]);
