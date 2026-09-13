@@ -2272,6 +2272,52 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("issues an HTTP command with no issuer invariant as the operator, with no origin", () =>
+    Effect.gen(function* () {
+      // THE HTTP TWIN of the socket's unconditional-stamp test, over the WHOLE
+      // options object. The test above reads `options?.issuer` off a channel
+      // command, so two mutants of this door survived it: routing every
+      // non-`channel.*` command to `orchestrationEngine.dispatch(command)`
+      // bare (the stamp keyed on the command someone thought of), and binding
+      // `makeClientDispatch(orchestrationEngine, { surface: "web" })` (an origin
+      // nothing on the request says). A command with no issuer invariant sees
+      // the first; `deepStrictEqual` on the full object sees the extra key of
+      // the second.
+      const options: Array<unknown> = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (_command, dispatchOptions) =>
+              Effect.sync(() => {
+                options.push(dispatchOptions);
+                return { sequence: 1 };
+              }),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "thread.session.stop",
+          commandId: "cmd-http-stop",
+          threadId: defaultThreadId,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      });
+
+      assert.equal(response.status, 200);
+      assert.deepStrictEqual(options, [
+        { issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID } },
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("answers a decider refusal on the HTTP door as a refusal, not an internal error", () =>
     Effect.gen(function* () {
       // MEASURED before the fix: 500 `orchestration_dispatch_failed`. One
@@ -7766,6 +7812,68 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
       ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "binds the connection's origin beside the operator issuer, and none on a bare socket",
+    () =>
+      Effect.gen(function* () {
+        // THE WHOLE OPTIONS OBJECT, not `options?.issuer`. The two socket tests
+        // above read the issuer alone, so the door's other half of the stamp —
+        // the origin it hands `makeClientDispatch` — had no test: binding
+        // `makeClientDispatch(orchestrationEngine)` with no origin kept all of
+        // them green. Two inputs, one test: a socket connected WITH a surface
+        // must carry it on every command, and a socket connected WITHOUT one
+        // must pass no `origin` key at all — dropping the `hasClientOrigin`
+        // gate and passing the parsed `{}` would stamp `metadata.origin: {}`
+        // on every event, and `deepStrictEqual` on the key set is what sees it.
+        const options: Array<unknown> = [];
+
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              dispatch: (_command, dispatchOptions) =>
+                Effect.sync(() => {
+                  options.push(dispatchOptions);
+                  return { sequence: 1 };
+                }),
+            },
+          },
+        });
+
+        const stopCommand = (commandId: string) =>
+          ({
+            type: "thread.session.stop",
+            commandId: CommandId.make(commandId),
+            threadId: defaultThreadId,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }) as const;
+
+        const withOriginUrl = yield* getWsServerUrl("/ws?clientSurface=web&clientAppVersion=1.2.3");
+        yield* Effect.scoped(
+          withWsRpcClient(withOriginUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.dispatchCommand](stopCommand("cmd-ws-stop-origin")),
+          ),
+        );
+        // The literal, not `operatorCommandIssuer()`: the constructor moves both
+        // sides together and cannot catch a wrong issuer.
+        assert.deepStrictEqual(options, [
+          {
+            origin: { surface: "web", appVersion: "1.2.3" },
+            issuer: { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+          },
+        ]);
+
+        options.length = 0;
+        const bareUrl = yield* getWsServerUrl("/ws");
+        yield* Effect.scoped(
+          withWsRpcClient(bareUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.dispatchCommand](stopCommand("cmd-ws-stop-bare")),
+          ),
+        );
+        assert.equal(options.length, 1);
+        assert.deepStrictEqual(Object.keys(options[0] as object), ["issuer"]);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("creates a missing workspace root during websocket project.create dispatch", () =>

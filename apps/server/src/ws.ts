@@ -32,7 +32,6 @@ import {
   OrchestrationChannelPostsUnreadableError,
   OrchestrationReadChannelPostsError,
   EventId,
-  operatorCommandIssuer,
   refFromOperatorSession,
   type EditorId,
   type FileManagerRevealKind,
@@ -103,6 +102,7 @@ import { OrchestrationCommandInvariantError } from "./orchestration/Errors.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionChannelRepository } from "./persistence/Services/ProjectionChannels.ts";
 import { readChannelPostPage } from "./orchestration/channelPosts.ts";
+import { makeClientDispatch } from "./orchestration/clientDispatch.ts";
 import { rowHasMember, toChannelShell, withMemberChannels } from "./orchestration/channelShell.ts";
 
 /**
@@ -515,16 +515,8 @@ const makeWsRpcLayer = (
       const projectionChannels = yield* ProjectionChannelRepository;
       /**
        * Who this connection READS as: the member the channel shell stream is
-       * filtered by.
-       *
-       * ONE OF TWO VALUES, not one used on both sides. An earlier version of this
-       * paragraph said it was also "the issuer stamped on every command this
-       * connection dispatches", and argued that two values would be two ways to
-       * be wrong in opposite directions — an operator who can post to a channel
-       * they cannot see, or see one they cannot post to. That sentence outlived
-       * the code: the write identity is `connectionIssuer` below, because the two
-       * are not the same SET and a plain object satisfying both structurally is
-       * what hid the distinction.
+       * filtered by. The WRITE identity is `dispatchFromClient`'s below; why
+       * they are two values is that docstring's.
        *
        * What keeps them from drifting is that both constructors derive from
        * `HUMAN_OPERATOR_MEMBER_ID` and neither can be built from a request.
@@ -535,22 +527,6 @@ const makeWsRpcLayer = (
        * from a client is the bug, not the shape of it.
        */
       const connectionMember = refFromOperatorSession();
-      /**
-       * The same identity as `connectionMember`, in the type the WRITE path
-       * needs.
-       *
-       * NOT because a class instance would corrupt the stored event: a verifier
-       * drove a real post through with one and the persisted row is
-       * byte-identical, since `requireIssuerCanAuthor` rebuilds the `authorRef`
-       * as a fresh literal and the issuer is never persisted. That was this
-       * comment's first reason and it was wrong.
-       *
-       * The reason is that `CommandIssuer` is a different SET: it admits
-       * `system`, for seeds and reactors, which is not a channel member kind at
-       * all. The constant these two replaced served both jobs because a plain
-       * object satisfies both structurally, which is exactly what hid it.
-       */
-      const connectionIssuer = operatorCommandIssuer();
       const threadDeletionReactor = yield* ThreadDeletionReactor;
       const analytics = yield* AnalyticsService.AnalyticsService;
       // Every command dispatched on this connection carries the connecting
@@ -559,29 +535,23 @@ const makeWsRpcLayer = (
       const hasClientOrigin =
         clientOrigin.surface !== undefined || clientOrigin.appVersion !== undefined;
       /**
-       * Every command from this connection, issued as the human operator.
+       * Every command from this connection, through the one stamp both client
+       * doors share (`makeClientDispatch`): issued as the human operator, carrying
+       * this connection's origin when it has one.
        *
-       * UNCONDITIONAL, and that is the point. `requireCommandIssuer` fails
-       * closed, so an entry point that forgets to stamp cannot post — it gets a
-       * rejection. Stamping only for channel commands would make this the entry
-       * point that remembers for the commands someone thought of, and the
-       * engine already ignores the field for every command that has no issuer
-       * invariant.
-       *
-       * The OTHER door — `POST /api/orchestration/dispatch` — stamps the same
-       * identity from the same constructor. It used to stamp nothing, and fail
-       * closed on every channel write, because this union is the payload of both
-       * and only one of them was taught to stamp. The seeder writes that same id
-       * into the channels' membership, so `requireChannelAuthorIsMember` is
-       * deciding against a member that exists.
+       * The WRITE identity, not `connectionMember`. An earlier docstring said the
+       * read member was also "the issuer stamped on every command this connection
+       * dispatches", and argued that two values would be two ways to be wrong in
+       * opposite directions — an operator who can post to a channel they cannot
+       * see, or see one they cannot post to. The two are different SETS:
+       * `CommandIssuer` admits `system`, which is not a channel member kind, and
+       * one constant serving both jobs structurally is what hid the distinction
+       * (`packages/contracts/src/channelMemberRef.ts`, at `operatorCommandIssuer`).
        */
-      const dispatchFromClient: OrchestrationEngine.OrchestrationEngineShape["dispatch"] = (
-        command,
-      ) =>
-        orchestrationEngine.dispatch(command, {
-          ...(hasClientOrigin ? { origin: clientOrigin } : {}),
-          issuer: connectionIssuer,
-        });
+      const dispatchFromClient = makeClientDispatch(
+        orchestrationEngine,
+        hasClientOrigin ? clientOrigin : undefined,
+      );
       const recordClientCommandAnalytics = (command: OrchestrationCommand) => {
         switch (command.type) {
           case "thread.create":

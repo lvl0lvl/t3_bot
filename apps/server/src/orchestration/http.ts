@@ -2,7 +2,6 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
-  operatorCommandIssuer,
   refFromOperatorSession,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -12,6 +11,7 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
 import { readChannelPostPage } from "./channelPosts.ts";
+import { makeClientDispatch } from "./clientDispatch.ts";
 import { withMemberChannels } from "./channelShell.ts";
 import { cleanupFailedUploadedAttachments, normalizeDispatchCommand } from "./Normalizer.ts";
 import {
@@ -32,6 +32,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const orchestrationEngine = yield* OrchestrationEngineService;
+    const dispatchFromClient = makeClientDispatch(orchestrationEngine);
 
     return handlers
       .handle(
@@ -200,31 +201,29 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
             OrchestrationListenerCallbackError: (cause) =>
               failEnvironmentInternal("orchestration_dispatch_failed", cause),
           };
-          // THE SECOND DOOR INTO THE SAME UNION, and it used to pass no issuer.
-          // `ClientOrchestrationCommand` is this route's payload and the
-          // WebSocket RPC's, so widening it widened both; stamping only the
-          // socket left every channel command here failing closed as a 500.
-          return yield* orchestrationEngine
-            .dispatch(normalizedCommand, { issuer: operatorCommandIssuer() })
-            .pipe(
-              Effect.tapError(() =>
-                cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
-              ),
-              // The engine squashes a defect in its worker and fails the
-              // caller's Deferred with it (`OrchestrationEngine.ts`,
-              // `Cause.squash(exit.cause) as OrchestrationDispatchError`), so
-              // a thrown TypeError - or a thrown SchemaError, which carries a
-              // `_tag` of its own - reaches this door as a failure no arm
-              // matches. Without this it leaves as an empty 500 with no
-              // traceId and no error-level log. Keyed on the arms, not on the
-              // presence of a `_tag`; before the arms, not after, because a
-              // catch after them folds their 409 too.
-              Effect.catchIf(
-                (cause) => !(Predicate.hasProperty(cause, "_tag") && cause._tag in arms),
-                (cause) => failEnvironmentInternal("orchestration_dispatch_failed", cause),
-              ),
-              Effect.catchTags(arms),
-            );
+          // The stamp is `makeClientDispatch`'s, shared with the socket, so this
+          // door cannot be the one that forgot; the history of the door that
+          // did is in `clientDispatch.ts`. No origin: nothing on this request
+          // says which surface sent it.
+          return yield* dispatchFromClient(normalizedCommand).pipe(
+            Effect.tapError(() =>
+              cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
+            ),
+            // The engine squashes a defect in its worker and fails the
+            // caller's Deferred with it (`OrchestrationEngine.ts`,
+            // `Cause.squash(exit.cause) as OrchestrationDispatchError`), so
+            // a thrown TypeError - or a thrown SchemaError, which carries a
+            // `_tag` of its own - reaches this door as a failure no arm
+            // matches. Without this it leaves as an empty 500 with no
+            // traceId and no error-level log. Keyed on the arms, not on the
+            // presence of a `_tag`; before the arms, not after, because a
+            // catch after them folds their 409 too.
+            Effect.catchIf(
+              (cause) => !(Predicate.hasProperty(cause, "_tag") && cause._tag in arms),
+              (cause) => failEnvironmentInternal("orchestration_dispatch_failed", cause),
+            ),
+            Effect.catchTags(arms),
+          );
         }),
       );
   }),
