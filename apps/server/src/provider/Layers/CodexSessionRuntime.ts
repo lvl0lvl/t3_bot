@@ -1402,7 +1402,7 @@ export const makeCodexSessionRuntime = (
     // failure is answered by the protocol layer and not reported.
     // `dispatchNotification` in the client catches typed failures only; a
     // defect there ends the stdin reader.
-    const reportRefusedIds = (
+    const emitRefusedIds = (
       method: string,
       refused: ReadonlyArray<RefusedId>,
       outcome: "the message was dropped" | "the request was answered with an error",
@@ -1418,7 +1418,7 @@ export const makeCodexSessionRuntime = (
           )}, which ${refused.length === 1 ? "is not an id" : "are not ids"}; ${outcome}.`,
         payload: { method, refused },
       });
-    const reportHandlerFailure = (method: string, cause: Cause.Cause<unknown>) => {
+    const emitHandlerFailure = (method: string, cause: Cause.Cause<unknown>) => {
       const failure = Cause.squash(cause);
       return emitEvent({
         kind: "error",
@@ -1428,7 +1428,7 @@ export const makeCodexSessionRuntime = (
         payload: { method, cause: Cause.pretty(cause) },
       });
     };
-    const onRequest = <M extends CodexRpc.ServerRequestMethod>(
+    const guardRequest = <M extends CodexRpc.ServerRequestMethod>(
       method: M,
       handler: (
         payload: CodexRpc.ServerRequestParamsByMethod[M],
@@ -1440,7 +1440,7 @@ export const makeCodexSessionRuntime = (
       client.handleServerRequest(method, (payload) => {
         const refused = refusedIds(payload);
         if (refused.length > 0) {
-          return reportRefusedIds(method, refused, "the request was answered with an error").pipe(
+          return emitRefusedIds(method, refused, "the request was answered with an error").pipe(
             Effect.flatMap(() =>
               Effect.fail(
                 CodexErrors.CodexAppServerRequestError.invalidParams(
@@ -1453,7 +1453,7 @@ export const makeCodexSessionRuntime = (
         }
         return handler(payload).pipe(
           Effect.catchDefect((defect) =>
-            reportHandlerFailure(method, Cause.die(defect)).pipe(
+            emitHandlerFailure(method, Cause.die(defect)).pipe(
               Effect.flatMap(() =>
                 Effect.fail(
                   CodexErrors.CodexAppServerRequestError.internalError(
@@ -1465,13 +1465,13 @@ export const makeCodexSessionRuntime = (
           ),
         );
       });
-    // Registered with the client by `registerServerNotification`, not here: a
+    // Registered with the client by `guardNotification`, not here: a
     // second registration per method would run `refusedIds` twice.
     const directNotificationHandlers = new Map<
       CodexRpc.ServerNotificationMethod,
       (payload: unknown) => Effect.Effect<void, CodexErrors.CodexAppServerError>
     >();
-    const onNotification = <M extends CodexRpc.ServerNotificationMethod>(
+    const handleNotification = <M extends CodexRpc.ServerNotificationMethod>(
       method: M,
       handler: (
         payload: CodexRpc.ServerNotificationParamsByMethod[M],
@@ -2074,7 +2074,7 @@ export const makeCodexSessionRuntime = (
 
     const currentSessionProviderThreadId = Effect.map(Ref.get(sessionRef), currentProviderThreadId);
 
-    yield* onNotification("thread/started", (payload) =>
+    yield* handleNotification("thread/started", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           if (providerThreadId && payload.thread.id !== providerThreadId) {
@@ -2087,7 +2087,7 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* onNotification("turn/started", (payload) =>
+    yield* handleNotification("turn/started", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           if (providerThreadId && payload.threadId !== providerThreadId) {
@@ -2101,7 +2101,7 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* onNotification("turn/completed", (payload) =>
+    yield* handleNotification("turn/completed", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           if (providerThreadId && payload.threadId !== providerThreadId) {
@@ -2120,7 +2120,7 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* onNotification("error", (payload) =>
+    yield* handleNotification("error", (payload) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           const payloadThreadId = payload.threadId;
@@ -2137,7 +2137,7 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    yield* onRequest("item/commandExecution/requestApproval", (payload) =>
+    yield* guardRequest("item/commandExecution/requestApproval", (payload) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("command-approval-request"));
         const turnId = TurnId.make(payload.turnId);
@@ -2193,7 +2193,7 @@ export const makeCodexSessionRuntime = (
       }),
     );
 
-    yield* onRequest("item/fileChange/requestApproval", (payload) =>
+    yield* guardRequest("item/fileChange/requestApproval", (payload) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(
           yield* randomUUIDv4("file-change-approval-request"),
@@ -2251,7 +2251,7 @@ export const makeCodexSessionRuntime = (
       }),
     );
 
-    yield* onRequest("mcpServer/elicitation/request", (payload) =>
+    yield* guardRequest("mcpServer/elicitation/request", (payload) =>
       Effect.gen(function* () {
         if (toMcpElicitationResponse(payload, "accept").action !== "accept") {
           yield* Effect.logWarning("Declined an unsupported MCP elicitation.", {
@@ -2316,7 +2316,7 @@ export const makeCodexSessionRuntime = (
       }),
     );
 
-    yield* onRequest("item/tool/requestUserInput", (payload) =>
+    yield* guardRequest("item/tool/requestUserInput", (payload) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("user-input-request"));
         const turnId = TurnId.make(payload.turnId);
@@ -2370,17 +2370,17 @@ export const makeCodexSessionRuntime = (
       Effect.fail(CodexErrors.CodexAppServerRequestError.methodNotFound(method)),
     );
 
-    const registerServerNotification = <M extends CodexRpc.ServerNotificationMethod>(method: M) =>
+    const guardNotification = <M extends CodexRpc.ServerNotificationMethod>(method: M) =>
       client.handleServerNotification(method, (payload) => {
         const refused = refusedIds(payload);
         if (refused.length > 0) {
-          return reportRefusedIds(method, refused, "the message was dropped");
+          return emitRefusedIds(method, refused, "the message was dropped");
         }
         const direct = directNotificationHandlers.get(method);
         // The handler is invoked only once the ids are admitted: an eager
         // `.make` in its body would otherwise throw before the check ran.
         return Effect.suspend(() => (direct ? direct(payload) : Effect.void)).pipe(
-          Effect.catchCause((cause) => reportHandlerFailure(method, cause)),
+          Effect.catchCause((cause) => emitHandlerFailure(method, cause)),
           Effect.andThen(
             Queue.offer(serverNotifications, makeCodexServerNotification(method, payload)),
           ),
@@ -2392,14 +2392,14 @@ export const makeCodexSessionRuntime = (
       Object.values(
         CodexRpc.SERVER_NOTIFICATION_METHODS,
       ) as ReadonlyArray<CodexRpc.ServerNotificationMethod>,
-      registerServerNotification,
+      guardNotification,
       { concurrency: 1, discard: true },
     );
 
     yield* Stream.fromQueue(serverNotifications).pipe(
       Stream.runForEach((notification) =>
         handleRawNotification(notification).pipe(
-          Effect.catchCause((cause) => reportHandlerFailure(notification.method, cause)),
+          Effect.catchCause((cause) => emitHandlerFailure(notification.method, cause)),
         ),
       ),
       Effect.forkIn(runtimeScope),
