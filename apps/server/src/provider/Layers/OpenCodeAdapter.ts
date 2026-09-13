@@ -494,7 +494,7 @@ const previewRefusedId = (id: string) =>
   id.length <= REFUSED_ID_PREVIEW_LENGTH
     ? JSON.stringify(id)
     : `${JSON.stringify(id.slice(0, REFUSED_ID_PREVIEW_LENGTH))}… (${id.length} chars)`;
-const decodeAssistantMessageId = (id: string) =>
+const admitMessageTurnId = (id: string) =>
   Option.isNone(decodeMessageTurnId(id))
     ? Effect.fail(
         new ProviderAdapterRequestError({
@@ -3821,7 +3821,7 @@ export function makeOpenCodeAdapter(
           if (entry.info.id === session.data?.revert?.messageID) break;
           if (entry.info.role === "assistant") {
             turns.push({
-              id: yield* decodeAssistantMessageId(entry.info.id),
+              id: yield* admitMessageTurnId(entry.info.id),
               items: [entry.info, ...entry.parts],
             });
           }
