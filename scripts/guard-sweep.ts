@@ -13,9 +13,14 @@
  * said FOUR while the list said five for as long as the fifth existed:
  *
  * 1. It never reports a mutation it could not apply as a survivor. An anchor
- *    that is absent, or that occurs more than once, is `not-run`. A four-space
- *    anchor was once a substring of a ten-space line eight lines earlier, so
- *    the mutation landed in a different function, a presence check confirmed
+ *    that is absent, or that occurs more than once, REFUSES THE WHOLE CONFIG
+ *    before the baseline — exit 1, a config failure, because it is knowable
+ *    from the config and the tree without running anything. It used to be
+ *    `not-run`, found per row four minutes in, after the baseline and every
+ *    earlier row had been paid for; twice in one PR the dark row was the one
+ *    pinning that PR's own new guard. A four-space anchor was once a substring
+ *    of a ten-space line eight lines earlier, so the mutation landed in a
+ *    different function, a presence check confirmed
  *    the mutated text was there, and a load-bearing assertion read as unpinned.
  *    A presence check cannot say WHICH occurrence it found; uniqueness can.
  *
@@ -230,6 +235,50 @@ export const describeApplyFailure = (
     : outcome._tag === "anchor-not-unique"
       ? `anchor occurs ${outcome.occurrences} times in ${file}; it must occur once, or the mutation lands somewhere you did not choose`
       : "the replacement is identical to the anchor, so this would run the suite against unmodified code";
+
+/**
+ * The rows whose mutation could not be applied AS THE CONFIG IS WRITTEN, decided from the
+ * config and the sources alone.
+ *
+ * PURE, AND IT CALLS `applyMutation` RATHER THAN COUNTING AGAIN. A pre-flight with its own
+ * occurrence-counting can drift from the function that applies the mutation — passing a row
+ * the real application then fails on, or refusing one that would have applied — and a
+ * pre-flight that disagrees with the sweep is a second thing to be wrong. One function, one
+ * verdict, and the verdicts are unit-testable without a worktree or a suite.
+ *
+ * ROWS THE ROW LOOP WOULD REFUSE FOR A REASON OF ITS OWN ARE LEFT ALONE, and the caller has to
+ * exclude all of them rather than trusting `read` to do it. `read` returning `undefined` catches
+ * ONLY the unreadable; a file outside the swept tree and a gitignored one both read perfectly
+ * well, so an earlier version of this comment claimed a protection that covered one of the three
+ * reasons it named. The row loop distinguishes untracked from unreadable from
+ * outside-the-swept-tree and says which; a refusal here would replace three accurate reasons
+ * with one vague one, so `sweep` filters on containment and tracking before it reads.
+ *
+ * `moved` rows are left alone too. A `setupCommand` that writes a mutation target makes that
+ * row unmeasurable, but it is not the config's anchor being wrong, and the per-row NOT RUN
+ * says so in the terms the operator can act on.
+ */
+export const unappliableRows = (input: {
+  readonly mutations: ReadonlyArray<Mutation>;
+  readonly moved: ReadonlySet<string>;
+  readonly read: (file: string) => string | undefined;
+}): ReadonlyArray<string> => {
+  const out: Array<string> = [];
+  for (const mutation of input.mutations) {
+    if (input.moved.has(mutation.file)) {
+      continue;
+    }
+    const source = input.read(mutation.file);
+    if (source === undefined) {
+      continue;
+    }
+    const outcome = applyMutation(source, mutation);
+    if (outcome._tag !== "applied") {
+      out.push(`${mutation.id}: ${describeApplyFailure(outcome, mutation.file)}`);
+    }
+  }
+  return out;
+};
 
 // ---------------------------------------------------------------------------
 // Reading a run, and deciding what a mutation proved
@@ -714,6 +763,73 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
   // path the only writer between `git worktree add` and here is `setupCommand`.
   const moved = statusPaths(yield* mustSucceed(["git", "status", "--porcelain"], root));
 
+  // PRE-FLIGHT, BEFORE THE BASELINE, because an anchor that does not resolve exactly once
+  // is a property of the CONFIG and is knowable without running anything. It used to be
+  // found per row, four minutes in, after the baseline and every earlier row had been paid
+  // for — and NOT RUN says "no measurement was taken" where the truth is "this row cannot
+  // be measured as written". Twice in one PR (`t3_bot-2wm`) a refactor moved the line a row
+  // anchored on and the dark row was the one pinning that PR's own new guard; both times the
+  // author had already pushed.
+  //
+  // `applyMutation` IS THE CHECK, called rather than reimplemented. A pre-flight that counted
+  // occurrences itself could drift from the function that applies the mutation — passing a row
+  // the real application then fails on, or refusing one that would have applied — which would
+  // make this a second thing to be wrong. One pure function, one verdict.
+  //
+  // `replace-is-a-no-op` belongs here and is the worse failure of the three: a row whose
+  // replacement equals its anchor runs a full suite against unmodified code and reports a
+  // SURVIVOR, which reads as a finding rather than as an absence.
+  //
+  // A row `setupCommand` wrote to is NOT pre-flighted: that is not the config's anchor being
+  // wrong, and the per-row NOT RUN below names the cause better than a refusal could.
+  const sources = new Map<string, string>();
+  for (const mutation of config.mutations) {
+    if (sources.has(mutation.file) || moved.has(mutation.file)) {
+      continue;
+    }
+    // CONTAINED FIRST, the same test the row loop applies before it writes. Sharing
+    // `applyMutation` is not sharing a computation: the two also have to apply it to the same
+    // SOURCE. Without this the pre-flight reads a file outside the swept tree and reaches a
+    // different verdict from the row loop for one input class — passing a row on the strength of
+    // an outside file that happens to hold the anchor, and paying the baseline the row loop then
+    // refuses; or refusing the whole config and blaming the ANCHOR for a row whose defect is
+    // that its path leaves the tree. Both measured, and the deciding input was the contents of a
+    // file the sweep will never touch. Skipped rather than refused, so the row loop keeps naming
+    // the real reason.
+    const target = path.join(root, mutation.file);
+    const resolved = path.resolve(target);
+    const inside = path.resolve(root);
+    if (resolved !== inside && !resolved.startsWith(inside + path.sep)) {
+      continue;
+    }
+    // AND TRACKED, the row loop's third gate. A gitignored file inside the tree reads fine and
+    // porcelain never mentions it, so without this the pre-flight applies the anchor to a file
+    // the sweep cannot restore and, on a stale anchor, blames the ANCHOR for a row whose defect
+    // is that git does not track it. Measured: exit 1 naming the anchor where the row loop gives
+    // exit 3 naming the tracking. Skipped, not refused — the row loop has the accurate reason.
+    const tracked = yield* capture(["git", "ls-files", "--error-unmatch", mutation.file], root);
+    if (tracked.exitCode !== 0) {
+      continue;
+    }
+    const read = yield* fs.readFileString(target).pipe(Effect.result);
+    if (read._tag === "Success") {
+      sources.set(mutation.file, read.success);
+    }
+  }
+  const unmeasurable = unappliableRows({
+    mutations: config.mutations,
+    moved,
+    read: (file) => sources.get(file),
+  });
+  if (unmeasurable.length > 0) {
+    return yield* new GuardSweepConfigError({
+      detail:
+        `${unmeasurable.length} of ${config.mutations.length} mutations could not be applied, ` +
+        `so the sweep would report them as NOT RUN after measuring everything else:\n  ` +
+        unmeasurable.join("\n  "),
+    });
+  }
+
   yield* Console.log("baseline…");
   const baseline = yield* runSuite(config, root);
   if (baseline.total === 0) {
@@ -909,12 +1025,17 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
  *   3  at least one was NOT RUN
  *
  * 3 IS LOUDER THAN 2, and that is the judgement. A survivor is a MEASUREMENT —
- * an unpinned guard, a finding to act on. A NOT RUN is the ABSENCE of one, and it
- * undermines the rest of the run: every `find` is a quotation of a file the
- * config does not own, so if one anchor went stale the others are quoting the
- * same moving target and the survivor list can no longer be read as complete. An
+ * an unpinned guard, a finding to act on. A NOT RUN is the ABSENCE of one, and an
  * unmeasured sweep must not be able to hide behind one that merely found
  * something.
+ *
+ * THE STALE ANCHOR THIS RULE WAS ARGUED FROM NO LONGER REACHES IT: an anchor that
+ * does not resolve exactly once now refuses the config with exit 1 before the
+ * baseline. The rule stands on what is left — a `setupCommand` that wrote a
+ * mutation target, a path outside the swept tree, an untracked or unreadable
+ * file, a mutant that does not compile, an unconfirmed kill — each of which is a
+ * row the run could not measure while measuring others, which is exactly the
+ * state that must not hide behind a survivor.
  *
  * 1 is not produced here. It is what the runtime already exits with when the
  * tool or its config failed, which is a third thing again: nothing was measured
