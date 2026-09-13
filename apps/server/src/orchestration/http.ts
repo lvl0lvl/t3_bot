@@ -201,13 +201,10 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
             OrchestrationListenerCallbackError: (cause) =>
               failEnvironmentInternal("orchestration_dispatch_failed", cause),
           };
-          // THE SECOND DOOR INTO THE SAME UNION, and it used to pass no issuer.
-          // `ClientOrchestrationCommand` is this route's payload and the
-          // WebSocket RPC's, so widening it widened both; stamping only the
-          // socket left every channel command here failing closed as a 500.
-          // The stamp is `makeClientDispatch`'s now, shared with the socket, so this
-          // door cannot be the one that forgot. No origin: nothing on this
-          // request says which surface sent it.
+          // The stamp is `makeClientDispatch`'s, shared with the socket, so this
+          // door cannot be the one that forgot; the history of the door that
+          // did is in `clientDispatch.ts`. No origin: nothing on this request
+          // says which surface sent it.
           return yield* dispatchFromClient(normalizedCommand).pipe(
             Effect.tapError(() =>
               cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
