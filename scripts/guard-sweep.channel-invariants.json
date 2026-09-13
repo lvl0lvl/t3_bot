@@ -95,8 +95,8 @@
       "guard": "requireChannelMembersUnique",
       "axis": "wider",
       "file": "apps/server/src/orchestration/commandInvariants.ts",
-      "find": "    const ref = JSON.stringify([member.memberKind, member.memberId]);",
-      "replace": "    const ref = JSON.stringify([member.memberId]);"
+      "find": "  return JSON.stringify([member.memberKind, member.memberId]);",
+      "replace": "  return JSON.stringify([member.memberId]);"
     }
   ]
 }
