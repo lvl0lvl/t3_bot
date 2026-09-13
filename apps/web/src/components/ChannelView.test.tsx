@@ -808,6 +808,53 @@ describe("ChannelPostRegion", () => {
     expect(buttonLabels(tree)).not.toContain("Earlier posts");
   });
 
+  it("says the retry is in flight, and does not re-issue it under a second click", async () => {
+    // THE INPUT: the retried read while it runs. `Atom.swr` answers a refresh with the
+    // previous result copied as `waiting: true` and its tag KEPT, so the retry is a
+    // waiting FAILURE — and a slot reading `newestFailed` alone kept "didn’t load" up
+    // with the control live, and every further click cancelled and restarted the read.
+    // A fixture that answered the retry as a Success agrees with both implementations.
+    reset();
+    const previous = { posts: [post(1, "p-only", "only")], nextCursor: null };
+    answer(CHANNEL_A, previous);
+    const { ChannelView } = await import("./ChannelView");
+    const tree = await mount(CHANNEL_A);
+
+    answerFailure(CHANNEL_A, undefined, previous);
+    harness.latestPostAtForA = "2026-01-01T00:05:00.000Z";
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(buttonLabels(tree)).toContain("Newer posts didn’t load. Try again");
+    const before = harness.refreshes;
+    const retry = tree.root
+      .findAll((node) => node.type === "button")
+      .find((button) => text(button).includes("Newer posts"));
+    await act(async () => {
+      retry?.props.onClick?.();
+    });
+    expect(harness.refreshes).toBe(before + 1);
+
+    answerWaiting(CHANNEL_A, undefined, previous, "failure");
+    await act(async () => {
+      tree.update(<ChannelView environmentId={ENVIRONMENT} channelId={CHANNEL_A} />);
+    });
+    expect(bodies(tree)).toEqual(["only"]);
+    expect(buttonLabels(tree)).toContain("Loading newer posts…");
+    expect(buttonLabels(tree)).not.toContain("Newer posts didn’t load. Try again");
+
+    // A CLICK WHILE IT RUNS ADDS NO READ. The control is disabled, and the handler
+    // refuses as well: this harness calls `onClick` directly, so the count is what
+    // says the second click did nothing, not the prop.
+    const inFlight = tree.root
+      .findAll((node) => node.type === "button")
+      .find((button) => text(button).includes("Loading newer posts"));
+    await act(async () => {
+      inFlight?.props.onClick?.();
+    });
+    expect(harness.refreshes).toBe(before + 1);
+  });
+
   it("says the newest read failed while paged up, and retries THAT read", async () => {
     // Two atoms are mounted once the reader pages up, and every failure branch read
     // `page` — the pager's. The input: `latestPostAt` changes, the newest re-read

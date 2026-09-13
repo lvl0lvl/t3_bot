@@ -436,6 +436,14 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
   // to `t3_bot-ssz`. The general refusal (`PostsUnavailable`) still owns the
   // no-posts case above.
   const newestFailed = AsyncResult.isFailure(newestPage);
+  // THE RETRY HAS A FLIGHT. `Atom.swr` re-evaluates by copying the previous result
+  // with `waiting: true` and its tag kept, so the retried read is a waiting Failure
+  // for as long as it runs — read off `newestFailed` alone, the slot kept saying
+  // "didn’t load" with an enabled control, and every further click cancelled and
+  // restarted the read in flight. The input that breaks a `newestPage.waiting`-only
+  // gate: a live re-read over a Success, which is a waiting SUCCESS — the "New posts"
+  // case, which this must leave alone.
+  const retrying = newestFailed && newestPage.waiting;
   // RETURNED INSTEAD OF THE SCROLL CONTAINER, the way `PostsUnavailable` is.
   // Found by rendering twice: inside that container the empty state cannot
   // centre, because `justify-end` is what puts posts above the composer and
@@ -526,7 +534,14 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
             size="xs"
             className="pointer-events-auto gap-1.5 rounded-full px-3 text-muted-foreground hover:text-foreground"
             onPointerDown={(event) => event.preventDefault()}
+            disabled={retrying}
+            // Guarded in the handler as well as by `disabled`: the region's tests
+            // call `onClick` directly, and a second click that re-issues the read
+            // while the first is in flight is the behaviour under test, not the prop.
             onClick={() => {
+              if (retrying) {
+                return;
+              }
               if (newestFailed) {
                 refreshNewest();
                 return;
@@ -535,7 +550,9 @@ function ChannelPostRegion({ channel }: { readonly channel: EnvironmentChannelSh
               setSeenNewestId(newestId);
             }}
           >
-            {newestFailed ? (
+            {retrying ? (
+              "Loading newer posts…"
+            ) : newestFailed ? (
               "Newer posts didn’t load. Try again"
             ) : (
               <>
