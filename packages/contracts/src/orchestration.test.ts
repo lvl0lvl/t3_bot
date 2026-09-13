@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
-import { ChannelId, CommandId, ProjectId, ThreadId } from "./baseSchemas.ts";
+import { ChannelId, ChannelMemberHandle, CommandId, ProjectId, ThreadId } from "./baseSchemas.ts";
 
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -85,6 +85,46 @@ it.effect("decodes a dispatch error after its bootstrap thread was deleted", () 
     });
 
     assert.strictEqual(error.bootstrapThreadDisposition, "deleted");
+  }),
+);
+
+it.effect("decodes a dispatch error that carries the decider's refusal", () =>
+  Effect.gen(function* () {
+    // The handles are the caller's own input echoed back; a schema that
+    // dropped them would leave the client knowing only THAT a mention failed.
+    const error = yield* decodeDispatchCommandError({
+      _tag: "OrchestrationDispatchCommandError",
+      message: "Orchestration command invariant failed (channel.post.create): unresolved.",
+      refusal: { _tag: "mentions-unresolved", handles: ["boss1", "nobody"] },
+    });
+
+    assert.deepStrictEqual(error.refusal, {
+      _tag: "mentions-unresolved",
+      handles: [ChannelMemberHandle.make("boss1"), ChannelMemberHandle.make("nobody")],
+    });
+
+    const plain = yield* decodeDispatchCommandError({
+      _tag: "OrchestrationDispatchCommandError",
+      message: "Failed to dispatch orchestration command",
+    });
+    assert.strictEqual(plain.refusal, undefined);
+  }),
+);
+
+it.effect("refuses a dispatch error whose refusal tag it does not know", () =>
+  Effect.gen(function* () {
+    // A fourth member of `CommandInvariantRefusal` reaching a client built
+    // before it: the whole error fails to decode, which is why adding one is
+    // a client-breaking change. A fallback member in the union greens this.
+    const exit = yield* Effect.exit(
+      decodeDispatchCommandError({
+        _tag: "OrchestrationDispatchCommandError",
+        message: "Orchestration command invariant failed (channel.post.create): unknown.",
+        refusal: { _tag: "unknown" },
+      }),
+    );
+
+    assert.isTrue(Exit.isFailure(exit));
   }),
 );
 

@@ -58,12 +58,14 @@ import { RELAY_HEALTH_REQUEST_TYP, RELAY_MINT_REQUEST_TYP } from "@t3tools/share
 import * as RelayClient from "@t3tools/shared/relayClient";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -125,7 +127,11 @@ import {
 import { ChannelPostWakeRepository } from "./persistence/Services/ChannelPostWakes.ts";
 import { ProjectionTurnRepository } from "./persistence/Services/ProjectionTurns.ts";
 import {
+  OrchestrationCommandIdConflictError,
+  OrchestrationCommandInvariantError,
+  OrchestrationCommandPreviouslyRejectedError,
   OrchestrationListenerCallbackError,
+  OrchestrationProjectorDecodeError,
   OrchestrationThreadSettleBlockedError,
 } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -134,7 +140,7 @@ import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { OrchestrationEventStoreLive } from "./persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationEventStore } from "./persistence/Services/OrchestrationEventStore.ts";
-import { PersistenceSqlError } from "./persistence/Errors.ts";
+import { PersistenceDecodeError, PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import { ProviderAuthService } from "./provider/Services/ProviderAuthService.ts";
@@ -2263,6 +2269,500 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepStrictEqual(issuers, [
         { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
       ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("answers a decider refusal on the HTTP door as a refusal, not an internal error", () =>
+    Effect.gen(function* () {
+      // MEASURED before the fix: 500 `orchestration_dispatch_failed`. One
+      // `Effect.catch` folded every typed failure into the internal error, so
+      // a caller refused for a reason the decider states precisely - not a
+      // member, archived, a mention nobody holds - was told the server broke
+      // (`t3_bot-nqf`). The socket door forwarded the same input as the
+      // refusal's own message; the two doors disagreed about one input.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.fail(
+                new OrchestrationCommandInvariantError({
+                  commandType: "channel.post.create",
+                  detail: "Author is not a member of channel 'channel-project'.",
+                  reason: { _tag: "author-not-member" },
+                }),
+              ),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "channel.post.create",
+          commandId: "cmd-http-refused",
+          channelId: "channel-project",
+          postId: "post-http-refused",
+          body: "posted by a non-member",
+          mentions: [],
+          parentPostId: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      });
+      const body = yield* responseJsonEffect<{
+        readonly _tag: string;
+        readonly code: string;
+        readonly commandType: string;
+        readonly refusal: unknown;
+        readonly message: string;
+        readonly traceId: string;
+      }>(response);
+
+      // The status, the tag AND the reason: pointing the invariant arm back at
+      // `failEnvironmentInternal` reds the first two; dropping `refusal` from
+      // the helper reds the third while the status stays 409.
+      assert.equal(response.status, 409);
+      assert.equal(body._tag, "EnvironmentCommandRefusedError");
+      assert.equal(body.code, "command_refused");
+      assert.equal(body.commandType, "channel.post.create");
+      assert.deepStrictEqual(body.refusal, { _tag: "author-not-member" });
+      assert.equal(
+        body.message,
+        "Orchestration command invariant failed (channel.post.create): Author is not a member of channel 'channel-project'.",
+      );
+      assert.equal(typeof body.traceId, "string");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("answers an untagged decider refusal on the HTTP door as a refusal with no tag", () =>
+    Effect.gen(function* () {
+      // Most invariants carry no `reason`: every `invariantError` without a
+      // third argument, every constructor in the decider. The tagged test
+      // above cannot see the arm narrowed to "tagged is 409, untagged is
+      // 500"; this fixture has no tag and no cause, so it is the arm's
+      // refusal branch alone.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.fail(
+                new OrchestrationCommandInvariantError({
+                  commandType: "thread.settle",
+                  detail: "thread is archived",
+                }),
+              ),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "thread.settle",
+          commandId: "cmd-http-untagged-refusal",
+          threadId: "thread-http-untagged-refusal",
+        }),
+      });
+      const body = yield* responseJsonEffect<{
+        readonly _tag: string;
+        readonly code: string;
+        readonly commandType: string;
+        readonly refusal?: unknown;
+        readonly message: string;
+      }>(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body._tag, "EnvironmentCommandRefusedError");
+      assert.equal(body.code, "command_refused");
+      assert.equal(body.commandType, "thread.settle");
+      assert.equal(body.refusal, undefined);
+      assert.equal(
+        body.message,
+        "Orchestration command invariant failed (thread.settle): thread is archived",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("answers a blocked settlement on the HTTP door as a refusal with no tag", () =>
+    Effect.gen(function* () {
+      // THE SECOND ARM. `OrchestrationThreadSettleBlockedError` is the other
+      // member of `OrchestrationCommandRejection`, and an arm of its own in the
+      // door's mapping; the invariant test above cannot see this one re-pointed
+      // at the internal error. No `refusal`: the decider gave no tag, and the
+      // prose is the friendly sentence the socket door already forwards.
+      const threadId = ThreadId.make("thread-http-settle-blocked");
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () => Effect.fail(new OrchestrationThreadSettleBlockedError({ threadId })),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "thread.settle",
+          commandId: "cmd-http-settle-blocked",
+          threadId,
+        }),
+      });
+      const body = yield* responseJsonEffect<{
+        readonly _tag: string;
+        readonly commandType: string;
+        readonly refusal?: unknown;
+        readonly message: string;
+      }>(response);
+
+      assert.equal(response.status, 409);
+      assert.equal(body._tag, "EnvironmentCommandRefusedError");
+      assert.equal(body.commandType, "thread.settle");
+      assert.equal(body.refusal, undefined);
+      assert.equal(
+        body.message,
+        "This thread still needs attention. Resolve or interrupt it first, then try again.",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("answers a retry of a refused commandId on the HTTP door as the same refusal", () =>
+    Effect.gen(function* () {
+      // The engine persists a rejection's receipt and replays it as
+      // `OrchestrationCommandPreviouslyRejectedError` when the same commandId
+      // comes back (pinned in OrchestrationEngine.test.ts). Pointing that arm
+      // at the internal error made one refusal 409 on the first attempt and
+      // 500 on the retry; this stub is the engine's two answers in order.
+      const threadId = ThreadId.make("thread-http-settle-replay");
+      let attempts = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (command) => {
+              attempts += 1;
+              const first = new OrchestrationThreadSettleBlockedError({ threadId });
+              return attempts === 1
+                ? Effect.fail(first)
+                : Effect.fail(
+                    new OrchestrationCommandPreviouslyRejectedError({
+                      commandId: command.commandId,
+                      detail: first.message,
+                    }),
+                  );
+            },
+          },
+        },
+      });
+
+      const url = yield* getHttpServerUrl("/api/orchestration/dispatch");
+      const cookie = yield* getAuthenticatedSessionCookieHeader();
+      const dispatch = () =>
+        fetchEffect(url, {
+          method: "POST",
+          headers: { "content-type": "application/json", cookie },
+          body: jsonRequestBody({
+            type: "thread.settle",
+            commandId: "cmd-http-settle-replay",
+            threadId,
+          }),
+        });
+      const first = yield* dispatch();
+      const second = yield* dispatch();
+      const body = yield* responseJsonEffect<{
+        readonly _tag: string;
+        readonly commandType: string;
+        readonly refusal?: unknown;
+        readonly message: string;
+      }>(second);
+
+      assert.equal(first.status, 409);
+      assert.equal(second.status, 409);
+      assert.equal(body._tag, "EnvironmentCommandRefusedError");
+      assert.equal(body.commandType, "thread.settle");
+      assert.equal(body.refusal, undefined);
+      assert.equal(
+        body.message,
+        "Command previously rejected (cmd-http-settle-replay): This thread still needs attention. Resolve or interrupt it first, then try again.",
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("answers the engine's wrapped crypto failure on the HTTP door as internal", () =>
+    Effect.gen(function* () {
+      // The exact shape `OrchestrationEngine.ts` builds when event-id
+      // generation fails: the invariant class with a `cause` and no `reason`.
+      // Dropping the `cause` guard from the invariant arm answers this 409.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.fail(
+                new OrchestrationCommandInvariantError({
+                  commandType: "thread.settle",
+                  detail: "Failed to generate an event identifier.",
+                  cause: new Error("crypto-failed"),
+                }),
+              ),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "thread.settle",
+          commandId: "cmd-http-crypto-failed",
+          threadId: "thread-http-crypto-failed",
+        }),
+      });
+      const body = yield* responseJsonEffect<{
+        readonly _tag: string;
+        readonly reason: string;
+      }>(response);
+
+      assert.equal(response.status, 500);
+      assert.equal(body._tag, "EnvironmentInternalError");
+      assert.equal(body.reason, "orchestration_dispatch_failed");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  // Thrown outside any Effect on purpose: the point is a defect that carries a
+  // `_tag` (`SchemaError`) which no dispatch arm names.
+  const decodeNumberSync = Schema.decodeUnknownSync(Schema.Number);
+  const thrownSchemaError = (): unknown => {
+    try {
+      decodeNumberSync("x");
+    } catch (error) {
+      return error;
+    }
+    throw new Error("decoding 'x' as a number did not throw");
+  };
+
+  it.effect("answers a squashed defect on the HTTP door as an internal error with a trace", () =>
+    Effect.gen(function* () {
+      // What the engine hands this door when its worker throws: `Cause.squash`
+      // of the Die, failed into the Deferred as a typed failure. Two shapes,
+      // because the backstop's predicate can tell them apart: a TypeError has
+      // no `_tag`; a thrown SchemaError carries `_tag: "SchemaError"`, which
+      // no arm names. `catchTags` matches neither; a backstop keyed on the
+      // ABSENCE of a `_tag` (the first version of this fix) answered the second
+      // as an empty 500 with no traceId.
+      // `Cause.squash` of a Die is the thrown value itself, so the thrown
+      // SchemaError IS the shape the engine hands the door.
+      const squashedDefects: Array<unknown> = [new TypeError("boom-untagged"), thrownSchemaError()];
+      let hit = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () => Effect.fail(squashedDefects[hit++] as never),
+          },
+        },
+      });
+
+      for (const commandId of ["cmd-http-squashed-defect", "cmd-http-squashed-schema-defect"]) {
+        const response = yield* fetchEffect(
+          yield* getHttpServerUrl("/api/orchestration/dispatch"),
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              cookie: yield* getAuthenticatedSessionCookieHeader(),
+            },
+            body: jsonRequestBody({
+              type: "thread.settle",
+              commandId,
+              threadId: "thread-http-squashed-defect",
+            }),
+          },
+        );
+        const body = yield* responseJsonEffect<{
+          readonly _tag: string;
+          readonly reason: string;
+          readonly traceId: unknown;
+        } | null>(response);
+
+        assert.equal(response.status, 500, commandId);
+        // An empty body parses as null; the status alone is what the door
+        // answered without the backstop.
+        assert.notEqual(body, null, commandId);
+        assert.equal(body?._tag, "EnvironmentInternalError", commandId);
+        assert.equal(body?.reason, "orchestration_dispatch_failed", commandId);
+        assert.equal(typeof body?.traceId, "string", commandId);
+      }
+      assert.equal(hit, 2);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("answers a died dispatch on the HTTP door as a 500, never as a refusal", () =>
+    Effect.gen(function* () {
+      // A raw Die, not the squashed failure above: the door's catches see
+      // failures only, so a defect leaves as the server's plain 500. A
+      // `catchDefect` answering it as `command_refused` would tell the caller
+      // it conflicted.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () => Effect.die(new Error("simulated defect")),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "thread.settle",
+          commandId: "cmd-http-died",
+          threadId: "thread-http-died",
+        }),
+      });
+      const body = yield* responseJsonEffect<{ readonly _tag?: string } | null>(response);
+
+      assert.equal(response.status, 500);
+      assert.notEqual(body?._tag, "EnvironmentCommandRefusedError");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("still answers a dispatch failure on the HTTP door as an internal error", () =>
+    Effect.gen(function* () {
+      // The other side of the split, so a fix that widened the refusal arm to
+      // "everything typed" would show here: a listener failure is the server's
+      // situation, and it keeps its 500 and its reason.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.fail(
+                new OrchestrationListenerCallbackError({
+                  listener: "domain-event",
+                  detail: "simulated dispatch failure",
+                }),
+              ),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "thread.settle",
+          commandId: "cmd-http-dispatch-failed",
+          threadId: "thread-http-dispatch-failed",
+        }),
+      });
+      const body = yield* responseJsonEffect<{
+        readonly _tag: string;
+        readonly reason: string;
+      }>(response);
+
+      assert.equal(response.status, 500);
+      assert.equal(body._tag, "EnvironmentInternalError");
+      assert.equal(body.reason, "orchestration_dispatch_failed");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("answers each member of the dispatch union on the HTTP door by its own arm", () =>
+    Effect.gen(function* () {
+      // Six arms, six sites: re-pointing any one internal arm at the refusal
+      // survived the whole file when only the listener arm was pinned. One
+      // app, one request per member; the failure message names the member.
+      const rows = [
+        {
+          error: new PersistenceSqlError({ operation: "appendEvents" }),
+          expected: { status: 500, _tag: "EnvironmentInternalError" },
+        },
+        {
+          error: new PersistenceDecodeError({ operation: "readEvents", issue: "bad row" }),
+          expected: { status: 500, _tag: "EnvironmentInternalError" },
+        },
+        {
+          error: new OrchestrationCommandIdConflictError({
+            commandId: "cmd-http-arm-table",
+            receiptAggregateKind: "thread",
+            receiptAggregateId: "thread-other",
+            commandAggregateKind: "thread",
+            commandAggregateId: "thread-http-arm-table",
+          }),
+          expected: { status: 500, _tag: "EnvironmentInternalError" },
+        },
+        {
+          // A replayed rejection is the caller's situation again (REPLAY-001).
+          error: new OrchestrationCommandPreviouslyRejectedError({
+            commandId: "cmd-http-arm-table",
+            detail: "Previously rejected.",
+          }),
+          expected: { status: 409, _tag: "EnvironmentCommandRefusedError" },
+        },
+        {
+          error: new OrchestrationProjectorDecodeError({
+            eventType: "thread.settled",
+            issue: "bad",
+          }),
+          expected: { status: 500, _tag: "EnvironmentInternalError" },
+        },
+        {
+          error: new OrchestrationListenerCallbackError({
+            listener: "domain-event",
+            detail: "bad",
+          }),
+          expected: { status: 500, _tag: "EnvironmentInternalError" },
+        },
+      ] as const;
+      let current: (typeof rows)[number]["error"] | undefined;
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              current === undefined ? Effect.die("no row selected") : Effect.fail(current),
+          },
+        },
+      });
+      const url = yield* getHttpServerUrl("/api/orchestration/dispatch");
+      const cookie = yield* getAuthenticatedSessionCookieHeader();
+
+      for (const row of rows) {
+        current = row.error;
+        const response = yield* fetchEffect(url, {
+          method: "POST",
+          headers: { "content-type": "application/json", cookie },
+          body: jsonRequestBody({
+            type: "thread.settle",
+            commandId: "cmd-http-arm-table",
+            threadId: "thread-http-arm-table",
+          }),
+        });
+        const body = yield* responseJsonEffect<{
+          readonly _tag: string;
+          readonly reason?: string;
+        }>(response);
+
+        assert.equal(response.status, row.expected.status, row.error._tag);
+        assert.equal(body._tag, row.expected._tag, row.error._tag);
+        if (row.expected.status === 500) {
+          assert.equal(body.reason, "orchestration_dispatch_failed", row.error._tag);
+        }
+      }
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -11865,6 +12365,96 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         error.message,
         "This thread still needs attention. Resolve or interrupt it first, then try again.",
       );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("forwards a decider refusal's tag over websocket rpc", () =>
+    Effect.gen(function* () {
+      // This door already forwarded the refusal's prose (the settle test
+      // above); what it dropped was the TAG, so a client could tell WHY only
+      // by reading English that names an internal channel id. The HTTP door
+      // answers the same input with the same tag (`t3_bot-nqf`).
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.fail(
+                new OrchestrationCommandInvariantError({
+                  commandType: "channel.post.create",
+                  detail: "Mentions did not resolve: nobody.",
+                  reason: {
+                    _tag: "mentions-unresolved",
+                    handles: [ChannelMemberHandle.make("nobody")],
+                  },
+                }),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const error = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "channel.post.create",
+            commandId: CommandId.make("cmd-ws-refused"),
+            channelId: ChannelId.make("channel-project"),
+            postId: ChannelPostId.make("post-ws-refused"),
+            body: "hello @nobody",
+            mentions: [ChannelMemberHandle.make("nobody")],
+            parentPostId: null,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }),
+        ).pipe(Effect.flip),
+      );
+
+      if (error._tag !== "OrchestrationDispatchCommandError") {
+        assert.fail(`Expected an OrchestrationDispatchCommandError, got ${error._tag}`);
+      }
+      assert.equal(
+        error.message,
+        "Orchestration command invariant failed (channel.post.create): Mentions did not resolve: nobody.",
+      );
+      // The handles come back through the wire schema, not only the tag.
+      assert.deepStrictEqual(error.refusal, {
+        _tag: "mentions-unresolved",
+        handles: [ChannelMemberHandle.make("nobody")],
+      });
+      // A refusal classified by tag carries nothing in `cause` that `message`
+      // and `refusal` do not; re-attaching the invariant error here puts a
+      // second copy of the sentence plus a server class name on the wire.
+      assert.equal(error.cause, undefined);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("leaves a died dispatch a defect over websocket rpc, never a refusal", () =>
+    Effect.gen(function* () {
+      // The socket door maps failures into `OrchestrationDispatchCommandError`;
+      // a Die is not a failure and stays one. Squashing the cause into a
+      // dispatch error (`Effect.catchCause` in place of `mapError`) would
+      // hand the client a typed error for a server that broke.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () => Effect.die(new Error("simulated defect")),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const exit = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.settle",
+            commandId: CommandId.make("cmd-ws-died"),
+            threadId: ThreadId.make("thread-ws-died"),
+          }),
+        ).pipe(Effect.exit),
+      );
+
+      if (!Exit.isFailure(exit)) assert.fail("dispatch succeeded");
+      assert.isTrue(Cause.hasDies(exit.cause));
+      assert.isFalse(Cause.hasFails(exit.cause));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
@@ -15,11 +16,13 @@ import { withMemberChannels } from "./channelShell.ts";
 import { cleanupFailedUploadedAttachments, normalizeDispatchCommand } from "./Normalizer.ts";
 import {
   annotateEnvironmentRequest,
+  failEnvironmentCommandRefused,
   failEnvironmentInternal,
   failEnvironmentInvalidRequest,
   failEnvironmentNotFound,
   requireEnvironmentScope,
 } from "../auth/http.ts";
+import type { OrchestrationDispatchError } from "./Errors.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 
@@ -145,6 +148,58 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           const normalizedCommand = yield* normalizeDispatchCommand(args.payload).pipe(
             Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")),
           );
+          // EVERY TAG LISTED, as on `channelPosts` above. One `Effect.catch`
+          // here answered a decider refusal - not a member, archived, a
+          // mention nobody holds - as `orchestration_dispatch_failed`, a
+          // 500, so a caller refused for a stated reason was told the
+          // server broke (`t3_bot-nqf`). The two rejections are the
+          // caller's situation; the rest are the server's. The mapped type
+          // makes a new member of `OrchestrationDispatchError` a type error
+          // here, not a 500.
+          const arms: {
+            readonly [K in OrchestrationDispatchError["_tag"]]: (
+              error: Extract<OrchestrationDispatchError, { readonly _tag: K }>,
+            ) => ReturnType<typeof failEnvironmentInternal | typeof failEnvironmentCommandRefused>;
+          } = {
+            // One production constructor of this class is not a refusal:
+            // the engine wraps a Crypto failure in it with a `cause`
+            // (`OrchestrationEngine.ts`, "Failed to generate an event
+            // identifier."). Answering that 409 tells the caller it
+            // conflicted; it is the server's failure, so it keeps its 500.
+            OrchestrationCommandInvariantError: (error) =>
+              error.cause !== undefined
+                ? failEnvironmentInternal("orchestration_dispatch_failed", error)
+                : failEnvironmentCommandRefused({
+                    commandType: normalizedCommand.type,
+                    message: error.message,
+                    ...(error.reason !== undefined ? { refusal: error.reason } : {}),
+                  }),
+            OrchestrationThreadSettleBlockedError: (error) =>
+              failEnvironmentCommandRefused({
+                commandType: normalizedCommand.type,
+                message: error.message,
+              }),
+            PersistenceSqlError: (cause) =>
+              failEnvironmentInternal("orchestration_dispatch_failed", cause),
+            PersistenceDecodeError: (cause) =>
+              failEnvironmentInternal("orchestration_dispatch_failed", cause),
+            OrchestrationCommandIdConflictError: (cause) =>
+              failEnvironmentInternal("orchestration_dispatch_failed", cause),
+            // A retry of a refused commandId: the engine persisted the
+            // rejection's `message` in its receipt and replays it here
+            // (`OrchestrationEngine.ts`, `status: "rejected"`). Same
+            // situation as the first attempt, so the same 409; no tag is
+            // recoverable from a receipt, so none is sent.
+            OrchestrationCommandPreviouslyRejectedError: (error) =>
+              failEnvironmentCommandRefused({
+                commandType: normalizedCommand.type,
+                message: error.message,
+              }),
+            OrchestrationProjectorDecodeError: (cause) =>
+              failEnvironmentInternal("orchestration_dispatch_failed", cause),
+            OrchestrationListenerCallbackError: (cause) =>
+              failEnvironmentInternal("orchestration_dispatch_failed", cause),
+          };
           // THE SECOND DOOR INTO THE SAME UNION, and it used to pass no issuer.
           // `ClientOrchestrationCommand` is this route's payload and the
           // WebSocket RPC's, so widening it widened both; stamping only the
@@ -155,9 +210,20 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
               Effect.tapError(() =>
                 cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
               ),
-              Effect.catch((cause) =>
-                failEnvironmentInternal("orchestration_dispatch_failed", cause),
+              // The engine squashes a defect in its worker and fails the
+              // caller's Deferred with it (`OrchestrationEngine.ts`,
+              // `Cause.squash(exit.cause) as OrchestrationDispatchError`), so
+              // a thrown TypeError - or a thrown SchemaError, which carries a
+              // `_tag` of its own - reaches this door as a failure no arm
+              // matches. Without this it leaves as an empty 500 with no
+              // traceId and no error-level log. Keyed on the arms, not on the
+              // presence of a `_tag`; before the arms, not after, because a
+              // catch after them folds their 409 too.
+              Effect.catchIf(
+                (cause) => !(Predicate.hasProperty(cause, "_tag") && cause._tag in arms),
+                (cause) => failEnvironmentInternal("orchestration_dispatch_failed", cause),
               ),
+              Effect.catchTags(arms),
             );
         }),
       );

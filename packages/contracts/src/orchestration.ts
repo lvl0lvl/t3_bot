@@ -2907,12 +2907,51 @@ export class OrchestrationGetSnapshotError extends Schema.TaggedError<Orchestrat
   },
 ) {}
 
+/**
+ * WHICH invariant refused, for a caller that acts differently per cause and
+ * must not read the prose to find out.
+ *
+ * The decider's `detail` reaches the caller on both doors as `message`. It
+ * names the channel by its internal id, and the one caller that needed to
+ * classify a refusal (the comms toolkit's gateway) could either match that
+ * English or forward it - and forwarding it handed an agent "Author is not a
+ * member of channel 'channel-seniors-t'", an id the tool surface never
+ * otherwise exposes (`t3_bot-dnz`). So the refusals a caller tells apart
+ * carry a tag, and the prose is never what a caller classifies from.
+ *
+ * Only refusals a caller acts on differently have a member; every other
+ * invariant is "this command can never apply" and one shape serves them. A
+ * member carries what the caller has to SAY and nothing about the channel:
+ * the unresolved handles are the caller's own input, echoed back.
+ *
+ * It lives here rather than beside the decider because both dispatch doors
+ * put it on the wire (`t3_bot-nqf`): the socket in
+ * `OrchestrationDispatchCommandError.refusal`, HTTP in
+ * `EnvironmentCommandRefusedError.refusal`. On the wire it is a CLOSED union:
+ * an older client handed a tag it does not know fails to decode the whole
+ * error, and `RpcClient` turns that into a defect in place of the refusal
+ * (`orDie`). Adding a member is a client-breaking change; it ships after the
+ * clients know the tag.
+ */
+export const CommandInvariantRefusal = Schema.Union([
+  Schema.TaggedStruct("channel-archived", {}),
+  Schema.TaggedStruct("author-not-member", {}),
+  Schema.TaggedStruct("mentions-unresolved", { handles: Schema.Array(ChannelMemberHandle) }),
+]);
+export type CommandInvariantRefusal = typeof CommandInvariantRefusal.Type;
+
 export class OrchestrationDispatchCommandError extends Schema.TaggedError<OrchestrationDispatchCommandError>()(
   "OrchestrationDispatchCommandError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),
     bootstrapThreadDisposition: Schema.optional(Schema.Literal("deleted")),
+    /**
+     * Present when the decider refused the command for a reason a caller acts
+     * on; `message` then carries the refusal's prose. Absent for a refusal
+     * with no tagged reason and for every failure that is not a refusal.
+     */
+    refusal: Schema.optional(CommandInvariantRefusal),
   },
 ) {}
 
