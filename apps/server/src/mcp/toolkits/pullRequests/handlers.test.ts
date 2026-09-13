@@ -29,6 +29,10 @@ import { PullRequestLinkFailedError, PullRequestsToolkit } from "./tools.ts";
 
 const PROJECT_ID = ProjectId.make("project-1");
 const THREAD_ID = ThreadId.make("thread-1");
+// A second token's thread. With every fixture at THREAD_ID, a handler that
+// stamps the constant "thread-1" is indistinguishable from one that stamps
+// the token's thread; the door tests dispatch once as each.
+const OTHER_THREAD_ID = ThreadId.make("thread-2");
 
 const testCrypto = Crypto.make({
   randomBytes: (size) => new Uint8Array(size).fill(7),
@@ -37,9 +41,10 @@ const testCrypto = Crypto.make({
 
 const invocation = (
   capabilities: ReadonlyArray<McpInvocationContext.McpCapability>,
+  threadId: ThreadId,
 ): McpInvocationContext.McpInvocationScope => ({
   environmentId: EnvironmentId.make("environment-1"),
-  threadId: THREAD_ID,
+  threadId,
   providerSessionId: "provider-session-1",
   providerInstanceId: ProviderInstanceId.make("codex"),
   capabilities: new Set(capabilities),
@@ -156,8 +161,13 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
     });
   const dependencies = Layer.mergeAll(
     Layer.mock(ProjectionSnapshotQuery)({
+      // The one thread fixture answers for either token id, under that id.
       getThreadShellById: (threadId) =>
-        Effect.succeed(threadId === THREAD_ID ? Option.fromNullishOr(thread) : Option.none()),
+        Effect.succeed(
+          thread !== null && (threadId === THREAD_ID || threadId === OTHER_THREAD_ID)
+            ? Option.some({ ...thread, id: threadId })
+            : Option.none(),
+        ),
       getProjectShellById: () => Effect.succeed(Option.fromNullishOr(project)),
     }),
     Layer.mock(OrchestrationEngineService)({
@@ -175,6 +185,7 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
     name: Name,
     params: Parameters<typeof toolkit.handle<Name>>[1],
     capabilities: ReadonlyArray<McpInvocationContext.McpCapability> = ["pull-requests"],
+    threadId: ThreadId = THREAD_ID,
   ) =>
     toolkit.handle(name, params).pipe(
       Stream.unwrap,
@@ -183,7 +194,10 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
       Effect.map(
         (chunk) => chunk.at(-1)!.result as Tool.Success<(typeof PullRequestsToolkit.tools)[Name]>,
       ),
-      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(capabilities)),
+      Effect.provideService(
+        McpInvocationContext.McpInvocationContext,
+        invocation(capabilities, threadId),
+      ),
       Effect.provide(dependencies),
     );
   return { commands, dispatches, call };
@@ -239,25 +253,36 @@ describe("pull request toolkit handlers", () => {
       // out: a comparison against the thread fixture would move with a wrong
       // constant. `undefined` here is exactly what the bare dispatch produced.
       const harness = yield* makeHarness();
-      yield* harness.call("link_pull_request", {
-        url: "https://github.com/T3Tools/T3Code/pull/123",
-      });
+      const params = { url: "https://github.com/T3Tools/T3Code/pull/123" };
+      yield* harness.call("link_pull_request", params);
+      yield* harness.call("link_pull_request", params, ["pull-requests"], OTHER_THREAD_ID);
       const dispatches = yield* Ref.get(harness.dispatches);
-      expect(dispatches).toStrictEqual([{ issuer: { memberKind: "thread", memberId: THREAD_ID } }]);
-      expect(Object.keys(dispatches[0] as object)).toEqual(["issuer"]);
+      expect(dispatches).toStrictEqual([
+        { issuer: { memberKind: "thread", memberId: THREAD_ID } },
+        { issuer: { memberKind: "thread", memberId: OTHER_THREAD_ID } },
+      ]);
+      expect(dispatches.map((options) => Object.keys(options as object))).toEqual([
+        ["issuer"],
+        ["issuer"],
+      ]);
     }),
   );
 
   it.effect("issues an unlink as the token's thread, not bare", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ thread: makeThread([makeLink(5)]) });
-      yield* harness.call("unlink_pull_request", {
-        repository: "t3tools/t3code",
-        number: 5,
-      });
+      const params = { repository: "t3tools/t3code", number: 5 };
+      yield* harness.call("unlink_pull_request", params);
+      yield* harness.call("unlink_pull_request", params, ["pull-requests"], OTHER_THREAD_ID);
       const dispatches = yield* Ref.get(harness.dispatches);
-      expect(dispatches).toStrictEqual([{ issuer: { memberKind: "thread", memberId: THREAD_ID } }]);
-      expect(Object.keys(dispatches[0] as object)).toEqual(["issuer"]);
+      expect(dispatches).toStrictEqual([
+        { issuer: { memberKind: "thread", memberId: THREAD_ID } },
+        { issuer: { memberKind: "thread", memberId: OTHER_THREAD_ID } },
+      ]);
+      expect(dispatches.map((options) => Object.keys(options as object))).toEqual([
+        ["issuer"],
+        ["issuer"],
+      ]);
     }),
   );
 
