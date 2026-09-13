@@ -1,4 +1,9 @@
-import { HUMAN_OPERATOR_MEMBER_ID, type OrchestrationCommand } from "@t3tools/contracts";
+import {
+  CommandId,
+  HUMAN_OPERATOR_MEMBER_ID,
+  type OrchestrationCommand,
+  ProjectId,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
@@ -30,12 +35,12 @@ const recording = () => {
 // `channel.*` commands leaves this bare.
 const command: OrchestrationCommand = {
   type: "project.create",
-  commandId: "cmd-1",
-  projectId: "project-1",
+  commandId: CommandId.make("cmd-1"),
+  projectId: ProjectId.make("project-1"),
   title: "one",
   workspaceRoot: "/tmp/one",
   createdAt: "2026-01-01T00:00:00.000Z",
-} as OrchestrationCommand;
+};
 
 describe("makeClientDispatch", () => {
   it.effect("issues every command as the human operator, spelled out", () =>
