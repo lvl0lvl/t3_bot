@@ -8,13 +8,13 @@
  * authors — every fixture in the repository gave its members ids that differed
  * in BOTH fields, so `memberId === x` and `memberKind === k && memberId === x`
  * returned the same answer for every input any test supplied. The comparison
- * was not under-tested; it was UNTESTABLE with the data we had. Four files then
- * grew their own colliding fixture, each spelling the collision differently.
- * This is the one spelling.
+ * was not under-tested; it was UNTESTABLE with the data we had. Six sites in
+ * five files then grew their own colliding fixture, each spelling the collision
+ * differently, and a seventh comparison had none. This is the one spelling.
  *
  * THE ID IS THE OPERATOR'S ON PURPOSE. `HUMAN_OPERATOR_MEMBER_ID` is a name
- * every test already has a reason to know, and two of the four home-grown
- * fixtures had already picked it by accident. A thread that happens to be
+ * every test already has a reason to know, and two of the home-grown fixtures
+ * had already picked it by accident. A thread that happens to be
  * created with that id is exactly the shape of the real collision.
  *
  * WHY THE COLLISION IS REACHABLE AT ALL, and why the fixture is an ORDERING.
@@ -35,13 +35,15 @@
  * collision spent itself proving the wrong thing. Criterion 5 holds: nothing
  * here weakens the shape guard, and the ordering path does not need it to.
  *
- * TWO CONSUMERS, BECAUSE TESTS DRIVE THE AGGREGATE TWO WAYS. Tests that hold a
+ * THREE CONSUMERS, BECAUSE TESTS REACH A ROSTER THREE WAYS. Tests that hold a
  * running engine perform the three dispatches (`seedCollidingRoster`). The
  * decider's tests are pure and hold a read model, so they take the roster AS
  * EVENTS WOULD LEAVE IT (`collidingReadModel`) — which is also the path a row
- * written before the shape guard existed arrives by. Both produce the same
- * roster; a test that asserts the two members are told APART works against
- * either.
+ * written before the shape guard existed arrives by. Read-side tests that
+ * stub or write the projection directly take the rows (`collidingMembers`,
+ * `COLLIDING_THREAD_MEMBER`) or an event's ref (`COLLIDING_THREAD_REF`). All
+ * produce the same collision; a test that asserts the two members are told
+ * APART works against any of them.
  *
  * @module collidingRoster
  */
