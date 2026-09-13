@@ -58,12 +58,14 @@ import { RELAY_HEALTH_REQUEST_TYP, RELAY_MINT_REQUEST_TYP } from "@t3tools/share
 import * as RelayClient from "@t3tools/shared/relayClient";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -2577,6 +2579,39 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(body?._tag, "EnvironmentInternalError");
       assert.equal(body?.reason, "orchestration_dispatch_failed");
       assert.equal(typeof body?.traceId, "string");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("answers a died dispatch on the HTTP door as a 500, never as a refusal", () =>
+    Effect.gen(function* () {
+      // A raw Die, not the squashed failure above: the door's catches see
+      // failures only, so a defect leaves as the server's plain 500. A
+      // `catchDefect` answering it as `command_refused` would tell the caller
+      // it conflicted.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () => Effect.die(new Error("simulated defect")),
+          },
+        },
+      });
+
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie: yield* getAuthenticatedSessionCookieHeader(),
+        },
+        body: jsonRequestBody({
+          type: "thread.settle",
+          commandId: "cmd-http-died",
+          threadId: "thread-http-died",
+        }),
+      });
+      const body = yield* responseJsonEffect<{ readonly _tag?: string } | null>(response);
+
+      assert.equal(response.status, 500);
+      assert.notEqual(body?._tag, "EnvironmentCommandRefusedError");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -12360,6 +12395,37 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         _tag: "mentions-unresolved",
         handles: [ChannelMemberHandle.make("nobody")],
       });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("leaves a died dispatch a defect over websocket rpc, never a refusal", () =>
+    Effect.gen(function* () {
+      // The socket door maps failures into `OrchestrationDispatchCommandError`;
+      // a Die is not a failure and stays one. Squashing the cause into a
+      // dispatch error (`Effect.catchCause` in place of `mapError`) would
+      // hand the client a typed error for a server that broke.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () => Effect.die(new Error("simulated defect")),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const exit = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.settle",
+            commandId: CommandId.make("cmd-ws-died"),
+            threadId: ThreadId.make("thread-ws-died"),
+          }),
+        ).pipe(Effect.exit),
+      );
+
+      if (!Exit.isFailure(exit)) assert.fail("dispatch succeeded");
+      assert.isTrue(Cause.hasDies(exit.cause));
+      assert.isFalse(Cause.hasFails(exit.cause));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
