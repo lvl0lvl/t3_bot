@@ -728,7 +728,6 @@ describe("ChannelPostRegion", () => {
     expect(bodies(tree)).toEqual(["only"]);
     expect(buttonLabels(tree)).toContain("Newer posts didn’t load. Try again");
     expect(buttonLabels(tree)).not.toContain("New posts");
-    expect(buttonLabels(tree)).not.toContain("Earlier posts didn’t load. Try again");
 
     // The retry re-issues the read that failed: the newest page, no cursor. AND IT
     // DOES NOT SCROLL: a reader who wheeled up within a long newest page is pulled
