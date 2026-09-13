@@ -15,6 +15,7 @@ import {
   exitCodeFor,
   formatReport,
   judge,
+  nonNormalMutationPaths,
   readVitestJson,
   statusPaths,
   type Mutation,
@@ -550,6 +551,69 @@ describe("duplicateMutationIds", () => {
     expect(
       duplicateMutationIds([{ id: "z" }, { id: "z" }, { id: "z" }, { id: "a" }, { id: "a" }]),
     ).toEqual(["a", "z"]);
+  });
+});
+
+describe("nonNormalMutationPaths", () => {
+  const row = (id: string, file: string) => ({ id, file });
+
+  it("names a row whose path git would print without the `./`", () => {
+    // The spelling that caused the false kill. `git status --porcelain` prints
+    // `src/thing.ts`, so a row spelled `./src/thing.ts` matches no keyed check here.
+    expect(nonNormalMutationPaths([row("a", "./src/thing.ts")])).toEqual([
+      { id: "a", file: "./src/thing.ts" },
+    ]);
+  });
+
+  it("names a `..` segment anywhere in the path, and an absolute path", () => {
+    expect(
+      nonNormalMutationPaths([
+        row("dotdot-inside", "src/../src/thing.ts"),
+        row("dotdot-leading", "../sibling/thing.ts"),
+        row("absolute", "/etc/passwd"),
+      ]).map((offender) => offender.id),
+    ).toEqual(["dotdot-inside", "dotdot-leading", "absolute"]);
+  });
+
+  it("ADMITS a dotfile path, which is what separates this from a leading-dot check", () => {
+    // `.github/workflows/ci.yml` is a real mutation target — a check keyed on "starts with a
+    // dot" refuses a config nobody could then write, and the two readings agree on every
+    // other input. This is the test that distinguishes them.
+    expect(
+      nonNormalMutationPaths([
+        row("workflow", ".github/workflows/ci.yml"),
+        row("hidden-file", "src/.hidden.ts"),
+        row("hidden-dir", "src/.cache/thing.ts"),
+        row("dots-in-name", "src/..thing.ts"),
+        row("plain", "src/thing.ts"),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("names a path that is only dots, and the empty path", () => {
+    // `.` and `..` reach `path.join(root, file)` as the repo root and its parent, and the
+    // empty string reaches it as the root itself — none of them is a file to mutate.
+    expect(
+      nonNormalMutationPaths([row("dot", "."), row("dotdot", ".."), row("empty", "")]).map(
+        (offender) => offender.id,
+      ),
+    ).toEqual(["dot", "dotdot", "empty"]);
+  });
+
+  it("names only the offending rows, in config order, carrying each row's own spelling", () => {
+    // The refusal is read by someone editing a config: a message that names a row which is
+    // fine costs them an edit, and one that drops a row costs them a second run.
+    expect(
+      nonNormalMutationPaths([
+        row("fine-first", "src/a.ts"),
+        row("bad-second", "./src/b.ts"),
+        row("fine-third", "src/c.ts"),
+        row("bad-fourth", "src/../src/d.ts"),
+      ]),
+    ).toEqual([
+      { id: "bad-second", file: "./src/b.ts" },
+      { id: "bad-fourth", file: "src/../src/d.ts" },
+    ]);
   });
 });
 
