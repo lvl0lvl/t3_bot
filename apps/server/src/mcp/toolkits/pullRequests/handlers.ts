@@ -225,10 +225,7 @@ const make = Effect.gen(function* () {
             },
             // THE ISSUER, NOT A COMMAND FIELD — the thread the token names, as the
             // comms toolkit stamps its posts. This door dispatched bare and nothing
-            // refused it: no pull-request command has an issuer invariant yet, and
-            // until `t3_bot-9dp` the catch below read EVERY invariant refusal as the
-            // outcome the agent asked for, so the first invariant to land would
-            // have read as `alreadyLinked: true`, not as a failure.
+            // refused it: no pull-request command has an issuer invariant yet.
             issuedBy(thread),
           )
           .pipe(
