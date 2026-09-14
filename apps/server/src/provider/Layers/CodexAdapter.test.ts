@@ -1194,10 +1194,10 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     Effect.gen(function* () {
       // The session runtime's door (`readRouteFields`) admits a padded
       // " msg_1 " and brands it raw. The runtime event's `itemId` keys a
-      // timeline row that ingestion persists and the store decodes on read,
-      // so it carries the DECODED "msg_1" (at base the raw " msg_1 " keyed
-      // one row live and another after replay); `providerRefs.providerItemId`
-      // keeps the app-server's own string.
+      // timeline row: the store decodes every persisted identity, while
+      // ingestion's in-memory caches key by what the adapter emitted, so the
+      // event carries the DECODED "msg_1" to keep the two equal;
+      // `providerRefs.providerItemId` keeps the app-server's own string.
       const { adapter, runtime } = yield* startLifecycleRuntime();
       const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
       yield* runtime.emit({
