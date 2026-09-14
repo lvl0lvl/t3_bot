@@ -500,22 +500,6 @@ const admitMessageTurnId = (id: string) =>
         }),
       )
     : Effect.succeed(TurnId.make(id));
-// A part id from the SDK (`part.id`, `partID`, `part.callID`) is outside
-// input that becomes a RuntimeItemId, the key of a timeline row.
-// `buildEventBase` gated the id by truthiness: "" was dropped before
-// `.make` could throw on it, "  " went through as a row keyed by
-// whitespace, and a number from a broken server reached `.make` and died
-// in the event pump. The decoder refuses all three, and a refused id is
-// dropped the way "" always was: a text part's events go out with no item
-// and ingestion folds the text into the turn's assistant row; a tool
-// `callID` emits the lifecycle without a `toolCallId`, which the clients
-// render uncollapsed. What passes is the DECODED value, unlike the turn id
-// above: the event store decodes persisted events on read
-// (`OrchestrationEventStore`), so a raw " prt_1 " would key one row live
-// and another after replay. The decoder is `decodeRuntimeItemId`
-// (`../runtimeItemId.ts`), the door the Claude and Codex adapters share. The
-// request id is not gated; the decision is recorded at its spread in
-// `buildEventBase`.
 
 /**
  * Map a `Cause.squash`-ed failure into a `ProviderAdapterProcessError`. The
@@ -1061,6 +1045,22 @@ export function makeOpenCodeAdapter(
       const random = Array.from(randomBytes, (byte) => alphabet[byte % alphabet.length]).join("");
       return `msg_${encodedTime}${random}`;
     });
+    // A part id from the SDK (`part.id`, `partID`, `part.callID`) is outside
+    // input that becomes a RuntimeItemId, the key of a timeline row.
+    // `buildEventBase` gated the id by truthiness: "" was dropped before
+    // `.make` could throw on it, "  " went through as a row keyed by
+    // whitespace, and a number from a broken server reached `.make` and died
+    // in the event pump. The decoder refuses all three, and a refused id is
+    // dropped the way "" always was: a text part's events go out with no item
+    // and ingestion folds the text into the turn's assistant row; a tool
+    // `callID` emits the lifecycle without a `toolCallId`, which the clients
+    // render uncollapsed. What passes is the DECODED value, unlike the turn id
+    // in `admitMessageTurnId`: the event store decodes persisted events on
+    // append and on read (`OrchestrationEventStore`), so a raw " prt_1 " would
+    // key ingestion's in-memory caches by whitespace while every persisted
+    // identity is trimmed. The door is `runtimeItemIdField`
+    // (`../runtimeItemId.ts`), shared with Claude. The request id is not
+    // gated; the decision is recorded at its spread below.
     const buildEventBase = (input: EventBaseInput) =>
       Effect.gen(function* () {
         const itemIdField = yield* runtimeItemIdField({
