@@ -6525,6 +6525,13 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
           ["assistant-1"],
         );
+        // A present-but-empty boundary compares raw too: "" is a string.
+        runtimeMock.state.messages[2] = { info: { id: "", role: "assistant" }, parts: [] };
+        runtimeMock.state.revertMessageID = "";
+        NodeAssert.deepEqual(
+          (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
+          ["assistant-1"],
+        );
       }),
   );
 
