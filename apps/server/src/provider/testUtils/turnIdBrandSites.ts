@@ -9,7 +9,9 @@
 // and a block closed as ` */ const x` both keep their code, so a call after
 // either still counts. A same-line comment after code or after another comment
 // (`/* a */ // TurnId.make(id)`), and a string literal, are counted too — a pin
-// reds and the comment is reworded, not listed. What is NOT seen: a cast
+// reds and the comment is reworded, not listed. Stripped by line, not by
+// content: a `/*` inside a string (`const s = "/*";`) would let a content
+// strip eat the code after it. What is NOT seen: a cast
 // `as TurnId`, a longer identifier ending in `TurnId` (`FooTurnId.make(`), an
 // aliased or destructured `make`, a `.call`/`.apply`/`.bind` on it, a bracket
 // access, a call with whitespace around the `.` or before the `(`
