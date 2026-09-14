@@ -758,6 +758,20 @@ describe("the comms toolkit on the live gateway", () => {
         );
         expect(rejected).toMatchObject({ _tag: "ChannelWriteConflict", retryable: false });
 
+        // A TAG THIS SEAM HAS NO WORD FOR: the pull-request door's refusal,
+        // which a channel post can never earn. The arm is `break`, so it lands
+        // where an untagged refusal lands; an arm that answered it with any
+        // named channel error (say `ChannelArchived`) would pass without this
+        // input.
+        const foreignTag = yield* attempt(
+          new OrchestrationCommandInvariantError({
+            commandType: "channel.post.create",
+            detail: "Pull request already linked.",
+            reason: { _tag: "pull-request-already-linked" },
+          }),
+        );
+        expect(foreignTag).toMatchObject({ _tag: "ChannelWriteConflict", retryable: false });
+
         // ANYTHING ELSE is infrastructure and is worth trying again. Both
         // directions, because a discriminator asserted in one direction is
         // satisfied by a constant.

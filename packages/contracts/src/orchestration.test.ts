@@ -111,11 +111,24 @@ it.effect("decodes a dispatch error that carries the decider's refusal", () =>
   }),
 );
 
+it.effect("decodes the pull-request refusal tags the MCP tools answer from", () =>
+  Effect.gen(function* () {
+    for (const tag of ["pull-request-already-linked", "pull-request-not-linked"] as const) {
+      const error = yield* decodeDispatchCommandError({
+        _tag: "OrchestrationDispatchCommandError",
+        message: "Orchestration command invariant failed (thread.pull-request.link): refused.",
+        refusal: { _tag: tag },
+      });
+      assert.deepStrictEqual(error.refusal, { _tag: tag });
+    }
+  }),
+);
+
 it.effect("refuses a dispatch error whose refusal tag it does not know", () =>
   Effect.gen(function* () {
-    // A fourth member of `CommandInvariantRefusal` reaching a client built
-    // before it: the whole error fails to decode, which is why adding one is
-    // a client-breaking change. A fallback member in the union greens this.
+    // A member of `CommandInvariantRefusal` reaching a client built before
+    // it: the whole error fails to decode, which is why adding one is a
+    // client-breaking change. A fallback member in the union greens this.
     const exit = yield* Effect.exit(
       decodeDispatchCommandError({
         _tag: "OrchestrationDispatchCommandError",

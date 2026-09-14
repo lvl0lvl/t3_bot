@@ -1,5 +1,6 @@
 import {
   CommandId,
+  type CommandInvariantRefusal,
   pullRequestHostOf,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
@@ -18,6 +19,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
+import type { OrchestrationDispatchError } from "../../../orchestration/Errors.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -178,6 +180,22 @@ const make = Effect.gen(function* () {
       Effect.mapError((cause) => new Failure({ cause })),
     );
 
+  /**
+   * One refusal of the decider's is an answer, not an error: the one whose tag
+   * says the state the agent asked for is already the state. Every other
+   * `OrchestrationCommandInvariantError` — untagged, or tagged with something
+   * else — is re-failed so `dispatchFailure` reports it.
+   */
+  const refusedAs =
+    <A>(tag: CommandInvariantRefusal["_tag"], answer: A) =>
+    <R>(effect: Effect.Effect<A, OrchestrationDispatchError, R>) =>
+      Effect.catchIf(
+        effect,
+        (error) =>
+          error._tag === "OrchestrationCommandInvariantError" && error.reason?._tag === tag,
+        () => Effect.succeed(answer),
+      );
+
   const dispatchFailure =
     (Failure: typeof PullRequestLinkFailedError | typeof PullRequestUnlinkFailedError) =>
     <E>(
@@ -207,18 +225,17 @@ const make = Effect.gen(function* () {
             },
             // THE ISSUER, NOT A COMMAND FIELD — the thread the token names, as the
             // comms toolkit stamps its posts. This door dispatched bare and nothing
-            // refused it: no pull-request command has an issuer invariant yet, and
-            // the `catchTags` below maps EVERY invariant refusal to the outcome the
-            // agent asked for, so the first invariant to land would have read as
-            // `alreadyLinked: true`, not as a failure. That catch's breadth is its
-            // own bead, t3_bot-9dp.
+            // refused it: no pull-request command has an issuer invariant yet.
             issuedBy(thread),
           )
           .pipe(
             Effect.as(false),
             // The decider rejects a second link of the same PR; for the agent that is
-            // the outcome it asked for, not an error.
-            Effect.catchTags({ OrchestrationCommandInvariantError: () => Effect.succeed(true) }),
+            // the outcome it asked for, not an error — told apart BY TAG. The input
+            // that breaks a catch on the error's tag alone: any other refusal of
+            // this command (the thread gone, an issuer invariant), which read as
+            // "already linked" and left the agent believing a link it never got.
+            refusedAs("pull-request-already-linked", true),
             Effect.catchCause(dispatchFailure(PullRequestLinkFailedError)),
           );
         return { ...target, alreadyLinked };
@@ -242,7 +259,7 @@ const make = Effect.gen(function* () {
           )
           .pipe(
             Effect.as(true),
-            Effect.catchTags({ OrchestrationCommandInvariantError: () => Effect.succeed(false) }),
+            refusedAs("pull-request-not-linked", false),
             Effect.catchCause(dispatchFailure(PullRequestUnlinkFailedError)),
           );
         return {
