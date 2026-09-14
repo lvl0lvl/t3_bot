@@ -6186,13 +6186,15 @@ describe("ClaudeAdapterLive", () => {
 
   it.effect("keys a tool's timeline row only by an id the brand's decoder admits", () => {
     // The SDK's `tool_use` id keys the tool's row. Ingestion persists that key
-    // and the event store decodes it on read, so a raw " tool-1 " would name
-    // one row live and another after replay: the event carries the DECODED
-    // "tool-1". "" and "  " are refused and the lifecycle goes out item-less
-    // with one drop log per event ("" reached `.make` at base and died in
-    // the event pump; "  " went through as a row keyed by whitespace). The
-    // turn state keeps the raw id, so a tool_result naming " tool-1 " still
-    // finds its tool. Four tools in one turn, one block index each.
+    // and the event store decodes it on append and on read, so a raw " tool-1 "
+    // would key ingestion's in-memory caches by whitespace while every
+    // persisted identity is trimmed: the event carries the DECODED "tool-1".
+    // "", "  " and 42 are refused and the lifecycle goes out item-less with one
+    // drop log per event ("" reached `.make` at base and died in the event
+    // pump; "  " went through as a row keyed by whitespace; 42 passed the door
+    // and died in `nativeProviderRefs`' `.make`). The turn state keeps the raw
+    // id, so a tool_result naming " tool-1 " still finds its tool. Five tools
+    // in one turn, one block index each.
     const harness = makeHarness();
     const dropLogs: Array<Record<string, unknown>> = [];
     const logger = Logger.make(({ message }) => {

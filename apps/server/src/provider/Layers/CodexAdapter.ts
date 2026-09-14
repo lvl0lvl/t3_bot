@@ -951,9 +951,10 @@ function contentStreamKindFromMethod(
 // `event.itemId` passed the session runtime's decoder gate (`readRouteFields`
 // via `refusedIds`) and was branded raw, so `providerRefs.providerItemId`
 // below still echoes the app-server's own string. The runtime event's `itemId`
-// keys a timeline row that ingestion persists and the store decodes on read,
-// so it carries the DECODED value (`../runtimeItemId.ts`): at base a padded
-// " msg_1 " keyed one row live and another after replay. A value the gate
+// keys a timeline row that ingestion persists and the store decodes on append
+// and on read, so it carries the DECODED value (`../runtimeItemId.ts`): at
+// base a padded " msg_1 " keyed ingestion's in-memory caches by whitespace
+// while every persisted identity was trimmed. A value the gate
 // admitted is never refused here; the empty branch is the Option's shape, not
 // a second gate. The gate decodes `ProviderItemId`, this fold `RuntimeItemId`;
 // both are `makeEntityId` (`baseSchemas.ts`), so the empty branch is

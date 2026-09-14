@@ -3,17 +3,24 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-// The door every adapter's item id goes through on its way into a runtime
-// event. The id keys a timeline row, and ingestion persists that key
+// The door for the adapters whose runtime state carries the provider's raw
+// id (Claude and OpenCode through `runtimeItemIdField`; Codex through
+// `decodeRuntimeItemId` in a sync fold). ACP ids are trimmed
+// (`makeToolCallState`) or T3-minted before `AcpCoreRuntimeEvents.ts`
+// `.make`s them. The id keys a timeline row, and ingestion persists that key
 // (`assistant:<itemId>`) into an orchestration event the store decodes on
-// read through the brand's decoder, which trims: a raw " msg_1 " keys one row
-// live and another after replay, then splits again on the next live delta. So
-// the runtime event carries the DECODED value, and an id the decoder refuses
-// ("", "  ", a null or a number from a broken provider) is dropped the way ""
-// always was — the event goes out with no item — instead of throwing inside
-// `.make` in the event pump. The adapters' own state stays keyed by the raw
-// provider id (a tool result is matched to its tool_use by the string the
-// provider sent), so only the emitted identity changes.
+// append and on read through the brand's decoder, which trims: every
+// projected and broadcast identity is the trimmed one, while ingestion's
+// in-memory caches (`rememberAssistantMessageId`,
+// `bufferedAssistantTextByMessageId`) key by whatever the adapter emitted. So
+// the runtime event carries the DECODED value, which keeps the two equal, and
+// an id the decoder refuses ("", "  ", a null or a number from a broken
+// provider) is dropped: the event goes out with no item (what OpenCode's
+// truthiness gate did for ""; new for Claude, where "" threw inside `.make`
+// in the event pump and hung the turn, and Codex, where "" was
+// truthiness-dropped and "  " carried). The adapters' own state stays keyed
+// by the raw provider id (a tool result is matched to its tool_use by the
+// string the provider sent), so only the emitted identity changes.
 export const decodeRuntimeItemId = Schema.decodeUnknownOption(RuntimeItemId);
 
 // A refused id is echoed into logs and error details that persist; a 1 MiB

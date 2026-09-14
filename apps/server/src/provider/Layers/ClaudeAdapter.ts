@@ -548,11 +548,12 @@ function formatClaudeUsageLimitWait(waitMs: number): string {
 // A tool block's id is the SDK's `tool_use` id, kept raw in the turn state so
 // the tool_result that names it (`tool_use_id`, the same string) still
 // matches. The runtime event's `itemId` keys a timeline row that ingestion
-// persists and the store decodes on read, so it carries the DECODED value
-// (`../runtimeItemId.ts`): at base a padded " tool-1 " went through `.make`
-// as a row keyed by whitespace, one identity live and another after replay,
-// and "" would have thrown inside `.make` in the event pump. A refused id is
-// dropped with a debug log; the tool's lifecycle then goes out item-less.
+// persists and the store decodes on append and on read, so it carries the
+// DECODED value (`../runtimeItemId.ts`): at base a padded " tool-1 " went
+// through `.make` raw, so ingestion's in-memory caches keyed by whitespace
+// while every persisted identity was trimmed, and "" threw inside `.make` in
+// the event pump and hung the turn. A refused id is dropped with a debug log;
+// the tool's lifecycle then goes out item-less.
 const claudeItemIdField = (context: ClaudeSessionContext, itemId: string) =>
   runtimeItemIdField({
     logKey: "claude.event.item_id_dropped",

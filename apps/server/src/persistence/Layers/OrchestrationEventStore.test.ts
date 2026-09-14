@@ -109,11 +109,12 @@ layer("OrchestrationEventStore", (it) => {
 
   it.effect("decodes a persisted id through its brand on read", () =>
     Effect.gen(function* () {
-      // The reason every adapter carries a DECODED item id: a key branded raw
-      // (`MessageId.make("assistant: msg_1 ")`) is one identity live and,
-      // because the store decodes persisted events and the brand's decoder
-      // trims, another after replay. A store that stopped decoding on read
-      // would make the doors' reason false; this pins the boundary they rest on.
+      // The boundary every adapter's item-id door rests on: the store decodes
+      // persisted events through the brand's decoder, which trims, so a key
+      // branded raw (`MessageId.make("assistant: msg_1 ")`) is never the
+      // identity the projector sees. A store that stopped decoding on read
+      // would make the doors' reason false; this pins the decode boundary, not
+      // a visible split.
       const eventStore = yield* OrchestrationEventStore;
       const threadId = ThreadId.make("thread-padded-id");
       const event = messageEvent(threadId, "evt-padded-id");
