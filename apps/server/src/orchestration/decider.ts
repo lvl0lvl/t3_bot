@@ -2305,9 +2305,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Handle '${command.to}' is already '${from}' in channel '${command.channelId}'.`,
         });
       }
-      // The row's own ref is lifted out of the roster, so only the HANDLE check
-      // can fire here — a rename onto a handle another member holds — and it
-      // fires with the same text an add would.
+      // The renamed row is lifted out of the roster, so on a roster every command
+      // built the only refusal left is the HANDLE clause — a rename onto a handle
+      // another member holds — with the same text an add would give. On a roster
+      // replayed from before `t3_bot-1ez` (one ref under two handles,
+      // `testing/collidingRoster.ts`) the REF clause fires too: the other row
+      // still holds the ref, so renaming EITHER handle is refused naming the
+      // other. That is the delta rule doing its job — a rename answers for the
+      // row it seats — and `member.remove` of one duplicate is the repair.
       yield* requireChannelMembersUnique({
         command,
         seated: channel.members.filter((member) => member.handle !== from),

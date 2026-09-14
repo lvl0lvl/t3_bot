@@ -1247,6 +1247,30 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
     }),
   );
 
+  it.effect("refuses to rename either handle of a ref seated twice, naming the other", () =>
+    Effect.gen(function* () {
+      // A roster replayed from before `t3_bot-1ez`: one ref under two handles,
+      // which no command can build (the delta rule admits an unrelated add
+      // beside it, above). Lifting the renamed row out of the roster leaves the
+      // duplicate's ref seated, so the REF clause refuses and names the handle
+      // the operator did not type. `member.remove` of one duplicate is the
+      // repair; a rename is not.
+      const error = yield* decideOrchestrationCommand({
+        command: renameCommand("boss1", "chief"),
+        readModel: makeReadModel([
+          { handle: "boss1", memberKind: "thread", memberId: "thread-boss1" },
+          { handle: "boss-alt", memberKind: "thread", memberId: "thread-boss1" },
+        ]),
+        issuer: ADMIN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("are the same member");
+        expect(error.detail).toContain("boss-alt");
+      }
+    }),
+  );
+
   it.effect("refuses a rename by a thread issuer", () =>
     Effect.gen(function* () {
       // Administer-only, as add and remove: a thread that could rename a peer
