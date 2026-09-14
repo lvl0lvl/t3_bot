@@ -192,6 +192,36 @@ const configLayer = (input: { readonly baseDir: string; readonly noSeedHierarchy
     }),
   );
 
+interface Activation {
+  readonly awaitActivation: Effect.Effect<void>;
+  readonly activate: Effect.Effect<void>;
+  readonly reactorStart: Effect.Effect<void, never, Scope.Scope>;
+  readonly rootRan: Deferred.Deferred<void>;
+}
+
+/**
+ * Activation as `server.ts` builds it, plus a reactor root that records WHEN it ran into the
+ * same timeline the tracer writes spans to. `forkParked` is the real one: the root is the
+ * shape every reactor's `start` forks, so what this measures is the parking, not a double.
+ */
+const activationRecorder = (timeline: Array<string>) =>
+  Effect.gen(function* () {
+    const activation = yield* Deferred.make<void>();
+    const rootRan = yield* Deferred.make<void>();
+    return {
+      awaitActivation: Deferred.await(activation),
+      activate: Effect.sync(() => {
+        timeline.push("activate");
+      }).pipe(Effect.andThen(Deferred.succeed(activation, undefined)), Effect.asVoid),
+      reactorStart: forkParked(
+        Effect.sync(() => {
+          timeline.push("reactor-root-ran");
+        }).pipe(Effect.andThen(Deferred.succeed(rootRan, undefined))),
+      ),
+      rootRan,
+    } satisfies Activation;
+  });
+
 const startupLayer = (input: {
   readonly databasePath: string;
   readonly baseDir: string;
@@ -204,11 +234,11 @@ const startupLayer = (input: {
     Layer.provide(doubles(input.activation?.reactorStart)),
     // How `server.ts` wires activation: the reference is a Deferred every parked root awaits,
     // and `activate` is what succeeds it. Absent, `forkParked` runs its root at once — the shape
-    // the reactor suites run, and the one the third test below must NOT be measuring.
+    // the reactor suites run, and the one the `t3_bot-g12` test must NOT be measuring.
     Layer.provide(
       input.activation === undefined
         ? Layer.empty
-        : Layer.succeed(ServerActivation, input.activation.await),
+        : Layer.succeed(ServerActivation, input.activation.awaitActivation),
     ),
     Layer.provideMerge(OrchestrationEngineLive),
     Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
@@ -233,36 +263,6 @@ const startupLayer = (input: {
  * every phase before it has returned. Waiting on a sleep or on a span count
  * would be waiting on the implementation.
  */
-interface Activation {
-  readonly await: Effect.Effect<void>;
-  readonly activate: Effect.Effect<void>;
-  readonly reactorStart: Effect.Effect<void, never, Scope.Scope>;
-  readonly rootRan: Deferred.Deferred<void>;
-}
-
-/**
- * Activation as `server.ts` builds it, plus a reactor root that records WHEN it ran into the
- * same timeline the tracer writes spans to. `forkParked` is the real one: the root is the
- * shape every reactor's `start` forks, so what this measures is the parking, not a double.
- */
-const activationRecorder = (timeline: Array<string>) =>
-  Effect.gen(function* () {
-    const activation = yield* Deferred.make<void>();
-    const rootRan = yield* Deferred.make<void>();
-    return {
-      await: Deferred.await(activation),
-      activate: Effect.sync(() => {
-        timeline.push("activate");
-      }).pipe(Effect.andThen(Deferred.succeed(activation, undefined)), Effect.asVoid),
-      reactorStart: forkParked(
-        Effect.sync(() => {
-          timeline.push("reactor-root-ran");
-        }).pipe(Effect.andThen(Deferred.succeed(rootRan, undefined))),
-      ),
-      rootRan,
-    } satisfies Activation;
-  });
-
 const boot = (input: { readonly noSeedHierarchy: boolean; readonly withActivation?: boolean }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
