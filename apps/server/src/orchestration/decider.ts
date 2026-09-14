@@ -2254,6 +2254,63 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "channel.member.rename": {
+      yield* requireIssuerCanAdminister({
+        command,
+        issuer: yield* requireCommandIssuer({ command, issuer }),
+      });
+      const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
+      // A retired channel's roster does not move (see member.add).
+      yield* requireChannelNotArchived({ command, channel });
+      // Canonical on both sides, as remove is: "@Boss1" names the boss1 row, and
+      // the stored `to` is what a later mention is compared against byte for byte.
+      const from = yield* requireCanonicalChannelHandle({ command, handle: command.from });
+      const to = yield* requireCanonicalChannelHandle({ command, handle: command.to });
+      const seated = channel.members.find((member) => member.handle === from);
+      if (seated === undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Handle '${from}' is not a member of channel '${command.channelId}'.`,
+        });
+      }
+      // REFUSED rather than a no-op. `channel.meta.update` to the name a channel
+      // already has is a no-op because that command is a partial update and
+      // "nothing changed" is one of its outcomes; a rename carries nothing but the
+      // change, so an event recording none would be a fact the log never had —
+      // the same class as the removal a remove-then-add announces (`t3_bot-uw9`).
+      if (to === from) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Handle '${command.to}' is already '${from}' in channel '${command.channelId}'.`,
+        });
+      }
+      // The row's own ref is lifted out of `seated`, so only the HANDLE check can
+      // fire here — a rename onto a handle another member holds — and it fires
+      // with the same text an add would.
+      yield* requireChannelMembersUnique({
+        command,
+        seated: channel.members.filter((member) => member.handle !== from),
+        adding: [{ ...seated, handle: to }],
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.member-renamed",
+        payload: {
+          channelId: command.channelId,
+          from,
+          to,
+          member: { memberKind: seated.memberKind, memberId: seated.memberId },
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
     case "channel.post.create": {
       const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
       // Membership and mention resolution are enforced here, not only in the

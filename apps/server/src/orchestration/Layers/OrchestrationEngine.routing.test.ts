@@ -113,14 +113,15 @@ const EXPECTED_AGGREGATE: Readonly<Record<string, OrchestrationAggregateKind>> =
   "channel.unarchive": "channel",
   "channel.member.add": "channel",
   "channel.member.remove": "channel",
+  "channel.member.rename": "channel",
   "channel.post.create": "channel",
 };
 
 /**
  * Channel commands that must appear in the executed comparison.
  *
- * Asserted by NAME rather than by count: "seven were compared" is satisfied by
- * any seven, and stops meaning these seven the moment an eighth lands or one of
+ * Asserted by NAME rather than by count: "eight were compared" is satisfied by
+ * any eight, and stops meaning these eight the moment a ninth lands or one of
  * these drops out and an unrelated command drops in.
  */
 const CHANNEL_COMMAND_TYPES = [
@@ -130,6 +131,7 @@ const CHANNEL_COMMAND_TYPES = [
   "channel.unarchive",
   "channel.member.add",
   "channel.member.remove",
+  "channel.member.rename",
   "channel.post.create",
 ] as const;
 
@@ -237,6 +239,12 @@ const PROBE_EXTRAS: Readonly<Record<string, Readonly<Record<string, unknown>>>> 
   },
   // The seeded handle, because removing one that is not a member is refused.
   "channel.member.remove": { handle: CHANNEL_HANDLE },
+  // From the seeded handle to one nobody holds: the same handle is refused, and
+  // so is one another member holds.
+  "channel.member.rename": {
+    from: CHANNEL_HANDLE,
+    to: ChannelMemberHandle.make("renamed-by-probe"),
+  },
   // The author must BE a member and every mention must resolve to one, so both
   // point at the seeded member rather than at anything invented here.
   "channel.post.create": {

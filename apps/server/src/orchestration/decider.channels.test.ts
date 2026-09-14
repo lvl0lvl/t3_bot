@@ -1134,4 +1134,144 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
       }
     }),
   );
+
+  /**
+   * ONE COMMAND FOR ONE FACT. Before it a rename was `member.remove` then
+   * `member.add` (the other order collides on the ref), with the member on no
+   * roster in between and a `member-removed` event announcing a departure that
+   * was not one (`t3_bot-uw9`). Every assertion below is on the EVENT: the ref
+   * the projector keeps, the handles it keys by, and the refusals the operator
+   * reads.
+   */
+  const renameCommand = (from: string, to: string) =>
+    ({
+      type: "channel.member.rename",
+      commandId: CommandId.make("cmd-rename-1"),
+      channelId: CHANNEL,
+      from: ChannelMemberHandle.make(from),
+      to: ChannelMemberHandle.make(to),
+    }) as const;
+
+  it.effect("renames a member in one event that carries the unchanged ref", () =>
+    Effect.gen(function* () {
+      const decided = yield* decideOrchestrationCommand({
+        command: renameCommand("boss1", "boss-one"),
+        readModel: makeReadModel(),
+        issuer: ADMIN,
+      });
+      const event = Array.isArray(decided) ? decided[0] : decided;
+      expect(event?.type).toBe("channel.member-renamed");
+      if (event?.type === "channel.member-renamed") {
+        expect(event.payload.from).toBe("boss1");
+        expect(event.payload.to).toBe("boss-one");
+        // The ref is the SEATED row's, both fields: a decider that wrote the
+        // issuer's ref, or a constant kind, would name the wrong member.
+        expect(event.payload.member).toEqual({ memberKind: "thread", memberId: "thread-boss1" });
+        expect(event.aggregateId).toBe(CHANNEL);
+      }
+    }),
+  );
+
+  it.effect(
+    "canonicalises both handles, so '@Boss1' renames boss1 and stores the folded target",
+    () =>
+      Effect.gen(function* () {
+        const decided = yield* decideOrchestrationCommand({
+          command: renameCommand("@Boss1", "@Boss-One"),
+          readModel: makeReadModel(),
+          issuer: ADMIN,
+        });
+        const event = Array.isArray(decided) ? decided[0] : decided;
+        expect(event?.type).toBe("channel.member-renamed");
+        if (event?.type === "channel.member-renamed") {
+          // Stored bytes on both sides: the mention lookup compares byte for
+          // byte, so a `to` stored as typed would be unmentionable.
+          expect(event.payload.from).toBe("boss1");
+          expect(event.payload.to).toBe("boss-one");
+        }
+      }),
+  );
+
+  it.effect("refuses to rename a handle nobody holds", () =>
+    Effect.gen(function* () {
+      const error = yield* decideOrchestrationCommand({
+        command: renameCommand("nobody", "somebody"),
+        readModel: makeReadModel(),
+        issuer: ADMIN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is not a member");
+      }
+    }),
+  );
+
+  it.effect("refuses a rename to the handle the member already has, case folded", () =>
+    Effect.gen(function* () {
+      // REFUSED, not a no-op: a rename carries nothing but the change, so an
+      // event recording none is a fact the log never had. Case-only, so a
+      // decider comparing the RAW spellings ("boss1" vs "@Boss1") would let an
+      // empty rename through.
+      const error = yield* decideOrchestrationCommand({
+        command: renameCommand("boss1", "@Boss1"),
+        readModel: makeReadModel(),
+        issuer: ADMIN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("is already 'boss1'");
+      }
+    }),
+  );
+
+  it.effect("refuses a rename onto a handle another member holds", () =>
+    Effect.gen(function* () {
+      const error = yield* decideOrchestrationCommand({
+        command: renameCommand("boss1", "pm"),
+        readModel: makeReadModel(),
+        issuer: ADMIN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        // The add's text, from the same guard: the operator reads one refusal
+        // for "handle taken" whichever command produced it.
+        expect(error.detail).toContain("is used twice");
+      }
+    }),
+  );
+
+  it.effect("refuses a rename by a thread issuer", () =>
+    Effect.gen(function* () {
+      // Administer-only, as add and remove: a thread that could rename a peer
+      // could take its mention key.
+      const error = yield* decideOrchestrationCommand({
+        command: renameCommand("boss1", "boss-one"),
+        readModel: makeReadModel(),
+        issuer: PM_ISSUER,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("cannot administer");
+      }
+    }),
+  );
+
+  it.effect("refuses a rename in an archived channel", () =>
+    Effect.gen(function* () {
+      const model = makeReadModel();
+      const archived = {
+        ...model,
+        channels: model.channels.map((channel) => ({ ...channel, archivedAt: NOW })),
+      };
+      const error = yield* decideOrchestrationCommand({
+        command: renameCommand("boss1", "boss-one"),
+        readModel: archived,
+        issuer: ADMIN,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("archived");
+      }
+    }),
+  );
 });

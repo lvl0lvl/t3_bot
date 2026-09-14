@@ -544,13 +544,17 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "channel.member-added":
-        case "channel.member-removed": {
+        case "channel.member-removed":
+        case "channel.member-renamed": {
           const existing = yield* projectionChannelRepository.getChannelById(
             event.payload.channelId,
           );
           if (Option.isNone(existing)) {
             return;
           }
+          // A rename is the row under its new handle, not a removal and an add:
+          // `replaceMembers` rewrites the whole roster inside this event's
+          // transaction, so no reader sees the member absent in between.
           const members =
             event.type === "channel.member-added"
               ? [
@@ -559,7 +563,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                   ),
                   event.payload.member,
                 ]
-              : existing.value.members.filter((member) => member.handle !== event.payload.handle);
+              : event.type === "channel.member-renamed"
+                ? existing.value.members.map((member) =>
+                    member.handle === event.payload.from
+                      ? { ...member, handle: event.payload.to }
+                      : member,
+                  )
+                : existing.value.members.filter((member) => member.handle !== event.payload.handle);
           yield* projectionChannelRepository.replaceMembers({
             channelId: event.payload.channelId,
             members,

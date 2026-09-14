@@ -89,11 +89,24 @@ stored value must canonicalise to itself.
 The rule applies from the change that introduced it. It does not rewrite history,
 and nothing migrates the projection.
 
-A member whose stored handle does not canonicalise to itself is **unmentionable
-and unremovable**: `channel.post.create` canonicalises the mention and compares it
-to the stored bytes, and `channel.member.remove` canonicalises its argument the
-same way and then requires an exact member match. The only remedy is to recreate
-the channel.
+A member whose stored handle does not canonicalise to itself is **unmentionable,
+unremovable and unrenamable**: `channel.post.create` canonicalises the mention and
+compares it to the stored bytes, and `channel.member.remove` and
+`channel.member.rename` canonicalise their handle arguments the same way and then
+require an exact member match. The only remedy is to recreate the channel.
+
+## A rename is one event
+
+`channel.member.rename` changes a member's handle and nothing else; the event
+carries the unchanged `(memberKind, memberId)` and the projector rewrites the row
+in place, inside the event's transaction. It exists because the alternative —
+`member.remove` then `member.add` — leaves the member on no roster between the
+two commands (a post refused, a wake lost, a connection told it left a channel it
+is about to rejoin) and the other order collides on the ref. Renaming a handle to
+itself is refused rather than recorded: an event that changes nothing is a fact
+the log never had. Posts are not rewritten — a post keeps the `authorHandle` it
+was written under, and its `authorRef` is what identifies the author — so from
+the rename's sequence on, the old handle is nobody's mention key.
 
 **It is not the row you would look for.** Case folding shipped in the same commit
 as the members table, so no channel ever stored `Boss1` — auditing a database for

@@ -755,6 +755,69 @@ describe("MentionWakeReactor", () => {
     }
   }, 30_000);
 
+  it("wakes a renamed member under its new handle, and the old handle names nobody", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    const system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      // THE PRODUCTION PATH, not the decider alone: the rename goes through the
+      // engine into the log and the projection, and the wake is read back
+      // through the same projection the UI reads. A remove-then-add would
+      // have left a window in which the member was on no roster.
+      await system.run(
+        system.engine.dispatch(
+          {
+            type: "channel.member.rename",
+            commandId: CommandId.make("cmd-rename-woken"),
+            channelId: CHANNEL_ID,
+            from: MENTION,
+            to: ChannelMemberHandle.make("awake"),
+          },
+          { issuer: WALT },
+        ),
+      );
+      // The OLD handle is nobody's now: the decider refuses the post, so no
+      // wake can come of it. A reactor (or projection) that still held the old
+      // handle would let this through.
+      const stale = await system
+        .run(
+          system.engine.dispatch(
+            {
+              type: "channel.post.create",
+              commandId: CommandId.make("cmd-post-stale-handle"),
+              channelId: CHANNEL_ID,
+              postId: ChannelPostId.make("post-stale-handle"),
+              body: "still there?",
+              mentions: [MENTION],
+              parentPostId: null,
+              createdAt: NOW,
+            },
+            { issuer: WALT },
+          ),
+        )
+        .then(
+          () => "accepted",
+          () => "refused",
+        );
+      expect(stale).toBe("refused");
+
+      await post(system, { id: "post-new-handle", mentions: [ChannelMemberHandle.make("awake")] });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // The same thread, by ref, woken under the new handle — and only it.
+      const woken = await wakeMessages(system, WOKEN);
+      expect(woken).toHaveLength(1);
+      expect(woken[0]).toContain("mentioned you");
+      expect(await wakeMessages(system, BYSTANDER)).toHaveLength(0);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
   it("never wakes the author, even when the post mentions them", async () => {
     const { directory, databasePath } = await makeDatabasePath();
     const system = await makeSystem(databasePath);
