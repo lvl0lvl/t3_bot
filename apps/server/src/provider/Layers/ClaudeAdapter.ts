@@ -235,17 +235,27 @@ interface ToolInFlight {
 }
 
 /**
- * The key an in-flight tool lives under while its content block streams.
+ * The key an in-flight tool lives under from its content_block_start until its
+ * tool_result or the turn-end sweep deletes it (content_block_stop does not).
  *
  * NOT the block index alone. A block index is per MESSAGE, and a subagent's
  * stream events carry the subagent message's own indices: its first tool_use
  * arrives at index 0 with `parent_tool_use_id` set, while the parent's Task tool
  * that spawned it — index 0 of the parent message — is still in flight. Keyed by
- * index alone the subagent's block overwrote the Task entry, the Task's
- * tool_result then found nothing to complete, and the turn-end sweep had lost it
- * too: the Task row stayed inProgress in every client (`t3_bot-x6n`). The scope
- * is the parent tool-use id (empty for the parent message), which is what the
- * SDK uses to tell the two streams apart.
+ * index alone the subagent's content_block_start overwrote the Task entry, so
+ * neither the Task's tool_result nor the sweep ever saw it (the sweep held the
+ * subagent's entry in that slot, or nothing once its tool_result arrived): the
+ * Task row stayed inProgress in every client (`t3_bot-x6n`). The scope is the
+ * parent tool-use id (empty for the parent message), which is what the SDK uses
+ * to tell the two streams apart.
+ *
+ * Provenance: the index key dates from #179 (77716b4cc); #5219 (a2ca89aa1)
+ * routed subagent tool frames through the map without changing the key.
+ * Upstream issue #5395 (open) names the collision in both this map and
+ * assistantTextBlocks; upstream PR #10575 (open) keys both by this same
+ * `${parent_tool_use_id ?? ""}:${index}` value and returns early from
+ * content_block_stop for subagent frames, as handleStreamEvent does here, so
+ * the next upstream sync carries the same semantics.
  */
 type InFlightToolKey = `${string}:${number}`;
 
