@@ -132,9 +132,13 @@ it.effect("decodes a refusal tag it does not know as an untagged refusal", () =>
     // INPUT THAT BREAKS THIS: a plain `Schema.optional` on the field, which
     // fails the whole error on the unknown tag and `RpcClient` turns into a
     // defect (#44's closed union, the decode-defect toast of `t3_bot-9dp`).
+    // The field beside the tag is what tells "refusal absent, error intact"
+    // from "error replaced": a fallback that rebuilds the error from
+    // `message` alone passes the two assertions above it and loses this one.
     const error = yield* decodeDispatchCommandError({
       _tag: "OrchestrationDispatchCommandError",
       message: "Orchestration command invariant failed (channel.post.create): unknown.",
+      bootstrapThreadDisposition: "deleted",
       refusal: { _tag: "unknown" },
     });
 
@@ -143,6 +147,8 @@ it.effect("decodes a refusal tag it does not know as an untagged refusal", () =>
       error.message,
       "Orchestration command invariant failed (channel.post.create): unknown.",
     );
+    assert.strictEqual(error._tag, "OrchestrationDispatchCommandError");
+    assert.strictEqual(error.bootstrapThreadDisposition, "deleted");
   }),
 );
 

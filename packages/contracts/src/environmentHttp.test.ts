@@ -82,12 +82,17 @@ describe("EnvironmentCommandRefusedError on the wire", () => {
 
   // The HTTP door has its own field and its own wrapper; a fix on the socket door alone
   // leaves this one closed. THE INPUT THAT BREAKS THIS: `Schema.optional` here, which
-  // rejects the whole 409 body over a tag the client could not have acted on.
+  // rejects the whole 409 body over a tag the client could not have acted on. The
+  // fields beside the tag tell "refusal absent, body intact" from "body replaced": a
+  // fallback that rebuilds the error from `message` alone loses `traceId` and
+  // `commandType`.
   it("decodes a tag it does not know as an untagged refusal, message intact", () => {
     const error = decode(wire({ _tag: "unknown-to-this-build" }));
     expect(error.refusal).toBeUndefined();
     expect(error.message).toBe(
       "Orchestration command invariant failed (channel.post.create): refused.",
     );
+    expect(error.traceId).toBe(traceId);
+    expect(error.commandType).toBe("channel.post.create");
   });
 });
