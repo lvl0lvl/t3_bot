@@ -1,7 +1,9 @@
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   EnvironmentAuthInvalidError,
+  EnvironmentCommandRefusedError,
   EnvironmentInternalError,
   EnvironmentOperationForbiddenError,
   EnvironmentRequestInvalidError,
@@ -58,5 +60,34 @@ describe("environment HTTP errors", () => {
     errors.forEach((error, index) => {
       expect(error.message).toContain(details[index]);
     });
+  });
+});
+
+describe("EnvironmentCommandRefusedError on the wire", () => {
+  const decode = Schema.decodeUnknownSync(EnvironmentCommandRefusedError);
+  const wire = (refusal: unknown) => ({
+    _tag: "EnvironmentCommandRefusedError",
+    code: "command_refused",
+    commandType: "channel.post.create",
+    message: "Orchestration command invariant failed (channel.post.create): refused.",
+    traceId,
+    refusal,
+  });
+
+  it("decodes a tag this build knows", () => {
+    expect(decode(wire({ _tag: "channel-archived" })).refusal).toEqual({
+      _tag: "channel-archived",
+    });
+  });
+
+  // The HTTP door has its own field and its own wrapper; a fix on the socket door alone
+  // leaves this one closed. THE INPUT THAT BREAKS THIS: `Schema.optional` here, which
+  // rejects the whole 409 body over a tag the client could not have acted on.
+  it("decodes a tag it does not know as an untagged refusal, message intact", () => {
+    const error = decode(wire({ _tag: "unknown-to-this-build" }));
+    expect(error.refusal).toBeUndefined();
+    expect(error.message).toBe(
+      "Orchestration command invariant failed (channel.post.create): refused.",
+    );
   });
 });

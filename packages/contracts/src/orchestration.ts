@@ -14,6 +14,7 @@ import {
   ClientSurface,
   CommandId,
   EventId,
+  ForwardCompatibleOptional,
   IsoDateTime,
   MessageId,
   NonNegativeInt,
@@ -2929,16 +2930,17 @@ export class OrchestrationGetSnapshotError extends Schema.TaggedError<Orchestrat
  * It lives here rather than beside the decider because both dispatch doors
  * put it on the wire (`t3_bot-nqf`): the socket in
  * `OrchestrationDispatchCommandError.refusal`, HTTP in
- * `EnvironmentCommandRefusedError.refusal`. A client handed a tag it does not
- * know fails to decode the whole error, and `RpcClient` turns that into a
- * defect in place of the refusal (`orDie`) — so adding a member breaks a
- * client OLDER than the server that decodes this field. The two pull-request
- * members were added (`t3_bot-9dp`) without staging because the only client
- * that dispatches those commands is the web app, and a web bundle older than
- * its server dispatching a duplicate link or unlink sees a decode defect in
- * place of the refusal's prose (the command was refused either way). A client
- * shipped on its own cadence — the store-built mobile app, app.t3.codes
- * against an older server — gets a new member only after it knows the tag.
+ * `EnvironmentCommandRefusedError.refusal`. On the wire the union is OPEN
+ * (`ForwardCompatibleOptional`, `t3_bot-1tn`): a client handed a tag its build
+ * does not know decodes the error with `refusal` absent and `message` intact —
+ * the same error an untagged refusal produces, and the one every client reads
+ * today. Adding a member therefore needs no staging: the clients ship on their
+ * own cadence (the store-built mobile app, app.t3.codes against an older
+ * server, a browser tab open across a restart) and no version handshake
+ * exists, so a closed union turned every new member into a decode defect for a
+ * client older than its server, in place of the refusal's prose — which is
+ * what the two pull-request members did to a stale web bundle (`t3_bot-9dp`).
+ * What a client cannot classify it still reports.
  *
  * The pull-request members' caller is the MCP pull-request tools
  * (`pullRequests/handlers.ts`, `refusedAs`), which answer `alreadyLinked` /
@@ -2963,9 +2965,10 @@ export class OrchestrationDispatchCommandError extends Schema.TaggedError<Orches
     /**
      * Present when the decider refused the command for a reason a caller acts
      * on; `message` then carries the refusal's prose. Absent for a refusal
-     * with no tagged reason and for every failure that is not a refusal.
+     * with no tagged reason, for every failure that is not a refusal, and for
+     * a tag this build does not know (the union is open on the wire).
      */
-    refusal: Schema.optional(CommandInvariantRefusal),
+    refusal: ForwardCompatibleOptional(CommandInvariantRefusal),
   },
 ) {}
 

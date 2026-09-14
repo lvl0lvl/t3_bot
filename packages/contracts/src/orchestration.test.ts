@@ -124,20 +124,25 @@ it.effect("decodes the pull-request refusal tags the MCP tools answer from", () 
   }),
 );
 
-it.effect("refuses a dispatch error whose refusal tag it does not know", () =>
+it.effect("decodes a refusal tag it does not know as an untagged refusal", () =>
   Effect.gen(function* () {
-    // A member of `CommandInvariantRefusal` reaching a client built before
-    // it: the whole error fails to decode, which is why adding one is a
-    // client-breaking change. A fallback member in the union greens this.
-    const exit = yield* Effect.exit(
-      decodeDispatchCommandError({
-        _tag: "OrchestrationDispatchCommandError",
-        message: "Orchestration command invariant failed (channel.post.create): unknown.",
-        refusal: { _tag: "unknown" },
-      }),
-    );
+    // A member of `CommandInvariantRefusal` reaching a client built before it
+    // (`t3_bot-1tn`): the error still decodes, `refusal` is absent and the
+    // prose is what the client shows — the shape of an untagged refusal. THE
+    // INPUT THAT BREAKS THIS: a plain `Schema.optional` on the field, which
+    // fails the whole error on the unknown tag and `RpcClient` turns into a
+    // defect (#44's closed union, the decode-defect toast of `t3_bot-9dp`).
+    const error = yield* decodeDispatchCommandError({
+      _tag: "OrchestrationDispatchCommandError",
+      message: "Orchestration command invariant failed (channel.post.create): unknown.",
+      refusal: { _tag: "unknown" },
+    });
 
-    assert.isTrue(Exit.isFailure(exit));
+    assert.strictEqual(error.refusal, undefined);
+    assert.strictEqual(
+      error.message,
+      "Orchestration command invariant failed (channel.post.create): unknown.",
+    );
   }),
 );
 
