@@ -121,6 +121,12 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
         // The reactor reads one event and must know who wrote it without a join.
         expect(events[0].payload.authorHandle).toBe(PM);
         expect(events[0].payload.mentions).toEqual([BOSS1]);
+        // And whom it names, by REF: the reactor matches the current roster on
+        // this, so a rename between the post and the wake still finds the
+        // member. Empty refs leave every post's wake on the handle match.
+        expect(events[0].payload.mentionRefs).toEqual([
+          { memberKind: "thread", memberId: "thread-boss1" },
+        ]);
       }
     }),
   );

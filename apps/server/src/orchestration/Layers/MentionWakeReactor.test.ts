@@ -15,6 +15,7 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  EventId,
   type OrchestrationCommand,
   ProjectId,
   MessageId,
@@ -811,6 +812,100 @@ describe("MentionWakeReactor", () => {
       const woken = await wakeMessages(system, WOKEN);
       expect(woken).toHaveLength(1);
       expect(woken[0]).toContain("mentioned you");
+      expect(await wakeMessages(system, BYSTANDER)).toHaveLength(0);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("wakes a member renamed between the post and the reactor reading it", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    let system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await system.dispose();
+
+      // The post names `woken`; the rename lands before the reactor reads it.
+      // The member is still seated — same ref, new handle — and can read the
+      // post. A reactor that resolved the event's HANDLES against the current
+      // roster finds nobody under `woken` and drops the wake silently.
+      system = await makeSystem(databasePath);
+      await post(system, { id: "post-before-rename", mentions: [MENTION] });
+      await system.run(
+        system.engine.dispatch(
+          {
+            type: "channel.member.rename",
+            commandId: CommandId.make("cmd-rename-after-post"),
+            channelId: CHANNEL_ID,
+            from: MENTION,
+            to: ChannelMemberHandle.make("awake"),
+          },
+          { issuer: WALT },
+        ),
+      );
+      await system.dispose();
+
+      system = await makeSystem(databasePath);
+      await system.startReactor();
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      expect(await wakeMessages(system, WOKEN)).toHaveLength(1);
+      expect(await wakeMessages(system, BYSTANDER)).toHaveLength(0);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("wakes by handle for a post event written before mentionRefs existed", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    let system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.startReactor();
+      await system.dispose();
+
+      // Appended to the store, not dispatched: the decider stamps refs on every
+      // post now, so the only way an event without them reaches the reactor is
+      // the log it was written to before the field existed. A reactor that
+      // matched by ref alone would wake nobody for it.
+      system = await makeSystem(databasePath);
+      await system.run(
+        system.events.append({
+          eventId: EventId.make("event-post-legacy"),
+          aggregateKind: "channel",
+          aggregateId: CHANNEL_ID,
+          occurredAt: NOW,
+          commandId: CommandId.make("cmd-post-legacy"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-post-legacy"),
+          metadata: {},
+          type: "channel.post-created",
+          payload: {
+            channelId: CHANNEL_ID,
+            postId: ChannelPostId.make("post-legacy"),
+            authorRef: WALT,
+            authorHandle: ChannelMemberHandle.make("walt"),
+            body: "have a look at this",
+            mentions: [MENTION],
+            parentPostId: null,
+            createdAt: NOW,
+          },
+        }),
+      );
+      await system.dispose();
+
+      system = await makeSystem(databasePath);
+      await system.startReactor();
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      expect(await wakeMessages(system, WOKEN)).toHaveLength(1);
       expect(await wakeMessages(system, BYSTANDER)).toHaveLength(0);
     } finally {
       await system.dispose();

@@ -391,12 +391,16 @@ const make = Effect.gen(function* () {
 
   /**
    * Every thread member the post named, resolved against the channel's CURRENT
-   * membership rather than against the event.
+   * membership by REF.
    *
-   * A member removed between the post and the wake is not woken: the message
-   * lives in a channel they can no longer read. Mentions are matched exactly,
-   * because the aggregate stores handles canonically and the event carries what
-   * it stored.
+   * Current membership, because a member removed between the post and the wake
+   * is not woken: the message lives in a channel they can no longer read. By
+   * ref, because the one input that tells the two keys apart is a
+   * `channel.member.rename` between the post and this reactor reading it: the
+   * ref stays seated and the handle changes, so a handle match against the
+   * current roster wakes nobody for a post its target can still read. The
+   * decider stamps `mentionRefs` for that; an event written before the field
+   * carries none and is matched by handle, as it was when it was written.
    */
   const targetThreads = Effect.fn("MentionWakeReactor.targetThreads")(function* (
     event: PostCreated,
@@ -405,7 +409,14 @@ const make = Effect.gen(function* () {
     if (Option.isNone(channel)) {
       return { channelName: null, threadIds: [] as ReadonlyArray<ThreadId> };
     }
-    const mentioned = new Set<string>(event.payload.mentions);
+    const mentionedHandles = new Set<string>(event.payload.mentions);
+    const mentionedRefs = event.payload.mentionRefs;
+    const mentioned = (member: (typeof channel.value.members)[number]) =>
+      mentionedRefs === undefined
+        ? mentionedHandles.has(member.handle)
+        : mentionedRefs.some(
+            (ref) => ref.memberKind === member.memberKind && ref.memberId === member.memberId,
+          );
     const threadIds = [
       ...new Set(
         channel.value.members
@@ -423,7 +434,7 @@ const make = Effect.gen(function* () {
               // row and a woken thread. A decider regression would be the
               // second way back here, not the first.
               member.memberKind === "thread" &&
-              mentioned.has(member.handle) &&
+              mentioned(member) &&
               // Never the author. An agent does not need telling about its own
               // post, and waking it would be a turn that starts itself: the
               // woken agent is told to reply in the channel, and a reply that

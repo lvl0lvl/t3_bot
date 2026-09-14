@@ -2362,6 +2362,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // post. Dedupe here rather than in the reactor: the event is what replays.
       const mentions = [...new Set(canonicalMentions)];
       yield* requireChannelMentionsResolve({ command, channel, mentions });
+      // The refs the mentions resolve to, in mention order, one per member. The
+      // reactor matches the CURRENT roster by ref: a rename between this post
+      // and the reactor reading it keeps the ref seated under a new handle, and
+      // a handle match would wake nobody. Deduped by ref because a roster
+      // replayed from before `t3_bot-1ez` can hold one ref under two handles,
+      // and two mentions of one member are one wake.
+      const mentionRefs = [
+        ...new Map(
+          mentions.flatMap((handle) =>
+            channel.members
+              .filter((member) => member.handle === handle)
+              .map(
+                (member) =>
+                  [
+                    `${member.memberKind}:${member.memberId}`,
+                    { memberKind: member.memberKind, memberId: member.memberId },
+                  ] as const,
+              ),
+          ),
+        ).values(),
+      ];
       return {
         ...(yield* withEventBase({
           aggregateKind: "channel",
@@ -2378,6 +2399,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           authorHandle: author.handle,
           body: command.body,
           mentions,
+          mentionRefs,
           parentPostId: command.parentPostId,
           createdAt: command.createdAt,
         },
