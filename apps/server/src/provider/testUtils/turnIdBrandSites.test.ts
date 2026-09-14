@@ -86,6 +86,11 @@ describe("turnIdBrandSites", () => {
       "const g = (turn: { id: string }) => TurnId!.make(turn.id);\n",
       ["TurnId!.make(turn.id)"],
     ],
+    [
+      "a non-null then optional chain",
+      "const g = (turn: { id: string }) => TurnId!?.make(turn.id);\n",
+      [],
+    ],
     // Not seen by design (a match loosened to `TurnId\W*make\W*\(` would see the
     // bracket access; this row is what reds it).
     [
