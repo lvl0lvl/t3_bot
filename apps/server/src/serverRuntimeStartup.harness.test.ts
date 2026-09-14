@@ -256,10 +256,13 @@ describe("the startup generator", () => {
         [
           "server.startup.keybindings.start",
           "server.startup.settings.start",
+          // The seed BEFORE the reactors (`t3_bot-gn4`): its instance repair must land
+          // before a draining MentionWakeReactor can wake a seeded thread against the
+          // unrepaired row. Moving it back below `reactors.start` reds this list.
+          "server.startup.hierarchy.seed",
           "server.startup.reactors.start",
           "server.startup.provider-sessions.reconcile",
           "server.startup.projects.auto-pull",
-          "server.startup.hierarchy.seed",
           "server.startup.http.wait",
           "server.startup.auxiliary-roots.parked",
           "server.startup.welcome.publish",

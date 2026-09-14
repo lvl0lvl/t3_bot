@@ -891,6 +891,29 @@ export const make = (options?: StartupOptions) =>
         ),
       );
 
+      // BEFORE `reactors.start` (`t3_bot-gn4`). The seed carries an instance repair for a
+      // seeded thread, and a reactor draining its backlog can read the row first: an
+      // un-consumed post mentioning that thread wakes it against the unrepaired selection,
+      // the turn fails at the provider boundary, and MentionWakeReactor's cursor has already
+      // advanced past the post — consumed unanswered on the boot that was going to make
+      // answering possible. Nothing here waits on a reactor: the seeder dispatches and awaits
+      // no receipt, and the one reactor that keys on `thread.created` backfills every thread
+      // when it starts. The startup harness pins this order.
+      // AND BEFORE the bootstrap fork. `welcome.autobootstrap` is forked and also creates a
+      // project for this cwd, so seeding alongside it would race another writer of the same
+      // workspace root and one of the two would be refused by
+      // `requireActiveProjectWorkspaceRootAbsent`. Seeding to completion first makes the
+      // bootstrap resolve what this created, and costs the startup path one serialised phase.
+      yield* Effect.logDebug("startup phase: seeding the agent hierarchy");
+      yield* runStartupPhase(
+        "hierarchy.seed",
+        // A failed seed must not stop the server from booting: the same decision
+        // the bootstrap phase below makes, for the same reason. It costs nothing
+        // to retry, because every seed command carries a deterministic id — the
+        // next boot re-runs only the step that failed.
+        seedHierarchyIfEnabled.pipe(Effect.ignoreCause({ log: true })),
+      );
+
       yield* Effect.logDebug("startup phase: parking orchestration roots at activation");
       yield* runStartupPhase(
         "reactors.start",
@@ -904,31 +927,6 @@ export const make = (options?: StartupOptions) =>
 
       yield* Effect.logDebug("startup phase: syncing clean projects");
       yield* runStartupPhase("projects.auto-pull", syncAutoPullProjects);
-
-      // BEFORE the bootstrap fork, not after. `welcome.autobootstrap` is forked
-      // and also creates a project for this cwd, so seeding alongside it would
-      // race another writer of the same workspace root and one of the two would
-      // be refused by `requireActiveProjectWorkspaceRootAbsent`. Seeding to
-      // completion first makes the bootstrap resolve what this created, and
-      // costs the startup path one serialised phase.
-      // AND AFTER `reactors.start`, which this phase does not choose and which is now
-      // load-bearing: the instance repair inside the seed fixes a row a draining
-      // MentionWakeReactor can read first. An un-consumed post mentioning a seeded thread wakes
-      // it against the unrepaired selection, the turn fails at the provider boundary, and the
-      // wake cursor has already advanced — so that one post is consumed unanswered on the boot
-      // that was going to make answering possible. Later posts are fine. Moving this phase
-      // above `reactors.start` is the fix and `t3_bot-gn4` holds it: a boot-ordering change
-      // nothing in the suite can demonstrate, which is a different piece of work from the
-      // repair itself.
-      yield* Effect.logDebug("startup phase: seeding the agent hierarchy");
-      yield* runStartupPhase(
-        "hierarchy.seed",
-        // A failed seed must not stop the server from booting: the same decision
-        // the bootstrap phase below makes, for the same reason. It costs nothing
-        // to retry, because every seed command carries a deterministic id — the
-        // next boot re-runs only the step that failed.
-        seedHierarchyIfEnabled.pipe(Effect.ignoreCause({ log: true })),
-      );
 
       const welcomeBase = yield* resolveWelcomeBase;
       const environment = yield* serverEnvironment.getDescriptor;
