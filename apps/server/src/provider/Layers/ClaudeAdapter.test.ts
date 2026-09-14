@@ -7609,4 +7609,299 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect("completes the parent's Task tool when a subagent tool shares its block index", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "delegate this",
+        attachments: [],
+      });
+
+      // THE INPUT: the Task tool opens at block index 0 of the PARENT message
+      // and stays in flight until the subagent finishes. The subagent's own
+      // message starts its indices at 0 too, so its first tool_use arrives at
+      // the same index with only parent_tool_use_id telling the two apart.
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-x6n",
+        uuid: "stream-x6n-task",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "toolu_task",
+            name: "Task",
+            input: { description: "Audit", prompt: "look", subagent_type: "code-reviewer" },
+          },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-agent-x6n",
+        description: "Audit",
+        task_type: "local_agent",
+        tool_use_id: "toolu_task",
+        uuid: "task-x6n-uuid",
+        session_id: "sdk-session-x6n",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-x6n",
+        uuid: "stream-x6n-sub",
+        parent_tool_use_id: "toolu_task",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", id: "toolu_sub", name: "Bash", input: {} },
+        },
+      } as unknown as SDKMessage);
+      // The subagent's input streams at the same index too: scoped by index
+      // alone, this delta would land on the Task tool and replace its input.
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-x6n",
+        uuid: "stream-x6n-sub-delta",
+        parent_tool_use_id: "toolu_task",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: '{"command":"ls -la"}' },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-x6n",
+        uuid: "stream-x6n-sub-stop",
+        parent_tool_use_id: "toolu_task",
+        event: { type: "content_block_stop", index: 0 },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-x6n",
+        uuid: "user-x6n-sub-result",
+        parent_tool_use_id: "toolu_task",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_sub", content: "src" }],
+        },
+      } as unknown as SDKMessage);
+      // The subagent is done; the parent's Task tool completes from ITS result.
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-x6n",
+        uuid: "user-x6n-task-result",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_task", content: "done" }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-x6n",
+        uuid: "result-x6n",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const completed = runtimeEvents.filter((event) => event.type === "item.completed");
+      // BOTH tools complete, each from its own tool_result. Before the fix the
+      // subagent's block overwrote the Task tool's in-flight entry: the Task
+      // row was started, never completed, and stayed inProgress in every client.
+      assert.deepEqual(completed.map((event) => String(event.itemId)).sort(), [
+        "toolu_sub",
+        "toolu_task",
+      ]);
+      const taskCompleted = completed.find((event) => String(event.itemId) === "toolu_task");
+      assert.equal(taskCompleted?.type, "item.completed");
+      if (taskCompleted?.type === "item.completed") {
+        assert.equal(taskCompleted.payload.status, "completed");
+        // From the tool_result, not the turn-end sweep: the sweep carries no
+        // result and would have said "completed" for a Task that failed.
+        assert.equal(taskCompleted.raw?.method, "claude/user");
+        // And with ITS input: the subagent's delta went to the subagent's tool.
+        const taskInput = (taskCompleted.payload.data as { input?: Record<string, unknown> }).input;
+        assert.equal(taskInput?.description, "Audit");
+        assert.equal(taskInput?.command, undefined);
+      }
+      const subCompleted = completed.find((event) => String(event.itemId) === "toolu_sub");
+      if (subCompleted?.type === "item.completed") {
+        const subInput = (subCompleted.payload.data as { input?: Record<string, unknown> }).input;
+        assert.equal(subInput?.command, "ls -la");
+      }
+      // The subagent's tool is still re-homed to its agent, not the parent.
+      const subStarted = runtimeEvents.find(
+        (event) => event.type === "item.started" && String(event.itemId) === "toolu_sub",
+      );
+      assert.equal(subStarted?.type, "item.started");
+      if (subStarted?.type === "item.started") {
+        assert.equal(subStarted.payload.agentId, "task-agent-x6n");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("ignores a subagent content_block_stop at the parent's open text index", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "delegate in the background",
+        attachments: [],
+      });
+
+      const emitStream = (uuid: string, parentToolUseId: string | null, event: unknown) =>
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-bg",
+          uuid,
+          parent_tool_use_id: parentToolUseId,
+          event,
+        } as unknown as SDKMessage);
+
+      // THE INPUT: a backgrounded Task returns at once, so the parent streams
+      // its next message (text block at index 0) while the subagent is still
+      // streaming its own message, whose first block is also index 0. The
+      // subagent's content_block_stop at index 0 lands while the parent's
+      // text block 0 is open; keyed by bare index it closes the parent's text.
+      emitStream("stream-bg-task", null, {
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "tool_use",
+          id: "toolu_task",
+          name: "Task",
+          input: { description: "Audit", prompt: "look", run_in_background: true },
+        },
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-agent-bg",
+        description: "Audit",
+        task_type: "local_agent",
+        tool_use_id: "toolu_task",
+        uuid: "task-bg-uuid",
+        session_id: "sdk-session-bg",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-bg",
+        uuid: "user-bg-task-result",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_task", content: "running" }],
+        },
+      } as unknown as SDKMessage);
+      emitStream("stream-bg-text-start", null, {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      });
+      emitStream("stream-bg-text-delta-1", null, {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "Hello " },
+      });
+      emitStream("stream-bg-sub-start", "toolu_task", {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "tool_use", id: "toolu_sub", name: "Bash", input: {} },
+      });
+      emitStream("stream-bg-sub-stop", "toolu_task", { type: "content_block_stop", index: 0 });
+      emitStream("stream-bg-text-delta-2", null, {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "world" },
+      });
+      emitStream("stream-bg-text-stop", null, { type: "content_block_stop", index: 0 });
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-bg",
+        uuid: "assistant-bg",
+        parent_tool_use_id: null,
+        message: {
+          id: "assistant-message-bg",
+          content: [{ type: "text", text: "Hello world" }],
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-bg",
+        uuid: "result-bg",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const assistantDeltas = runtimeEvents.flatMap((event) =>
+        event.type === "content.delta" && event.payload.streamKind === "assistant_text"
+          ? [{ itemId: String(event.itemId), delta: event.payload.delta }]
+          : [],
+      );
+      // One parent message, one item: both deltas belong to the same item id.
+      assert.deepEqual(
+        assistantDeltas.map((delta) => delta.delta),
+        ["Hello ", "world"],
+      );
+      assert.equal(new Set(assistantDeltas.map((delta) => delta.itemId)).size, 1);
+      const assistantCompletions = runtimeEvents.filter(
+        (event) =>
+          event.type === "item.completed" && event.payload.itemType === "assistant_message",
+      );
+      assert.equal(assistantCompletions.length, 1);
+      assert.equal(String(assistantCompletions[0]?.itemId), assistantDeltas[0]?.itemId);
+      // The subagent's stop closed nothing: the first stop-driven completion
+      // comes after the parent's own stop, i.e. after the "world" delta.
+      const worldDeltaIndex = runtimeEvents.findIndex(
+        (event) => event.type === "content.delta" && event.payload.delta === "world",
+      );
+      const firstStopCompletionIndex = runtimeEvents.findIndex(
+        (event) =>
+          event.type === "item.completed" &&
+          event.raw?.method === "claude/stream_event/content_block_stop",
+      );
+      assert.equal(worldDeltaIndex >= 0 && firstStopCompletionIndex > worldDeltaIndex, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 });

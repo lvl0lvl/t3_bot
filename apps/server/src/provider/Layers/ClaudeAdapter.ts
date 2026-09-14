@@ -234,6 +234,40 @@ interface ToolInFlight {
   readonly parentToolUseId?: string;
 }
 
+/**
+ * The key an in-flight tool lives under from its content_block_start until its
+ * tool_result or the turn-end sweep deletes it (content_block_stop does not).
+ *
+ * NOT the block index alone. A block index is per MESSAGE, and a subagent's
+ * stream events carry the subagent message's own indices: its first tool_use
+ * arrives at index 0 with `parent_tool_use_id` set, while the parent's Task tool
+ * that spawned it — index 0 of the parent message — is still in flight. Keyed by
+ * index alone the subagent's content_block_start overwrote the Task entry, so
+ * neither the Task's tool_result nor the sweep ever saw it (the sweep held the
+ * subagent's entry in that slot, or nothing once its tool_result arrived): the
+ * Task row stayed inProgress in every client (`t3_bot-x6n`). The scope is the
+ * parent tool-use id (empty for the parent message), which is what the SDK uses
+ * to tell the two streams apart.
+ *
+ * Provenance: the index key dates from #179 (77716b4cc); #5219 (a2ca89aa1)
+ * routed subagent tool frames through the map without changing the key.
+ * Upstream issue #5395 (open) names the collision in both this map and
+ * assistantTextBlocks; upstream PR #10575 (open) keys both by this same
+ * `${parent_tool_use_id ?? ""}:${index}` value and returns early from
+ * content_block_stop for subagent frames, as handleStreamEvent does here, so
+ * the next upstream sync carries the same semantics.
+ */
+type InFlightToolKey = `${string}:${number}`;
+
+// Narrowed to the stream_event member, not the SDKMessage union with a cast:
+// an all-optional cast target overlaps anything, so an SDK rename of
+// `parent_tool_use_id` would still compile, read undefined → "", and key every
+// subagent tool as ":N" again with no type error and no test red.
+const inFlightToolKey = (
+  message: Extract<SDKMessage, { type: "stream_event" }>,
+  index: number,
+): InFlightToolKey => `${message.parent_tool_use_id ?? ""}:${index}`;
+
 interface ClaudeTaskState {
   readonly id: string;
   subject: string;
@@ -307,7 +341,7 @@ interface ClaudeSessionContext {
     id: TurnId;
     items: Array<unknown>;
   }>;
-  readonly inFlightTools: Map<number, ToolInFlight>;
+  readonly inFlightTools: Map<InFlightToolKey, ToolInFlight>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
   readonly taskAgents: Map<string, ClaudeTaskAgentState>;
   /**
@@ -2581,7 +2615,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    for (const [index, tool] of context.inFlightTools.entries()) {
+    for (const [toolKey, tool] of context.inFlightTools.entries()) {
       const toolStamp = yield* makeEventStamp();
       yield* offerRuntimeEvent({
         type: "item.completed",
@@ -2610,7 +2644,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: result ?? { status },
         },
       });
-      context.inFlightTools.delete(index);
+      context.inFlightTools.delete(toolKey);
     }
     // Clear any remaining stale entries (e.g. from interrupted content blocks)
     context.inFlightTools.clear();
@@ -2775,7 +2809,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       if (event.delta.type === "input_json_delta") {
-        const tool = context.inFlightTools.get(event.index);
+        const toolKey = inFlightToolKey(message, event.index);
+        const tool = context.inFlightTools.get(toolKey);
         if (!tool || typeof event.delta.partial_json !== "string") {
           return;
         }
@@ -2799,7 +2834,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           parsedInput && Object.keys(parsedInput).length > 0
             ? toolInputFingerprint(parsedInput)
             : undefined;
-        context.inFlightTools.set(event.index, nextTool);
+        context.inFlightTools.set(toolKey, nextTool);
 
         if (
           !parsedInput ||
@@ -2813,7 +2848,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...nextTool,
           lastEmittedInputFingerprint: nextFingerprint,
         };
-        context.inFlightTools.set(event.index, nextTool);
+        context.inFlightTools.set(toolKey, nextTool);
 
         const stamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
@@ -2924,7 +2959,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(owningAgentId ? { agentId: owningAgentId } : {}),
         ...(parentToolUseId ? { parentToolUseId } : {}),
       };
-      context.inFlightTools.set(index, tool);
+      context.inFlightTools.set(inFlightToolKey(message, index), tool);
 
       const stamp = yield* makeEventStamp();
       yield* offerRuntimeEvent({
@@ -2960,19 +2995,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     if (event.type === "content_block_stop") {
-      const { index } = event;
-      const assistantBlock = context.turnState?.assistantTextBlocks.get(index);
+      // A subagent's stop has nothing to close here: its tool entry completes
+      // on its tool_result or in the turn-end sweep, and assistantTextBlocks is
+      // keyed by bare index. The input that breaks the bare lookup: a
+      // backgrounded Task whose subagent stops its block 0 while the parent's
+      // text block 0 is still open — the lookup below would complete the
+      // parent's text and the parent's next delta would open a second item.
+      if (message.parent_tool_use_id !== null && message.parent_tool_use_id !== undefined) {
+        return;
+      }
+      const assistantBlock = context.turnState?.assistantTextBlocks.get(event.index);
       if (assistantBlock) {
         assistantBlock.streamClosed = true;
         yield* completeAssistantTextBlock(context, assistantBlock, {
           rawMethod: "claude/stream_event/content_block_stop",
           rawPayload: message,
         });
-        return;
-      }
-      const tool = context.inFlightTools.get(index);
-      if (!tool) {
-        return;
       }
     }
   });
@@ -2997,7 +3035,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         continue;
       }
 
-      const [index, tool] = toolEntry;
+      const [toolKey, tool] = toolEntry;
       const itemStatus = toolResult.isError ? "failed" : "completed";
       const toolUseResult = readClaudeToolUseResult(message);
       const toolData = {
@@ -3136,7 +3174,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
       }
 
-      context.inFlightTools.delete(index);
+      context.inFlightTools.delete(toolKey);
     }
   });
 
@@ -4250,7 +4288,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
       const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
-      const inFlightTools = new Map<number, ToolInFlight>();
+      const inFlightTools = new Map<InFlightToolKey, ToolInFlight>();
       const claudeTasks = new Map<string, ClaudeTaskState>();
       const taskAgents = new Map<string, ClaudeTaskAgentState>();
       const pendingTaskModels = new Map<string, string>();
