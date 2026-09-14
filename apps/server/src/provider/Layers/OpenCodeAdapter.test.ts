@@ -6452,7 +6452,15 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           runtimeMock.state.revertCalls.length = 0;
 
           for (const read of [adapter.readThread(threadId), adapter.rollbackThread(threadId, 1)]) {
-            const error = yield* read.pipe(Effect.flip);
+            const error = yield* read.pipe(
+              Effect.flip,
+              Effect.mapError(
+                (snapshot) =>
+                  new Error(
+                    `${quoted}${boundary === undefined ? " with no boundary" : ""}: the read succeeded with ${snapshot.turns.length} turn(s)`,
+                  ),
+              ),
+            );
             NodeAssert.equal(error._tag, "ProviderAdapterRequestError");
             if (error._tag !== "ProviderAdapterRequestError") {
               throw new Error("Unexpected error type");
