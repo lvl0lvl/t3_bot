@@ -20,9 +20,11 @@
  */
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import type * as Scope from "effect/Scope";
 import * as Tracer from "effect/Tracer";
 import { HttpServer } from "effect/unstable/http";
 import { assert, it } from "@effect/vitest";
@@ -48,6 +50,7 @@ import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import * as ProviderSessionReaper from "./provider/Services/ProviderSessionReaper.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
+import { forkParked, ServerActivation } from "./serverActivation.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
@@ -89,53 +92,54 @@ const recordingTracer = () => {
  * service grows a method. What startup actually calls on each is one or two
  * members, and those are written out.
  */
-const doubles = Layer.mergeAll(
-  Layer.succeed(Keybindings.Keybindings, { start: Effect.void } as never),
-  Layer.succeed(OrchestrationReactor.OrchestrationReactor, {
-    start: () => Effect.void,
-  } as never),
-  Layer.succeed(ProviderSessionReaper.ProviderSessionReaper, {
-    start: () => Effect.void,
-  } as never),
-  Layer.succeed(ServerLifecycleEvents.ServerLifecycleEvents, {
-    publish: () => Effect.void,
-  } as never),
-  Layer.succeed(ServerEnvironment.ServerEnvironment, {
-    getDescriptor: Effect.succeed({ environmentId: "env-harness" }),
-  } as never),
-  Layer.succeed(ProviderSessionDirectory.ProviderSessionDirectory, {
-    listBindings: () => Effect.succeed([]),
-  } as never),
-  Layer.succeed(ProviderService.ProviderService, {
-    listSessions: () => Effect.succeed([]),
-  } as never),
-  Layer.succeed(ServiceLauncherClient.ServiceLauncherClient, {
-    prepareTrial: Effect.succeed(undefined),
-  } as never),
-  Layer.succeed(AnalyticsService.AnalyticsService, {
-    record: () => Effect.void,
-  } as never),
-  Layer.succeed(EnvironmentAuth.EnvironmentAuth, {
-    issueStartupPairingUrl: () => Effect.succeed("http://localhost:0/?token=harness"),
-  } as never),
-  Layer.succeed(ExternalLauncher.ExternalLauncher, {
-    launchBrowser: () => Effect.void,
-  } as never),
-  // No project has an upstream, so `projects.auto-pull` runs and pulls nothing.
-  // It is a double rather than the real driver because the real one would shell
-  // out to git in a temp directory.
-  Layer.succeed(GitVcsDriver.GitVcsDriver, {
-    statusDetails: () => Effect.succeed({ isRepo: false }),
-    pullCurrentBranch: () => Effect.die("the harness has nothing to pull"),
-  } as never),
-  ServerSettings.layerTest(),
-  // Never called: `startupPresentation: "browser"` takes the branch that does
-  // not build headless access info. It is here because the requirement is on
-  // the TYPE of the startup effect, not on the branch taken — the layer has to
-  // satisfy every path the generator could run, and the one that wants an HTTP
-  // server is the one this config does not take.
-  Layer.succeed(HttpServer.HttpServer, {} as never),
-);
+const doubles = (reactorStart: Effect.Effect<void, never, Scope.Scope> = Effect.void) =>
+  Layer.mergeAll(
+    Layer.succeed(Keybindings.Keybindings, { start: Effect.void } as never),
+    Layer.succeed(OrchestrationReactor.OrchestrationReactor, {
+      start: () => reactorStart,
+    } as never),
+    Layer.succeed(ProviderSessionReaper.ProviderSessionReaper, {
+      start: () => Effect.void,
+    } as never),
+    Layer.succeed(ServerLifecycleEvents.ServerLifecycleEvents, {
+      publish: () => Effect.void,
+    } as never),
+    Layer.succeed(ServerEnvironment.ServerEnvironment, {
+      getDescriptor: Effect.succeed({ environmentId: "env-harness" }),
+    } as never),
+    Layer.succeed(ProviderSessionDirectory.ProviderSessionDirectory, {
+      listBindings: () => Effect.succeed([]),
+    } as never),
+    Layer.succeed(ProviderService.ProviderService, {
+      listSessions: () => Effect.succeed([]),
+    } as never),
+    Layer.succeed(ServiceLauncherClient.ServiceLauncherClient, {
+      prepareTrial: Effect.succeed(undefined),
+    } as never),
+    Layer.succeed(AnalyticsService.AnalyticsService, {
+      record: () => Effect.void,
+    } as never),
+    Layer.succeed(EnvironmentAuth.EnvironmentAuth, {
+      issueStartupPairingUrl: () => Effect.succeed("http://localhost:0/?token=harness"),
+    } as never),
+    Layer.succeed(ExternalLauncher.ExternalLauncher, {
+      launchBrowser: () => Effect.void,
+    } as never),
+    // No project has an upstream, so `projects.auto-pull` runs and pulls nothing.
+    // It is a double rather than the real driver because the real one would shell
+    // out to git in a temp directory.
+    Layer.succeed(GitVcsDriver.GitVcsDriver, {
+      statusDetails: () => Effect.succeed({ isRepo: false }),
+      pullCurrentBranch: () => Effect.die("the harness has nothing to pull"),
+    } as never),
+    ServerSettings.layerTest(),
+    // Never called: `startupPresentation: "browser"` takes the branch that does
+    // not build headless access info. It is here because the requirement is on
+    // the TYPE of the startup effect, not on the branch taken — the layer has to
+    // satisfy every path the generator could run, and the one that wants an HTTP
+    // server is the one this config does not take.
+    Layer.succeed(HttpServer.HttpServer, {} as never),
+  );
 
 /**
  * A ServerConfig literal rather than `layerTest`, because the flag under test
@@ -188,13 +192,54 @@ const configLayer = (input: { readonly baseDir: string; readonly noSeedHierarchy
     }),
   );
 
+interface Activation {
+  readonly awaitActivation: Effect.Effect<void>;
+  readonly activate: Effect.Effect<void>;
+  readonly reactorStart: Effect.Effect<void, never, Scope.Scope>;
+  readonly rootRan: Deferred.Deferred<void>;
+}
+
+/**
+ * Activation as `server.ts` builds it, plus a reactor root that records WHEN it ran into the
+ * same timeline the tracer writes spans to. `forkParked` is the real one: the root is the
+ * shape every reactor's `start` forks, so what this measures is the parking, not a double.
+ */
+const activationRecorder = (timeline: Array<string>) =>
+  Effect.gen(function* () {
+    const activation = yield* Deferred.make<void>();
+    const rootRan = yield* Deferred.make<void>();
+    return {
+      awaitActivation: Deferred.await(activation),
+      activate: Effect.sync(() => {
+        timeline.push("activate");
+      }).pipe(Effect.andThen(Deferred.succeed(activation, undefined)), Effect.asVoid),
+      reactorStart: forkParked(
+        Effect.sync(() => {
+          timeline.push("reactor-root-ran");
+        }).pipe(Effect.andThen(Deferred.succeed(rootRan, undefined))),
+      ),
+      rootRan,
+    } satisfies Activation;
+  });
+
 const startupLayer = (input: {
   readonly databasePath: string;
   readonly baseDir: string;
   readonly noSeedHierarchy: boolean;
+  readonly activation?: Activation;
 }) =>
-  ServerRuntimeStartup.layer.pipe(
-    Layer.provide(doubles),
+  ServerRuntimeStartup.layerWithOptions(
+    input.activation === undefined ? undefined : { activate: input.activation.activate },
+  ).pipe(
+    Layer.provide(doubles(input.activation?.reactorStart)),
+    // How `server.ts` wires activation: the reference is a Deferred every parked root awaits,
+    // and `activate` is what succeeds it. Absent, `forkParked` runs its root at once — the shape
+    // the reactor suites run, and the one the `t3_bot-g12` test must NOT be measuring.
+    Layer.provide(
+      input.activation === undefined
+        ? Layer.empty
+        : Layer.succeed(ServerActivation, input.activation.awaitActivation),
+    ),
     Layer.provideMerge(OrchestrationEngineLive),
     Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
     Layer.provideMerge(OrchestrationProjectionPipelineLive),
@@ -218,22 +263,37 @@ const startupLayer = (input: {
  * every phase before it has returned. Waiting on a sleep or on a span count
  * would be waiting on the implementation.
  */
-const boot = (input: { readonly noSeedHierarchy: boolean }) =>
+const boot = (input: { readonly noSeedHierarchy: boolean; readonly withActivation?: boolean }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-startup-harness-" });
     const databasePath = `${baseDir}/state.sqlite`;
     const { spans, tracer } = recordingTracer();
+    const activation = input.withActivation ? yield* activationRecorder(spans) : undefined;
 
     const readModel = yield* Effect.gen(function* () {
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       yield* startup.markHttpListening;
       yield* startup.awaitCommandReady;
+      // The root has already run by the time readiness settles: `activate` precedes
+      // `signalCommandReady`, and effect resumes the parked root inline on the activating
+      // fiber (the root reached its await during the async phases before `activate`). Two
+      // inputs break this: `activate` moved below `signalCommandReady`, and a reactor whose
+      // `start` never forks the root. A wait here would sit out the first until the suite
+      // timeout and the second forever; `isDone` reds both at once.
+      if (activation !== undefined) {
+        assert.isTrue(yield* Deferred.isDone(activation.rootRan));
+      }
       const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       return yield* projections.getCommandReadModel();
     }).pipe(
       Effect.provide(
-        startupLayer({ databasePath, baseDir, noSeedHierarchy: input.noSeedHierarchy }),
+        startupLayer({
+          databasePath,
+          baseDir,
+          noSeedHierarchy: input.noSeedHierarchy,
+          ...(activation === undefined ? {} : { activation }),
+        }),
       ),
       Effect.withTracer(tracer),
       Effect.scoped,
@@ -284,6 +344,26 @@ describe("the startup generator", () => {
         "project",
         "seniors",
       ]);
+    }),
+  );
+
+  it.effect("activates the parked reactor roots only after the seed has returned", () =>
+    Effect.gen(function* () {
+      const { spans } = yield* boot({ noSeedHierarchy: false, withActivation: true });
+
+      // THE ORDER `t3_bot-gn4` rests on and nothing else pinned (`t3_bot-g12`): the seed's
+      // instance repair has landed before any reactor root can read the row because every
+      // root forks parked behind `ServerActivation` and the server activates after the seed.
+      // Two inputs break this: `options.activate` moved above `hierarchy.seed` (the root
+      // runs before the repair), and a boot with no `ServerActivation` provided (the root
+      // runs at `reactors.start`, before `activate`) — each puts "reactor-root-ran" earlier
+      // in this timeline than the assertion admits.
+      const seed = spans.indexOf("server.startup.hierarchy.seed");
+      const activate = spans.indexOf("activate");
+      const rootRan = spans.indexOf("reactor-root-ran");
+      assert.isAbove(seed, -1);
+      assert.isAbove(activate, seed);
+      assert.isAbove(rootRan, activate);
     }),
   );
 
