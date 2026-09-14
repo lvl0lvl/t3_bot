@@ -74,12 +74,14 @@ describe("turnIdBrandSites", () => {
       "const g = (turn: { id: string }) => TurnId!.make(turn.id);\n",
       ["TurnId!.make(turn.id)"],
     ],
-    // Not seen by design.
+    // Not seen by design (a match loosened to `TurnId\W*make\W*\(` would see the
+    // bracket access; this row is what reds it).
     [
       "a `.call` on make",
       "const g = (turn: { id: string }) => TurnId.make.call(TurnId, turn.id);\n",
       [],
     ],
+    ["a bracket access", 'const g = (turn: { id: string }) => TurnId["make"](turn.id);\n', []],
     // Arguments across lines are captured whole.
     [
       "arguments across lines",
