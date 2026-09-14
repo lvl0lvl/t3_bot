@@ -2,15 +2,16 @@ import { assert, describe, it } from "vite-plus/test";
 
 import { turnIdBrandSites } from "./turnIdBrandSites.ts";
 
-// The fifteen shapes #54's review ran against the pin, as the helper's own
-// table: each row is a line a sync maintainer could write, and whether the
-// helper counts it. The previous strip (`\/\*(?!...)` before the lookahead,
-// so a `*` line was never tested for code after its `*/`) let the
-// block-close-with-code rows through as comments; the previous match
-// (`TurnId\.make\(`) did not see `TurnId?.make(` and `TurnId!.make(`; the
-// lookahead's `[ \t]*` as `\s*` crosses the newline and un-comments a
-// single-line block followed by code on the next line. Any of them put back
-// reds this table.
+// The fourteen shapes #54's review ran against the pin, plus the
+// bracket-access row added when a widened match survived them and the rows
+// #64's review added, as the helper's own table: each row is a line a sync
+// maintainer could write, and whether the helper counts it. The previous
+// strip (`\/\*(?!...)` before the lookahead, so a `*` line was never tested
+// for code after its `*/`) let the block-close-with-code rows through as
+// comments; the previous match (`TurnId\.make\(`) did not see `TurnId?.make(`
+// and `TurnId!.make(`; the lookahead's `[ \t]*` as `\s*` crosses the newline
+// and un-comments a single-line block followed by code on the next line. Any
+// of them put back reds this table.
 const base = ["const a = TurnId.make(id);", "const b = TurnId.make(`opencode-turn-${x}`);"].join(
   "\n",
 );
