@@ -2230,6 +2230,21 @@ export const ChannelPostCreatedPayload = Schema.Struct({
   // Tightening a persisted-event schema is only safe because no channel event
   // exists yet; after the first one this becomes a migration.
   mentions: ChannelMentions,
+  /**
+   * The seated members the mentions resolved to, one ref per member, in
+   * mention order. The wake reactor matches the channel's CURRENT roster by
+   * this and not by `mentions`: a `channel.member.rename` between the post and
+   * the reactor reading it keeps the ref seated and changes the handle, so a
+   * handle match wakes nobody for a post its target can still read. `mentions`
+   * stays — the client renders handles, and rows written before this field
+   * carry nothing else.
+   *
+   * OPTIONAL for the reason `ChannelMemberRemovedPayload.removedMember` is:
+   * events already in the log carry no refs and replay through here forever.
+   * Absent means "written before this landed", and the reactor matches those
+   * by handle as it always did.
+   */
+  mentionRefs: Schema.optional(Schema.Array(ChannelMemberRefPayload)),
   parentPostId: Schema.NullOr(ChannelPostId),
   createdAt: IsoDateTime,
 });

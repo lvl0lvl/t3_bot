@@ -1730,6 +1730,35 @@ it.effect("the mention cap binds the post EVENT, not only the command", () =>
   }),
 );
 
+it.effect("a post event decodes with and without mentionRefs", () =>
+  Effect.gen(function* () {
+    // Rows written before the field carry none and replay forever; a required
+    // field would fail every one of them at the reactor. With it, the refs come
+    // through as written — a decoder that dropped the key would leave the
+    // reactor on the handle match for every post.
+    const decodePostCreated = Schema.decodeUnknownEffect(ChannelPostCreatedPayload);
+    const payload = {
+      channelId: "channel-1",
+      postId: "post-1",
+      authorRef: { memberKind: "thread", memberId: "thread-pm" },
+      authorHandle: "pm",
+      body: "what is 2+2",
+      mentions: ["boss1"],
+      parentPostId: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    const before = yield* decodePostCreated(payload);
+    assert.strictEqual(before.mentionRefs, undefined);
+
+    const after = yield* decodePostCreated({
+      ...payload,
+      mentionRefs: [{ memberKind: "thread", memberId: "thread-boss1" }],
+    });
+    assert.deepStrictEqual(after.mentionRefs, [{ memberKind: "thread", memberId: "thread-boss1" }]);
+  }),
+);
+
 it("isProviderSendTurnSupportedImageMimeType accepts raster formats and rejects svg", () => {
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("image/png"), true);
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("IMAGE/JPEG"), true);
