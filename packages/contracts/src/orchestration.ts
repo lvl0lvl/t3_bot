@@ -2199,8 +2199,10 @@ export const ChannelMemberRemovedPayload = Schema.Struct({
  * carried, and no rename was ever written without one. A consumer that reads
  * `member` off this event needs no `!== undefined` and no roster lookup.
  *
- * Both handles canonical, `from` as it was stored and `to` as it is stored from
- * this sequence on. The member's posts are not rewritten: a post keeps the
+ * `from` is the handle AS STORED — a row written before the canonicalisation
+ * rule holds bytes that do not fold to themselves, and this event is how such a
+ * row is repaired — and `to` is canonical, stored from this sequence on. The
+ * member's posts are not rewritten: a post keeps the
  * `authorHandle` it was written under, and its `authorRef` — this same ref —
  * is what identifies the author.
  */

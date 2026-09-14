@@ -4147,6 +4147,78 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       assert.deepStrictEqual(postRows, [{ author_handle: "boss1", mentions_json: '["boss1"]' }]);
     }),
   );
+
+  it.effect("projects a rename of a row stored non-canonical by its stored bytes", () =>
+    Effect.gen(function* () {
+      // A roster written before the canonicalisation rule holds `@pm`. The
+      // decider emits `from` as stored; a pipeline that folded `from` before
+      // matching would look for `pm`, rewrite the roster unchanged, and leave
+      // the ref under the handle nothing can mention.
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const channelId = ChannelId.make("channel-rename-legacy");
+
+      const base = (eventId: string) => ({
+        eventId: EventId.make(eventId),
+        aggregateKind: "channel" as const,
+        aggregateId: channelId,
+        occurredAt: now,
+        commandId: CommandId.make(eventId),
+        causationEventId: null,
+        correlationId: CommandId.make(eventId),
+        metadata: {},
+      });
+
+      yield* eventStore.append({
+        ...base("evt-rename-legacy-created"),
+        type: "channel.created",
+        payload: {
+          channelId,
+          name: "legacy",
+          members: [
+            {
+              handle: ChannelMemberHandle.make("@pm"),
+              memberKind: "thread" as const,
+              memberId: "thread-pm",
+            },
+            {
+              handle: ChannelMemberHandle.make("boss1"),
+              memberKind: "thread" as const,
+              memberId: "thread-boss1",
+            },
+          ],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      yield* eventStore.append({
+        ...base("evt-rename-legacy"),
+        type: "channel.member-renamed",
+        payload: {
+          channelId,
+          from: ChannelMemberHandle.make("@pm"),
+          to: ChannelMemberHandle.make("pm"),
+          member: { memberKind: "thread" as const, memberId: "thread-pm" },
+          updatedAt: "2026-01-02T00:00:00.000Z",
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const memberRows = yield* sql<{
+        readonly handle: string;
+        readonly member_kind: string;
+        readonly member_id: string;
+      }>`SELECT handle, member_kind, member_id FROM projection_channel_members WHERE channel_id = ${channelId} ORDER BY handle ASC`;
+      // The ref never leaves the roster and the stuck handle is gone.
+      assert.deepStrictEqual(memberRows, [
+        { handle: "boss1", member_kind: "thread", member_id: "thread-boss1" },
+        { handle: "pm", member_kind: "thread", member_id: "thread-pm" },
+      ]);
+    }),
+  );
 });
 
 it.layer(makeProjectionPipelinePrefixedTestLayer("t3-pending-turn-terminal-test-"))(

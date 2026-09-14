@@ -446,8 +446,9 @@ function refKey(member: ChannelMember): string {
  * the rows it admits and not for rows written before this invariant existed.
  * Re-validating the whole roster made a legacy duplicate block every later
  * `member.add` with an error naming a member the operator had not mentioned —
- * a wall where a diagnosis belongs, and the repair of that population is a
- * command of its own (`t3_bot-uw9`, `t3_bot-z7u`).
+ * a wall where a diagnosis belongs. `channel.member.rename`, with the handle as
+ * stored, repairs a row stored non-canonical; a duplicated ref is repaired by
+ * `member.remove` of one of its handles (`t3_bot-z7u`).
  *
  * The handle half narrows the same way and loses nothing: the projector keys
  * `channel_members` by handle as a SQL primary key, so `seated` cannot hold two

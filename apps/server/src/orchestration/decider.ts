@@ -2262,35 +2262,56 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
       // A retired channel's roster does not move (see member.add).
       yield* requireChannelNotArchived({ command, channel });
-      // Canonical on both sides, as remove is: "@Boss1" names the boss1 row, and
-      // the stored `to` is what a later mention is compared against byte for byte.
-      const from = yield* requireCanonicalChannelHandle({ command, handle: command.from });
+      // `to` is canonical, as add and remove store: a later mention is compared
+      // against the stored bytes. `from` is matched AS STORED first and by its
+      // canonical form second. A row stored before the canonicalisation rule
+      // (`@pm`, `Boss1`; channel-identity.md) folds to bytes it does not hold,
+      // so post.create cannot mention it and member.remove cannot name it — this
+      // is the one command that reaches it, and only when `@pm` typed exactly
+      // finds the `@pm` row. Stored first, because a roster holding a legacy
+      // `Boss1` beside a canonical `boss1` breaks the other order: canonical
+      // first folds `Boss1` to `boss1` and renames the wrong row.
+      //
+      // `from` is still required to HAVE a canonical form: a handle of only
+      // sigils folds to "", which the schema refuses to store, so it can name no
+      // row and is refused here by its fault rather than as "not a member".
+      const canonicalFrom = yield* requireCanonicalChannelHandle({
+        command,
+        handle: command.from,
+      });
       const to = yield* requireCanonicalChannelHandle({ command, handle: command.to });
-      const seated = channel.members.find((member) => member.handle === from);
-      if (seated === undefined) {
+      const renamed =
+        channel.members.find((member) => member.handle === command.from) ??
+        channel.members.find((member) => member.handle === canonicalFrom);
+      if (renamed === undefined) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: `Handle '${from}' is not a member of channel '${command.channelId}'.`,
+          detail: `Handle '${command.from}' is not a member of channel '${command.channelId}'.`,
         });
       }
+      // The SEATED row's bytes, never the typed ones: both projections match the
+      // row on `from`, and a legacy `@pm` is found under `@pm`.
+      const from = renamed.handle;
       // REFUSED rather than a no-op. `channel.meta.update` to the name a channel
       // already has is a no-op because that command is a partial update and
       // "nothing changed" is one of its outcomes; a rename carries nothing but the
       // change, so an event recording none would be a fact the log never had —
       // the same class as the removal a remove-then-add announces (`t3_bot-uw9`).
+      // Compared against the SEATED handle: a legacy `@pm` renamed to `pm` is
+      // the repair, not a no-op.
       if (to === from) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Handle '${command.to}' is already '${from}' in channel '${command.channelId}'.`,
         });
       }
-      // The row's own ref is lifted out of `seated`, so only the HANDLE check can
-      // fire here — a rename onto a handle another member holds — and it fires
-      // with the same text an add would.
+      // The row's own ref is lifted out of the roster, so only the HANDLE check
+      // can fire here — a rename onto a handle another member holds — and it
+      // fires with the same text an add would.
       yield* requireChannelMembersUnique({
         command,
         seated: channel.members.filter((member) => member.handle !== from),
-        adding: [{ ...seated, handle: to }],
+        adding: [{ ...renamed, handle: to }],
       });
       const occurredAt = yield* nowIso;
       return {
@@ -2305,7 +2326,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           channelId: command.channelId,
           from,
           to,
-          member: { memberKind: seated.memberKind, memberId: seated.memberId },
+          member: { memberKind: renamed.memberKind, memberId: renamed.memberId },
           updatedAt: occurredAt,
         },
       };
