@@ -749,14 +749,14 @@ const make = Effect.gen(function* () {
 
     yield* providerService.assertConversationRollbackSupported(event.payload.threadId);
 
-    // The provider rollback goes first: it is the step that fails typed (an
-    // adapter refusing an id, an unreachable provider), and nothing here can
-    // undo a filesystem restore once the rollback has failed. Restoring first
-    // left the working tree at the target turn while the thread, its
-    // checkpoint refs and the provider conversation stayed at the current one
-    // — the next prompt ran over reverted files with the full conversation.
-    // Failing here leaves the tree untouched; the failure activity below
-    // names it.
+    // The provider rollback goes first. Restoring first, then a typed
+    // rollback failure (Grok, a dead OpenCode session) left the files at the
+    // target turn while the thread, its refs and the conversation stayed at
+    // the current one; the next prompt ran over reverted files with the full
+    // conversation. The restore can be re-run, the rollback cannot, so the
+    // order was reversed rather than restoring the current turn's ref back.
+    // A rollback failure surfaces through `processDomainEvent`'s catch with
+    // the adapter's message; T3's restore has not run.
     const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
     if (
       event.payload.turnCount > 0 &&

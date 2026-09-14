@@ -1766,13 +1766,9 @@ describe("CheckpointReactor", () => {
 
   effectIt.effect("leaves the working tree alone when the provider rollback fails", () =>
     Effect.gen(function* () {
-      // The reactor restored the filesystem before rolling the provider
-      // conversation back, so a typed rollback failure (an adapter refusing
-      // an id, an unreachable provider) left README at the target turn while
-      // the thread, its checkpoint refs and the conversation stayed current:
-      // the next prompt ran over reverted files with the full conversation.
-      // The rollback now goes first; when it fails, nothing has been restored,
-      // no `thread.reverted` is emitted, and one failure activity carries the
+      // Restore-first left README at the target turn when the rollback then
+      // failed typed. Rollback-first: T3's restore has not run, no
+      // `thread.reverted` is emitted, and one failure activity carries the
       // adapter's message.
       const harness = yield* Effect.promise(() => createHarness());
       const threadId = ThreadId.make("thread-1");
