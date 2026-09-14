@@ -6259,7 +6259,20 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-session-1",
         uuid: "result-1",
       } as unknown as SDKMessage);
-      const events = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      // Under it.effect's TestClock a plain `Effect.timeout` never fires; a
+      // tool id that dies in the pump (base's `.make("")`) would hang the
+      // collect to vitest's 60 s with nothing named.
+      const events = Array.from(
+        yield* TestClock.withLive(
+          Fiber.join(runtimeEventsFiber).pipe(
+            Effect.timeoutOrElse({
+              duration: "2 seconds",
+              orElse: () =>
+                Effect.die(new Error("the turn never completed: a tool id died in the pump")),
+            }),
+          ),
+        ),
+      );
       for (const lifecycle of ["item.started", "item.completed"] as const) {
         const ids = events.filter((event) => event.type === lifecycle).map((event) => event.itemId);
         assert.deepEqual(
