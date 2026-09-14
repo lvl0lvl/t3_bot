@@ -766,10 +766,19 @@ const capture = Effect.fn("guardSweep.capture")(function* (
  * directory never reaches this gate, because git does not index such a path
  * (`git add` refuses it as "beyond a symbolic link") — the tracked gate refuses
  * it first, measured.
+ *
+ * `ls-files` takes a PATHSPEC, so a row named `src` lists every entry under it,
+ * and judging the first line called `src` "a symlink" whenever `src/alink.ts`
+ * sorted first and "could not read" otherwise. Only the entry whose path IS
+ * `file` decides; a directory, a glob or a prefix has none and the read gate
+ * names it. `-z` prints the path as written, so the equality is byte-exact.
  */
 const linkRefusal = Effect.fn("guardSweep.linkRefusal")(function* (root: string, file: string) {
-  const entry = yield* capture(["git", "ls-files", "-s", "--", file], root);
-  if (entry.stdout.startsWith("120000 ")) {
+  const listed = yield* capture(["git", "ls-files", "-s", "-z", "--", file], root);
+  const own = listed.stdout
+    .split("\0")
+    .find((entry) => entry.slice(entry.indexOf("\t") + 1) === file);
+  if (own?.startsWith("120000 ")) {
     return (
       `${file} is a symlink in the index — a write would land in its target, and ` +
       "`git checkout --` would restore only the link"

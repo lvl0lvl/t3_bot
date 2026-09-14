@@ -16,7 +16,8 @@
  * THE END-TO-END TEST IS THE POINT: the first test sweeps `--in-place` and asserts on the
  * target's bytes and on porcelain after the run, and on the second row's verdict, not on the
  * predicate. Separate from `guard-sweep.paths.test.ts` (a spelling git prints differently) — a
- * link is spelled exactly as porcelain prints it.
+ * link is spelled exactly as porcelain prints it. The same claim in the other direction: the
+ * reason names the row's OWN index entry, not the first entry its pathspec happens to match.
  */
 import { describe, expect, it } from "vite-plus/test";
 
@@ -55,8 +56,10 @@ const git = (root: string, ...argv: ReadonlyArray<string>) => {
 /**
  * `src/thing.ts` holds the guard; `src/link.ts` is a tracked symlink to it (index mode 120000);
  * `src/plain.ts` has no guard and `src/plainlink.ts` links to it; `outside.ts` lives in a sibling
- * temp directory and `src/outlink.ts` links to it by absolute path. Every link is committed, so
- * porcelain is clean and `ls-files --error-unmatch` passes. The config is written beside
+ * temp directory and `src/outlink.ts` links to it by absolute path; `src/alink.ts` links to
+ * `thing.ts` too and sorts before every regular file under `src`, so a pathspec `src` lists a
+ * symlink first. Every link is committed, so porcelain is clean and `ls-files --error-unmatch`
+ * passes. The config is written beside
  * `outside.ts`, not in the root: an untracked `sweep.json` in the root is the dirty tree an
  * `--in-place` sweep refuses (exit 1) before it reads a row.
  */
@@ -70,6 +73,7 @@ const scaffold = (mutations: ReadonlyArray<unknown>) => {
   NodeFS.writeFileSync(NodePath.join(root, "src/thing.ts"), "a\nif (guard) {\nb\n");
   NodeFS.writeFileSync(NodePath.join(root, "src/plain.ts"), "no guard here\n");
   NodeFS.symlinkSync("thing.ts", NodePath.join(root, "src/link.ts"));
+  NodeFS.symlinkSync("thing.ts", NodePath.join(root, "src/alink.ts"));
   NodeFS.symlinkSync("plain.ts", NodePath.join(root, "src/plainlink.ts"));
   NodeFS.symlinkSync(outside, NodePath.join(root, "src/outlink.ts"));
   git(root, "init", "--quiet");
@@ -174,6 +178,26 @@ describe("a mutation file that is a symlink is not written through", () => {
       // The bytes the sweep must never have touched: an absolute-target link used to leave the
       // mutation in this file after the run, outside anything the tool created or restores.
       expect(NodeFS.readFileSync(outside, "utf8")).toBe("a\nif (guard) {\nb\n");
+      expect(done.status).toBe(3);
+    } finally {
+      remove(root, elsewhere);
+    }
+  });
+
+  it("judges a directory row by its own index entry, not by the link that sorts first under it", () => {
+    const { root, elsewhere, config } = scaffold([rowOn("on-the-directory", "src")]);
+    try {
+      expect(git(root, "ls-files", "-s", "--", "src").startsWith("120000 ")).toBe(true);
+
+      const done = runSweep(root, config);
+
+      // `ls-files -s -- src` is a pathspec listing, and `src/alink.ts` is its first line. Judged
+      // by that line this row was "src is a symlink in the index"; with a regular file sorting
+      // first it was "could not read src". Neither `src` nor `src/*.ts` has an entry of its own,
+      // so the read gate names the row, whatever sorts first.
+      expect(done.stdout).toContain("on-the-directory: NOT RUN");
+      expect(done.stdout).not.toContain("src is a symlink in the index");
+      expect(done.stdout).toContain("could not read src");
       expect(done.status).toBe(3);
     } finally {
       remove(root, elsewhere);
