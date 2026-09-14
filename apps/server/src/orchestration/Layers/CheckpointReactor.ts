@@ -749,6 +749,22 @@ const make = Effect.gen(function* () {
 
     yield* providerService.assertConversationRollbackSupported(event.payload.threadId);
 
+    // The provider rollback goes first: it is the step that fails typed (an
+    // adapter refusing an id, an unreachable provider), and nothing here can
+    // undo a filesystem restore once the rollback has failed. Restoring first
+    // left the working tree at the target turn while the thread, its
+    // checkpoint refs and the provider conversation stayed at the current one
+    // — the next prompt ran over reverted files with the full conversation.
+    // Failing here leaves the tree untouched; the failure activity below
+    // names it.
+    const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
+    if (rolledBackTurns > 0) {
+      yield* providerService.rollbackConversation({
+        threadId: sessionRuntime.value.threadId,
+        numTurns: rolledBackTurns,
+      });
+    }
+
     const restored = yield* checkpointStore.restoreCheckpoint({
       cwd: sessionRuntime.value.cwd,
       checkpointRef: targetCheckpointRef,
@@ -758,7 +774,10 @@ const make = Effect.gen(function* () {
       yield* appendRevertFailureActivity({
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,
-        detail: `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
+        detail:
+          rolledBackTurns > 0
+            ? `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}; the provider conversation was rolled back ${rolledBackTurns} turn(s) and the files were not.`
+            : `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
         createdAt: now,
       }).pipe(Effect.catch(() => Effect.void));
       return;
@@ -767,14 +786,6 @@ const make = Effect.gen(function* () {
     // Refresh the workspace entry index so the @-mention file picker
     // reflects the reverted filesystem state.
     yield* workspaceEntries.refresh(sessionRuntime.value.cwd);
-
-    const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
-    if (rolledBackTurns > 0) {
-      yield* providerService.rollbackConversation({
-        threadId: sessionRuntime.value.threadId,
-        numTurns: rolledBackTurns,
-      });
-    }
 
     const staleCheckpointRefs: Array<CheckpointRef> = [];
     for (const checkpoint of thread.checkpoints) {
