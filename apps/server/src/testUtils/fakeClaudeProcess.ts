@@ -20,17 +20,18 @@ export const FAKE_CLAUDE_EXIT_ON_STDIN_END = 'lines.on("close", () => process.ex
 
 /**
  * Spawns the fake the way the SDK does and closes its stdin at once. Resolves
- * with the exit code when the fake exits; rejects after five seconds naming
- * the child it had to kill. A plain Promise on Node's own timer, for the
- * TestClock reason in the header.
+ * when the fake exits 0; rejects naming the child on any other exit code, on
+ * a signal death (Node reports `(null, signal)` — the signal is the message,
+ * not a stand-in code), and after five seconds when it had to be killed. A
+ * plain Promise on Node's own timer, for the TestClock reason in the header.
  */
 export const assertFakeClaudeExitsOnStdinEnd = (
   executablePath: string,
   options: { readonly env?: NodeJS.ProcessEnv } = {},
-): Effect.Effect<number> =>
+): Effect.Effect<void> =>
   Effect.promise(
     () =>
-      new Promise<number>((resolve, reject) => {
+      new Promise<void>((resolve, reject) => {
         const child = NodeChildProcess.spawn(
           process.execPath,
           [executablePath, "--output-format", "stream-json", "--input-format", "stream-json"],
@@ -45,9 +46,17 @@ export const assertFakeClaudeExitsOnStdinEnd = (
             ),
           );
         }, timeoutMs);
-        child.once("exit", (code) => {
+        child.once("exit", (code, signal) => {
           clearTimeout(timer);
-          resolve(code ?? -1);
+          if (code === 0) {
+            resolve();
+            return;
+          }
+          reject(
+            new Error(
+              `fake claude ${executablePath} (pid ${child.pid}) ${signal === null ? `exited ${code}` : `died by ${signal}`} on its stdin closing`,
+            ),
+          );
         });
         child.once("error", (error) => {
           clearTimeout(timer);
@@ -58,13 +67,14 @@ export const assertFakeClaudeExitsOnStdinEnd = (
   );
 
 /**
- * Fails if any child of THIS process still runs a fake whose executable lives
- * under `fixtureDirectory`. The SDK hands out no handle to the child it spawns,
- * so its exit is observable only in the process table; the wait is a bounded
- * real-time poll on Node's timer (the header says why), and it ends the
- * moment the table is clear. Children are matched by parent pid,
- * never by name alone, so another session's fakes do not count against this
- * test — and this test's survivors cannot hide behind them.
+ * Fails if any child of THIS process still runs with `executablePath` in its
+ * argv — the fake itself, not the codex peer that shares its fixture
+ * directory. The SDK hands out no handle to the child it spawns, so its exit
+ * is observable only in the process table; the wait is a bounded real-time
+ * poll on Node's timer (the header says why), and it ends the moment the
+ * table is clear. Children are matched by parent pid, never by name alone,
+ * so another session's fakes do not count against this test — and this
+ * test's survivors cannot hide behind them.
  *
  * HOW THE FAKE LEAKS, AND WHY THE WINDOW IS 1 s. On abort the SDK
  * (`@anthropic-ai/claude-agent-sdk` 0.3.260, `ProcessTransport.close()` in
@@ -82,24 +92,24 @@ export const assertFakeClaudeExitsOnStdinEnd = (
  * is gone ~20 ms after its stdin ends (measured), so 1 s sees every honest
  * exit and never the SDK's.
  */
-export const assertNoFakeClaudeChildren = (fixtureDirectory: string): Effect.Effect<void> =>
+export const assertNoFakeClaudeChildren = (executablePath: string): Effect.Effect<void> =>
   Effect.gen(function* () {
     // `ps` is not there, so nothing is measured. The registry callers and the
     // window pin skip on Windows before reaching this; the probe's SDK test
     // still runs there and gets a check that cannot fail.
     if (yield* isHostWindows) return;
-    yield* Effect.promise(() => awaitNoFakeClaudeChildren(fixtureDirectory));
+    yield* Effect.promise(() => awaitNoFakeClaudeChildren(executablePath));
   });
 
 /** Under the SDK's 2 s SIGTERM and over a fixed fake's ~20 ms; the docstring above says why. */
 const SURVIVOR_WINDOW_MS = 1_000;
 
-const awaitNoFakeClaudeChildren = async (fixtureDirectory: string) => {
+const awaitNoFakeClaudeChildren = async (executablePath: string) => {
   const deadline = Date.now() + SURVIVOR_WINDOW_MS;
-  let survivors = await fakeClaudeChildren(fixtureDirectory);
+  let survivors = await fakeClaudeChildren(executablePath);
   while (survivors.length > 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 25));
-    survivors = await fakeClaudeChildren(fixtureDirectory);
+    survivors = await fakeClaudeChildren(executablePath);
   }
   if (survivors.length > 0) {
     throw new Error(
@@ -108,11 +118,11 @@ const awaitNoFakeClaudeChildren = async (fixtureDirectory: string) => {
   }
 };
 
-const fakeClaudeChildren = async (fixtureDirectory: string): Promise<ReadonlyArray<string>> => {
+const fakeClaudeChildren = async (executablePath: string): Promise<ReadonlyArray<string>> => {
   const { stdout } = await execFile("ps", ["-axo", "pid=,ppid=,command="]);
   return stdout.split("\n").flatMap((line) => {
     const row = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
-    return row !== null && row[2] === String(process.pid) && row[3]!.includes(fixtureDirectory)
+    return row !== null && row[2] === String(process.pid) && row[3]!.includes(executablePath)
       ? [`${row[1]} ${row[3]}`]
       : [];
   });

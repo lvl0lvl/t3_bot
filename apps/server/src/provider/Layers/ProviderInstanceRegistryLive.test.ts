@@ -398,7 +398,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         version: "2.1.219",
       });
       // The probe aborted the SDK and awaits nothing; the fake must already be gone.
-      yield* assertNoFakeClaudeChildren(fixtures.fixtureDir);
+      yield* assertNoFakeClaudeChildren(fixtures.claudePath);
     }).pipe(Effect.provide(testLayer)),
   );
 
@@ -407,8 +407,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       if (yield* isHostWindows) return;
       const fixtures = yield* makeTildeProviderFixtures();
       // The fixture's own contract without the SDK in between: stdin closes, the fake exits.
-      const exitCode = yield* assertFakeClaudeExitsOnStdinEnd(fixtures.claudePath);
-      expect(exitCode).toBe(0);
+      yield* assertFakeClaudeExitsOnStdinEnd(fixtures.claudePath);
     }).pipe(Effect.provide(testLayer)),
   );
 
