@@ -65,6 +65,17 @@
  *    whitespace anywhere in the name, because `-z` prints it as written where
  *    the line form quoted it.
  *
+ * 7. It refuses a `file` that is a symlink in the index. The write lands in the
+ *    link's target and `git checkout -- <link>` restores the link, so the target
+ *    stays mutated: inside the tree, every later row is measured on a mutated
+ *    file — measured, a kill credited to the link row and the next row NOT RUN
+ *    on an anchor the leftover mutation had already replaced; outside it, a file
+ *    the tool never created holds the mutation after the run, which is what 3
+ *    promises cannot happen. Unlike 1 and 6 this is per ROW (NOT RUN, exit 3),
+ *    the way an untracked or moved file is: it is answered by the same
+ *    `ls-files` the tracked gate already pays for, and the other rows are still
+ *    measurable.
+ *
  * ITS EXIT CODE IS A VERDICT: 0 all killed, 2 a survivor, 3 something NOT RUN,
  * 1 the tool or config failed. Every outcome used to be 0 and only a crash was
  * non-zero, which made the code an anti-signal — 0 for the healthy state and 0
@@ -141,7 +152,10 @@ export const Mutation = Schema.Struct({
    * is a mutation id; `requireCommandIssuer` is a guard.
    */
   guard: Schema.String,
-  /** Repo-relative path of the file to mutate. */
+  /**
+   * Repo-relative path of the file to mutate — spelled as git prints it (refusal 6),
+   * a tracked regular file, not a symlink (refusal 7).
+   */
   file: Schema.String,
   /** Text to replace. It MUST occur exactly once in the file. */
   find: Schema.String,
@@ -908,9 +922,12 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
     if (tracked.exitCode !== 0) {
       continue;
     }
-    // AND NOT A LINK, the row loop's fourth gate: reading through one here would judge the
-    // anchor against the target's text and pass a row the sweep must not write. Skipped,
-    // not refused, for the same reason as the two gates above.
+    // AND NOT A LINK, the row loop's fourth gate. The breaking input is a link whose TARGET
+    // lacks the anchor (`src/plainlink.ts -> plain.ts`): read through here the pre-flight finds
+    // no anchor and refuses the WHOLE config with `GuardSweepConfigError`, exit 1, blaming the
+    // anchor, where the row loop gives exit 3 naming the link. A link whose target HAS it passes
+    // here and pays the baseline for a row the loop then refuses. Skipped, not refused, so the
+    // row loop keeps the accurate reason.
     if ((yield* linkRefusal(root, mutation.file)) !== undefined) {
       continue;
     }
@@ -1145,9 +1162,9 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
  * does not resolve exactly once now refuses the config with exit 1 before the
  * baseline. The rule stands on what is left — a `setupCommand` that wrote a
  * mutation target, a path outside the swept tree, an untracked or unreadable
- * file, a mutant that does not compile, an unconfirmed kill — each of which is a
- * row the run could not measure while measuring others, which is exactly the
- * state that must not hide behind a survivor.
+ * file, a symlinked file, a mutant that does not compile, an unconfirmed kill —
+ * each of which is a row the run could not measure while measuring others,
+ * which is exactly the state that must not hide behind a survivor.
  *
  * 1 is not produced here. It is what the runtime already exits with when the
  * tool or its config failed, which is a third thing again: nothing was measured
