@@ -6454,11 +6454,12 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           for (const read of [adapter.readThread(threadId), adapter.rollbackThread(threadId, 1)]) {
             const error = yield* read.pipe(
               Effect.flip,
-              Effect.mapError(
-                (snapshot) =>
+              Effect.catch((snapshot) =>
+                Effect.die(
                   new Error(
                     `${quoted}${boundary === undefined ? " with no boundary" : ""}: the read succeeded with ${snapshot.turns.length} turn(s)`,
                   ),
+                ),
               ),
             );
             NodeAssert.equal(error._tag, "ProviderAdapterRequestError");
