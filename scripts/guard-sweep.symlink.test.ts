@@ -53,7 +53,9 @@ const git = (root: string, ...argv: ReadonlyArray<string>) => {
  * `src/thing.ts` holds the guard; `src/link.ts` is a tracked symlink to it (index mode 120000);
  * `src/plain.ts` has no guard and `src/plainlink.ts` links to it; `outside.ts` lives in a sibling
  * temp directory and `src/outlink.ts` links to it by absolute path. Every link is committed, so
- * porcelain is clean and `ls-files --error-unmatch` passes.
+ * porcelain is clean and `ls-files --error-unmatch` passes. The config is written beside
+ * `outside.ts`, not in the root: an untracked `sweep.json` in the root is the dirty tree an
+ * `--in-place` sweep refuses (exit 1) before it reads a row.
  */
 const scaffold = (mutations: ReadonlyArray<unknown>) => {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "guard-sweep-symlink-"));
@@ -72,7 +74,7 @@ const scaffold = (mutations: ReadonlyArray<unknown>) => {
   git(root, "config", "user.name", "t");
   git(root, "add", "-A");
   git(root, "commit", "--quiet", "-m", "seed");
-  const config = NodePath.join(root, "sweep.json");
+  const config = NodePath.join(elsewhere, "sweep.json");
   NodeFS.writeFileSync(
     config,
     JSON.stringify({ testCommand: [NodePath.join(root, "suite.sh")], mutations }),
@@ -80,10 +82,17 @@ const scaffold = (mutations: ReadonlyArray<unknown>) => {
   return { root, config, outside };
 };
 
-const runSweep = (root: string, config: string) =>
+const runSweep = (root: string, config: string, ...flags: ReadonlyArray<string>) =>
   NodeChildProcess.spawnSync(
     process.execPath,
-    [NodePath.join(import.meta.dirname, "guard-sweep.ts"), "--config", config, "--repo", root],
+    [
+      NodePath.join(import.meta.dirname, "guard-sweep.ts"),
+      "--config",
+      config,
+      "--repo",
+      root,
+      ...flags,
+    ],
     { cwd: root, encoding: "utf8" },
   );
 
@@ -95,20 +104,29 @@ describe("a mutation file that is a symlink is not written through", () => {
     ]);
     expect(git(root, "ls-files", "-s", "--", "src/link.ts").startsWith("120000 ")).toBe(true);
 
-    const done = runSweep(root, config);
+    // IN PLACE, so the bytes below are the tree the sweep wrote. Without `--in-place` the sweep
+    // writes a worktree it removes, and `root/src/thing.ts` is byte-identical to HEAD with the
+    // link gate deleted — the assertion on it pinned nothing.
+    const done = runSweep(root, config, "--in-place");
 
-    // THE FALSE KILL: before this refusal the first row's mutation landed in thing.ts, its
-    // restore returned the link, and the second row was credited a kill for the red the first
-    // row left behind — exit 0. Now the link row is NOT RUN, the target is byte-identical to
-    // HEAD when the second row is measured, and only that row's own mutation reds the suite.
+    // THE FALSE KILL: before this refusal the first row's mutation landed in thing.ts and its
+    // restore returned the link, so the link row was credited `killed by 1` for a red the
+    // TARGET's mutation caused, and the second row was NOT RUN — anchor not found — because
+    // that mutation was still in thing.ts when it was read: exit 3, a false kill beside an
+    // unmeasured row. (The bead's run, with a `setupCommand`, went further: both rows killed,
+    // exit 0.) Now the link row is NOT RUN, the target is byte-identical to HEAD when the
+    // second row is measured, and only that row's own mutation reds the suite.
     expect(done.stdout).toContain("through-the-link: NOT RUN");
     expect(done.stdout).toContain("is a symlink in the index");
     expect(done.stdout).toContain("on-the-target: killed by 1");
+    // With the link gate deleted this file holds `if (false) {` after the run.
     expect(NodeFS.readFileSync(NodePath.join(root, "src/thing.ts"), "utf8")).toBe(
       "a\nif (guard) {\nb\n",
     );
-    // NOT RUN outranks a kill at the exit: the sweep says so rather than exiting 0.
-    expect(done.status).not.toBe(0);
+    expect(git(root, "status", "--porcelain")).toBe("");
+    // NOT RUN outranks a kill at the exit: 3, not the 0 a dropped verdict gives nor the 1 a
+    // crash after the report gives.
+    expect(done.status).toBe(3);
   });
 
   it("names the link, not the anchor, when the link's target lacks the anchor", () => {
@@ -123,7 +141,7 @@ describe("a mutation file that is a symlink is not written through", () => {
     expect(done.stdout).not.toContain("could not be applied");
     expect(done.stdout).toContain("through-the-plainlink: NOT RUN");
     expect(done.stdout).toContain("is a symlink in the index");
-    expect(done.status).not.toBe(1);
+    expect(done.status).toBe(3);
   });
 
   it("never writes to a file outside the tree that a link points at", () => {
@@ -135,6 +153,6 @@ describe("a mutation file that is a symlink is not written through", () => {
     // The bytes the sweep must never have touched: an absolute-target link used to leave the
     // mutation in this file after the run, outside anything the tool created or restores.
     expect(NodeFS.readFileSync(outside, "utf8")).toBe("a\nif (guard) {\nb\n");
-    expect(done.status).not.toBe(0);
+    expect(done.status).toBe(3);
   });
 });
