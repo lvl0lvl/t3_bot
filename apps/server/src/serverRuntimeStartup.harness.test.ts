@@ -275,10 +275,14 @@ const boot = (input: { readonly noSeedHierarchy: boolean; readonly withActivatio
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       yield* startup.markHttpListening;
       yield* startup.awaitCommandReady;
-      // The root is unparked by `activate`, which precedes command readiness; waiting on it
-      // here is a fence on the root's own Deferred, not a sleep.
+      // The root has already run by the time readiness settles: `activate` precedes
+      // `signalCommandReady`, and effect resumes the parked root inline on the activating
+      // fiber (the root reached its await during the async phases before `activate`). Two
+      // inputs break this: `activate` moved below `signalCommandReady`, and a reactor whose
+      // `start` never forks the root. A wait here would sit out the first until the suite
+      // timeout and the second forever; `isDone` reds both at once.
       if (activation !== undefined) {
-        yield* Deferred.await(activation.rootRan);
+        assert.isTrue(yield* Deferred.isDone(activation.rootRan));
       }
       const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       return yield* projections.getCommandReadModel();
