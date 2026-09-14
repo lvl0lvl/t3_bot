@@ -80,7 +80,7 @@
  *    ` M`, so the tree the operator gets back is dirty — refusal 4's premise —
  *    and the next run is refused at exit 1. Unlike 1 and 6 this is per ROW
  *    (NOT RUN, exit 3), the way an untracked or moved file is: it is answered
- *    by one more `ls-files` and a `stat` beside the tracked gate's, and the
+ *    by one more `ls-files` and a `stat`, beside the tracked gate, and the
  *    other rows are still measurable.
  *
  * ITS EXIT CODE IS A VERDICT: 0 all killed, 2 a survivor, 3 something NOT RUN,
@@ -162,7 +162,8 @@ export const Mutation = Schema.Struct({
   guard: Schema.String,
   /**
    * Repo-relative path of the file to mutate — spelled as git prints it (refusal 6),
-   * a tracked regular file, not a symlink and not a name its inode shares (refusal 7).
+   * a tracked regular file, not a symlink and not a file whose inode has another name
+   * (refusal 7).
    */
   file: Schema.String,
   /** Text to replace. It MUST occur exactly once in the file. */
@@ -776,12 +777,6 @@ const capture = Effect.fn("guardSweep.capture")(function* (
  * (`git add` refuses it as "beyond a symbolic link") — the tracked gate refuses
  * it first, measured.
  *
- * `ls-files` takes a PATHSPEC, so a row named `src` lists every entry under it,
- * and judging the first line called `src` "a symlink" whenever `src/alink.ts`
- * sorted first and "could not read" otherwise. Only the entry whose path IS
- * `file` decides; a directory, a glob or a prefix has none and the read gate
- * names it. `-z` prints the path as written, so the equality is byte-exact.
- *
  * And the inode's LINK COUNT, because a hard link is the same defect with the
  * index saying `100644`, porcelain clean and the path resolving inside the tree:
  * `writeFileString` truncates the shared inode, so every other name holds the
@@ -796,6 +791,13 @@ const capture = Effect.fn("guardSweep.capture")(function* (
  * lstat), so with the order swapped a tracked DANGLING link fails the stat and
  * falls to the read gate as "could not read" — the wrong reason — and a link
  * whose target has another name is refused for the target's count.
+ *
+ * The index-mode test's `ls-files` takes a PATHSPEC, so a row named `src` lists
+ * every entry under it, and judging the first line called `src` "a symlink"
+ * whenever `src/alink.ts` sorted first and "could not read" otherwise. Only the
+ * entry whose path IS `file` decides; a directory, a glob or a prefix has none
+ * and the read gate names it. `-z` prints the path as written, so the equality
+ * is byte-exact.
  */
 const linkRefusal = Effect.fn("guardSweep.linkRefusal")(function* (root: string, file: string) {
   const listed = yield* capture(["git", "ls-files", "-s", "-z", "--", file], root);
@@ -1097,7 +1099,9 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
     }
     // WHERE THE WRITE WOULD LAND, before anything is read through the path. A tracked
     // symlink passes every gate above — porcelain is clean, git tracks the link — and
-    // the write goes to its target while the restore returns the link (`linkRefusal`).
+    // the write goes to its target while the restore returns the link; a hard-linked
+    // file passes them too, and the write goes to every name of its inode while the
+    // restore recreates only this one (`linkRefusal`).
     const link = yield* linkRefusal(root, mutation.file);
     if (link !== undefined) {
       swept.push({ mutation, verdict: { _tag: "not-run", reason: link } });

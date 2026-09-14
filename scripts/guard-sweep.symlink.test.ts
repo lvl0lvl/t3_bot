@@ -117,7 +117,7 @@ const runSweep = (root: string, config: string, ...flags: ReadonlyArray<string>)
     { cwd: root, encoding: "utf8" },
   );
 
-describe("a mutation file that is a symlink is not written through", () => {
+describe("a mutation file whose write lands where the restore does not reach is not written through", () => {
   it("reports the link row NOT RUN and measures the row after it on an untouched target", () => {
     const { root, elsewhere, config } = scaffold([
       rowOn("through-the-link", "src/link.ts"),
