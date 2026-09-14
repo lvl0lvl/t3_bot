@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off globalDateInEffect:off - process-table and child-process
-// probes on Node's own timers: the callers run under `it.effect`'s TestClock, where an Effect timer would wait for
-// time nobody advances, and the thing waited on is the OS process table, not the Clock.
+// probes on Node's own timers: the probe caller runs under `it.effect`'s TestClock (the registry callers are `it.live`),
+// where an Effect timer would wait for time nobody advances, and the thing waited on is the OS process table, not the Clock.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
 
@@ -21,9 +21,8 @@ export const FAKE_CLAUDE_EXIT_ON_STDIN_END = 'lines.on("close", () => process.ex
 /**
  * Spawns the fake the way the SDK does and closes its stdin at once. Resolves
  * with the exit code when the fake exits; rejects after five seconds naming
- * the child it had to kill. A plain Promise on Node's own timer, because the
- * callers run under `it.effect`'s TestClock where an Effect timeout would
- * wait for time nobody advances.
+ * the child it had to kill. A plain Promise on Node's own timer, for the
+ * TestClock reason in the header.
  */
 export const assertFakeClaudeExitsOnStdinEnd = (
   executablePath: string,
@@ -62,8 +61,8 @@ export const assertFakeClaudeExitsOnStdinEnd = (
  * Fails if any child of THIS process still runs a fake whose executable lives
  * under `fixtureDirectory`. The SDK hands out no handle to the child it spawns,
  * so its exit is observable only in the process table; the wait is a bounded
- * real-time poll on Node's timer for the same TestClock reason as above, and
- * it ends the moment the table is clear. Children are matched by parent pid,
+ * real-time poll on Node's timer (the header says why), and it ends the
+ * moment the table is clear. Children are matched by parent pid,
  * never by name alone, so another session's fakes do not count against this
  * test — and this test's survivors cannot hide behind them.
  *
@@ -85,7 +84,9 @@ export const assertFakeClaudeExitsOnStdinEnd = (
  */
 export const assertNoFakeClaudeChildren = (fixtureDirectory: string): Effect.Effect<void> =>
   Effect.gen(function* () {
-    // `ps` is not there; the callers skip on Windows the same way.
+    // `ps` is not there, so nothing is measured. The registry callers and the
+    // window pin skip on Windows before reaching this; the probe's SDK test
+    // still runs there and gets a check that cannot fail.
     if (yield* isHostWindows) return;
     yield* Effect.promise(() => awaitNoFakeClaudeChildren(fixtureDirectory));
   });

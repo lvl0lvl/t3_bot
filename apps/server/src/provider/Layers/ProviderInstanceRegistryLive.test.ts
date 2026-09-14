@@ -205,9 +205,7 @@ const makeTildeProviderFixtures = Effect.fn(
       "    },",
       '  }) + "\\n");',
       "});",
-      // THE INPUT THAT LEAKED: a keepalive (`setInterval`) in place of this line. The
-      // probe ends the child's stdin and awaits nothing; a fake that keeps running
-      // outlived every test that spawned it (`t3_bot-4ra`).
+      // THE INPUT THAT LEAKED: a `setInterval` keepalive here; `fakeClaudeProcess.ts` says why.
       FAKE_CLAUDE_EXIT_ON_STDIN_END,
       "",
     ].join("\n"),
@@ -399,9 +397,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         installed: true,
         version: "2.1.219",
       });
-      // The probe has aborted the SDK, which ended the fake's stdin. The fake must be
-      // gone from this process's children — the SDK gives out no handle, so the
-      // process table is the only place its exit can be read.
+      // The probe aborted the SDK and awaits nothing; the fake must already be gone.
       yield* assertNoFakeClaudeChildren(fixtures.fixtureDir);
     }).pipe(Effect.provide(testLayer)),
   );
@@ -410,9 +406,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
     Effect.gen(function* () {
       if (yield* isHostWindows) return;
       const fixtures = yield* makeTildeProviderFixtures();
-      // THE INPUT THAT BREAKS THIS: the fixture's `setInterval` keepalive back in place
-      // of `FAKE_CLAUDE_EXIT_ON_STDIN_END` — the child then survives the end of its
-      // stdin and this rejects at the deadline naming its pid.
+      // The fixture's own contract without the SDK in between: stdin closes, the fake exits.
       const exitCode = yield* assertFakeClaudeExitsOnStdinEnd(fixtures.claudePath);
       expect(exitCode).toBe(0);
     }).pipe(Effect.provide(testLayer)),
