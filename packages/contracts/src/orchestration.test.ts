@@ -158,10 +158,14 @@ it.effect("decodes a known tag with a payload it cannot read as an untagged refu
     // it cannot decode, not only a foreign tag, so a client that knows the tag
     // gets the untagged shape when the payload changes under it. THE INPUT
     // THAT BREAKS THIS: a wrapper that checks only the tag and passes a known
-    // one through, which fails the whole error on `handles: "walt"`.
+    // one through, which fails the whole error on `handles: "walt"`. As above,
+    // the field beside the tag is what tells "refusal absent, error intact"
+    // from "error replaced": a fallback that rebuilds the error from `message`
+    // alone passes the two assertions on it and loses the disposition.
     const error = yield* decodeDispatchCommandError({
       _tag: "OrchestrationDispatchCommandError",
       message: "Orchestration command invariant failed (channel.post.create): unresolved.",
+      bootstrapThreadDisposition: "deleted",
       refusal: { _tag: "mentions-unresolved", handles: "walt" },
     });
 
@@ -170,6 +174,8 @@ it.effect("decodes a known tag with a payload it cannot read as an untagged refu
       error.message,
       "Orchestration command invariant failed (channel.post.create): unresolved.",
     );
+    assert.strictEqual(error._tag, "OrchestrationDispatchCommandError");
+    assert.strictEqual(error.bootstrapThreadDisposition, "deleted");
   }),
 );
 
