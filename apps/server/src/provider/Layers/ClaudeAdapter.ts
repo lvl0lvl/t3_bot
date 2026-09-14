@@ -1629,7 +1629,7 @@ function nativeProviderRefs(
     readonly providerItemId?: string | undefined;
   },
 ): NonNullable<ProviderRuntimeEvent["providerRefs"]> {
-  if (options?.providerItemId) {
+  if (typeof options?.providerItemId === "string" && options.providerItemId.length > 0) {
     return {
       providerItemId: ProviderItemId.make(options.providerItemId),
     };

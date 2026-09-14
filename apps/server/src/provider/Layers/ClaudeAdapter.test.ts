@@ -6202,13 +6202,14 @@ describe("ClaudeAdapterLive", () => {
     });
     const rows: ReadonlyArray<{
       readonly label: string;
-      readonly toolUseId: string;
+      readonly toolUseId: unknown;
       readonly itemId: string | undefined;
     }> = [
       { label: "plain", toolUseId: "tool-1", itemId: "tool-1" },
       { label: "padded", toolUseId: " tool-2 ", itemId: "tool-2" },
       { label: "blank", toolUseId: "  ", itemId: undefined },
       { label: "empty", toolUseId: "", itemId: undefined },
+      { label: "number", toolUseId: 42, itemId: undefined },
     ];
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -6283,7 +6284,7 @@ describe("ClaudeAdapterLive", () => {
       }
       assert.deepEqual(
         dropLogs.map((entry) => entry.itemId).sort(),
-        ['"  "', '"  "', '""', '""'],
+        ['"  "', '"  "', '""', '""', "42", "42"],
         "one drop log per refused event (sorted; the started and completed logs interleave)",
       );
     }).pipe(
