@@ -6423,8 +6423,11 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         });
 
         // The non-string rows are what a broken server can send past the
-        // SDK's `string`; the id-less row needs a boundary present, or the
-        // raw boundary compare would end the snapshot before the gate.
+        // SDK's `string`. The id-less row runs with NO revert boundary: the
+        // reader once compared `entry.info.id` to `revert?.messageID` raw, and
+        // undefined === undefined ended the snapshot at that message before
+        // the gate — readThread returned the turns before it and
+        // rollbackThread(1) reverted nothing while reporting success.
         const rows: ReadonlyArray<readonly [unknown, string, string | undefined]> = [
           ["", '""', undefined],
           [" ", '" "', undefined],
@@ -6433,6 +6436,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           [42, "42", undefined],
           [{ a: 1 }, '{"a":1}', undefined],
           [{ a: "x".repeat(1024) }, `${'{"a":"'}${"x".repeat(58)}… (1032 chars)`, undefined],
+          [undefined, "undefined", undefined],
           [undefined, "undefined", "never-matches"],
         ];
         for (const [refused, quoted, boundary] of rows) {
@@ -6478,6 +6482,17 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         // The admit side. A user message's id is never branded, so a refused
         // one beside well-formed assistants is not the reader's business.
         runtimeMock.state.messages[0] = { info: { id: "", role: "user" }, parts: [] };
+        NodeAssert.deepEqual(
+          (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
+          ["assistant-1", "assistant-2"],
+        );
+        // Nor is an id-less one: with no revert boundary it is skipped, not
+        // taken for the boundary (undefined === undefined) with the turns
+        // after it dropped from the snapshot.
+        runtimeMock.state.messages[0] = {
+          info: { id: undefined as unknown as string, role: "user" },
+          parts: [],
+        };
         NodeAssert.deepEqual(
           (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
           ["assistant-1", "assistant-2"],

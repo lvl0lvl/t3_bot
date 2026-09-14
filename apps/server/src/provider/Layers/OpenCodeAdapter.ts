@@ -3856,9 +3856,15 @@ export function makeOpenCodeAdapter(
           }),
         ).pipe(Effect.mapError(toRequestError));
 
+        // The boundary is compared only when the session has one: a message
+        // with no id at all (past the SDK's `string`) matched an absent
+        // boundary as undefined === undefined, ending the snapshot there
+        // before the gate — rollbackThread then reverted nothing and the
+        // checkpoint reactor reported the revert complete (`t3_bot-us8`).
+        const revertBoundary = session.data?.revert?.messageID;
         const turns: Array<OpenCodeTurnSnapshot> = [];
         for (const entry of messages.data ?? []) {
-          if (entry.info.id === session.data?.revert?.messageID) break;
+          if (revertBoundary !== undefined && entry.info.id === revertBoundary) break;
           if (entry.info.role === "assistant") {
             turns.push({
               id: yield* admitMessageTurnId(entry.info.id),
