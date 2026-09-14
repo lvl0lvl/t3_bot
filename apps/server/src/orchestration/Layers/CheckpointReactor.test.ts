@@ -61,7 +61,7 @@ import {
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
 import { checkpointRefForThreadTurn } from "../../checkpointing/Utils.ts";
-import { ProviderValidationError } from "../../provider/Errors.ts";
+import { ProviderAdapterRequestError, ProviderValidationError } from "../../provider/Errors.ts";
 import { ServerConfig } from "../../config.ts";
 import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
@@ -91,8 +91,8 @@ function createProviderServiceHarness(
 ) {
   const now = "2026-01-01T00:00:00.000Z";
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
-  const rollbackConversation = vi.fn(
-    (_input: { readonly threadId: ThreadId; readonly numTurns: number }) => Effect.void,
+  const rollbackConversation = vi.fn<ProviderServiceShape["rollbackConversation"]>(
+    () => Effect.void,
   );
   const assertConversationRollbackSupported = vi.fn<
     ProviderServiceShape["assertConversationRollbackSupported"]
@@ -1763,6 +1763,408 @@ describe("CheckpointReactor", () => {
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2)),
     ).toBe(false);
   });
+
+  effectIt.effect("leaves the working tree alone when the provider rollback fails", () =>
+    Effect.gen(function* () {
+      // Restore-first left README at the target turn when the rollback then
+      // failed typed. Rollback-first: T3's restore has not run, no
+      // `thread.reverted` is emitted, and one failure activity carries the
+      // adapter's message.
+      const harness = yield* Effect.promise(() => createHarness());
+      const threadId = ThreadId.make("thread-1");
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const rolledBack = yield* Deferred.make<void>();
+      harness.provider.rollbackConversation.mockImplementation(() =>
+        Deferred.succeed(rolledBack, undefined).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "opencode",
+                method: "session.messages",
+                detail:
+                  "OpenCode returned an assistant message whose id undefined is not a turn id.",
+              }),
+            ),
+          ),
+        ),
+      );
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-rollback-fails"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "opencode",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      });
+      for (const turnCount of [1, 2]) {
+        yield* harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-rollback-fails-diff-${turnCount}`),
+          threadId,
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        });
+      }
+      expect(NodeFS.readFileSync(NodePath.join(harness.cwd, "README.md"), "utf8")).toBe("v3\n");
+
+      yield* harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-rollback-fails-revert"),
+        threadId,
+        turnCount: 1,
+        createdAt,
+      });
+      yield* Deferred.await(rolledBack);
+      yield* Effect.promise(() => harness.drain());
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
+
+      expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
+      // The files are still the current turn's.
+      expect(NodeFS.readFileSync(NodePath.join(harness.cwd, "README.md"), "utf8")).toBe("v3\n");
+      expect(thread.checkpoints.map((checkpoint) => checkpoint.checkpointTurnCount)).toEqual([
+        1, 2,
+      ]);
+      expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 2))).toBe(true);
+      const events = Array.from(yield* Stream.runCollect(harness.engine.readEvents(0)));
+      expect(events.some((event) => event.type === "thread.reverted")).toBe(false);
+      expect(
+        thread.activities.filter((activity) => activity.kind === "checkpoint.revert.failed"),
+      ).toHaveLength(1);
+      expect(thread.activities).toContainEqual(
+        expect.objectContaining({
+          kind: "checkpoint.revert.failed",
+          payload: expect.objectContaining({
+            detail:
+              "Provider adapter request failed (opencode) for session.messages: OpenCode returned an assistant message whose id undefined is not a turn id.",
+          }),
+        }),
+      );
+    }),
+  );
+
+  effectIt.effect(
+    "refuses the revert before the rollback when the target checkpoint ref is gone",
+    () =>
+      Effect.gen(function* () {
+        // The checkpoint ref the read model still lists is gone from git (a
+        // prior partial failure, an external `update-ref -d`). Without the
+        // check the rollback runs first and the restore then finds nothing.
+        const harness = yield* Effect.promise(() => createHarness());
+        const threadId = ThreadId.make("thread-1");
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-session-set-restore-fails"),
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "opencode",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+          createdAt,
+        });
+        for (const turnCount of [1, 2]) {
+          yield* harness.engine.dispatch({
+            type: "thread.turn.diff.complete",
+            commandId: CommandId.make(`cmd-restore-fails-diff-${turnCount}`),
+            threadId,
+            turnId: asTurnId(`turn-${turnCount}`),
+            completedAt: createdAt,
+            checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+            status: "ready",
+            files: [],
+            checkpointTurnCount: turnCount,
+            createdAt,
+          });
+        }
+        runGit(harness.cwd, ["update-ref", "-d", checkpointRefForThreadTurn(threadId, 1)]);
+
+        yield* harness.engine.dispatch({
+          type: "thread.checkpoint.revert",
+          commandId: CommandId.make("cmd-restore-fails-revert"),
+          threadId,
+          turnCount: 1,
+          createdAt,
+        });
+        const thread = yield* Effect.promise(() =>
+          waitForThread(harness.readModel, (entry) =>
+            entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+          ),
+        );
+        yield* Effect.promise(() => harness.drain());
+
+        expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+        expect(NodeFS.readFileSync(NodePath.join(harness.cwd, "README.md"), "utf8")).toBe("v3\n");
+        const events = Array.from(yield* Stream.runCollect(harness.engine.readEvents(0)));
+        expect(events.some((event) => event.type === "thread.reverted")).toBe(false);
+        expect(
+          thread.activities.filter((activity) => activity.kind === "checkpoint.revert.failed"),
+        ).toHaveLength(1);
+        expect(thread.activities).toContainEqual(
+          expect.objectContaining({
+            kind: "checkpoint.revert.failed",
+            payload: expect.objectContaining({
+              detail: "Filesystem checkpoint is unavailable for turn 1.",
+            }),
+          }),
+        );
+      }),
+  );
+
+  effectIt.effect("names a rolled-back conversation when the filesystem restore then fails", () =>
+    Effect.gen(function* () {
+      // The rollback succeeds, then git refuses the restore (`.git/index.lock`
+      // held by another process). A provider rollback cannot be undone, so
+      // the failure activity says what state the thread is in and the read
+      // model follows the conversation: a retry rolls back nothing further
+      // and only re-attempts the restore.
+      const harness = yield* Effect.promise(() => createHarness());
+      const threadId = ThreadId.make("thread-1");
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-restore-fails"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "opencode",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      });
+      for (const turnCount of [1, 2]) {
+        yield* harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-restore-fails-diff-${turnCount}`),
+          threadId,
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        });
+      }
+      const indexLock = NodePath.join(harness.cwd, ".git", "index.lock");
+      NodeFS.writeFileSync(indexLock, "");
+
+      yield* harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-restore-fails-revert"),
+        threadId,
+        turnCount: 1,
+        createdAt,
+      });
+      yield* Effect.promise(() =>
+        waitForThread(harness.readModel, (entry) =>
+          entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+        ),
+      );
+      yield* Effect.promise(() => harness.drain());
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
+
+      expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
+      expect(NodeFS.readFileSync(NodePath.join(harness.cwd, "README.md"), "utf8")).toBe("v3\n");
+      // The failure branch stops here: the turn-2 ref is not deleted.
+      expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 2))).toBe(true);
+      expect(thread.checkpoints.map((checkpoint) => checkpoint.checkpointTurnCount)).toEqual([1]);
+      const events = Array.from(yield* Stream.runCollect(harness.engine.readEvents(0)));
+      expect(events.filter((event) => event.type === "thread.reverted")).toHaveLength(1);
+      const failures = thread.activities.filter(
+        (activity) => activity.kind === "checkpoint.revert.failed",
+      );
+      expect(failures).toHaveLength(1);
+      const detail = (failures[0]!.payload as { detail: string }).detail;
+      expect(detail).toMatch(/^VCS process failed in GitVcsDriver.checkpoints.restoreCheckpoint: /);
+      expect(detail).toContain(
+        "; the provider conversation was rolled back 1 turn; the filesystem checkpoint for turn 1 was not restored.",
+      );
+      expect(detail).not.toContain(".;");
+
+      NodeFS.rmSync(indexLock);
+      yield* harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-restore-fails-retry"),
+        threadId,
+        turnCount: 1,
+        createdAt,
+      });
+      yield* Effect.promise(() => harness.drain());
+
+      expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
+      expect(NodeFS.readFileSync(NodePath.join(harness.cwd, "README.md"), "utf8")).toBe("v2\n");
+    }),
+  );
+
+  effectIt.effect("says only what failed when nothing was rolled back", () =>
+    Effect.gen(function* () {
+      // A same-turn revert rolls nothing back; the restore still fails
+      // (`.git/index.lock` held). The activity carries the git failure and
+      // no rolled-back clause.
+      const harness = yield* Effect.promise(() => createHarness());
+      const threadId = ThreadId.make("thread-1");
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-same-turn"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "opencode",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      });
+      for (const turnCount of [1, 2]) {
+        yield* harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-same-turn-diff-${turnCount}`),
+          threadId,
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        });
+      }
+      NodeFS.writeFileSync(NodePath.join(harness.cwd, ".git", "index.lock"), "");
+
+      yield* harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-same-turn-revert"),
+        threadId,
+        turnCount: 2,
+        createdAt,
+      });
+      yield* Effect.promise(() =>
+        waitForThread(harness.readModel, (entry) =>
+          entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+        ),
+      );
+      yield* Effect.promise(() => harness.drain());
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
+
+      expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+      const events = Array.from(yield* Stream.runCollect(harness.engine.readEvents(0)));
+      expect(events.some((event) => event.type === "thread.reverted")).toBe(false);
+      const failures = thread.activities.filter(
+        (activity) => activity.kind === "checkpoint.revert.failed",
+      );
+      expect(failures).toHaveLength(1);
+      const detail = (failures[0]!.payload as { detail: string }).detail;
+      expect(detail).toMatch(/^VCS process failed in GitVcsDriver.checkpoints.restoreCheckpoint: /);
+      expect(detail).not.toContain("rolled back");
+      expect(detail.endsWith(".")).toBe(true);
+      expect(detail).not.toContain("..");
+    }),
+  );
+
+  effectIt.effect("reverts to turn 0 from HEAD when the turn-0 ref is gone", () =>
+    Effect.gen(function* () {
+      // Turn 0 is not pre-checked: its restore falls back to HEAD, so a
+      // missing turn-0 ref must not refuse the revert. Pre-checking it would
+      // refuse every revert-to-start whose ref was pruned.
+      const harness = yield* Effect.promise(() => createHarness());
+      const threadId = ThreadId.make("thread-1");
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-turn-0"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "opencode",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      });
+      for (const turnCount of [1, 2]) {
+        yield* harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-turn-0-diff-${turnCount}`),
+          threadId,
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        });
+      }
+      const ref0 = checkpointRefForThreadTurn(threadId, 0);
+      expect(gitRefExists(harness.cwd, ref0)).toBe(true);
+      runGit(harness.cwd, ["update-ref", "-d", ref0]);
+
+      yield* harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-turn-0-revert"),
+        threadId,
+        turnCount: 0,
+        createdAt,
+      });
+      // Wait for either outcome so a refused revert fails by name, not by timeout.
+      yield* Effect.promise(() =>
+        waitForThread(
+          harness.readModel,
+          (entry) =>
+            entry.checkpoints.length === 0 ||
+            entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+        ),
+      );
+      yield* Effect.promise(() => harness.drain());
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
+
+      expect(
+        thread.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+      ).toBe(false);
+      expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
+      expect(harness.provider.rollbackConversation).toHaveBeenCalledWith(
+        expect.objectContaining({ numTurns: 2 }),
+      );
+      expect(NodeFS.readFileSync(NodePath.join(harness.cwd, "README.md"), "utf8")).toBe("v1\n");
+      expect(thread.checkpoints).toHaveLength(0);
+    }),
+  );
 
   it("executes provider revert and emits thread.reverted for claude sessions", async () => {
     const harness = await createHarness({ providerName: ProviderDriverKind.make("claudeAgent") });

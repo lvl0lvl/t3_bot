@@ -749,12 +749,22 @@ const make = Effect.gen(function* () {
 
     yield* providerService.assertConversationRollbackSupported(event.payload.threadId);
 
-    const restored = yield* checkpointStore.restoreCheckpoint({
-      cwd: sessionRuntime.value.cwd,
-      checkpointRef: targetCheckpointRef,
-      fallbackToHead: event.payload.turnCount === 0,
-    });
-    if (!restored) {
+    // The provider rollback goes first. Restoring first, then a typed
+    // rollback failure (Grok, a dead OpenCode session) left the files at the
+    // target turn while the thread, its refs and the conversation stayed at
+    // the current one; the next prompt ran over reverted files with the full
+    // conversation. The restore can be re-run, the rollback cannot, so the
+    // order was reversed rather than restoring the current turn's ref back.
+    // A rollback failure surfaces through `processDomainEvent`'s catch with
+    // the adapter's message; T3's restore has not run.
+    const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
+    if (
+      event.payload.turnCount > 0 &&
+      !(yield* checkpointStore.hasCheckpointRef({
+        cwd: sessionRuntime.value.cwd,
+        checkpointRef: targetCheckpointRef,
+      }))
+    ) {
       yield* appendRevertFailureActivity({
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,
@@ -763,18 +773,60 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.catch(() => Effect.void));
       return;
     }
-
-    // Refresh the workspace entry index so the @-mention file picker
-    // reflects the reverted filesystem state.
-    yield* workspaceEntries.refresh(sessionRuntime.value.cwd);
-
-    const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
     if (rolledBackTurns > 0) {
       yield* providerService.rollbackConversation({
         threadId: sessionRuntime.value.threadId,
         numTurns: rolledBackTurns,
       });
     }
+
+    const restoreFailure = yield* checkpointStore
+      .restoreCheckpoint({
+        cwd: sessionRuntime.value.cwd,
+        checkpointRef: targetCheckpointRef,
+        fallbackToHead: event.payload.turnCount === 0,
+      })
+      .pipe(
+        Effect.map((restored) =>
+          restored
+            ? Option.none<string>()
+            : Option.some(
+                `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}`,
+              ),
+        ),
+        // git's message ends in a period; the detail adds its own.
+        Effect.catch((error) => Effect.succeed(Option.some(error.message.replace(/\.$/, "")))),
+      );
+    if (Option.isSome(restoreFailure)) {
+      yield* appendRevertFailureActivity({
+        threadId: event.payload.threadId,
+        turnCount: event.payload.turnCount,
+        detail:
+          rolledBackTurns > 0
+            ? `${restoreFailure.value}; the provider conversation was rolled back ${rolledBackTurns} turn${rolledBackTurns === 1 ? "" : "s"}; the filesystem checkpoint for turn ${event.payload.turnCount} was not restored.`
+            : `${restoreFailure.value}.`,
+        createdAt: now,
+      }).pipe(Effect.catch(() => Effect.void));
+      if (rolledBackTurns > 0) {
+        // A retry of this revert recomputes the rollback count from the read
+        // model's checkpoints; left at the current turn, it would roll the
+        // provider back a second time. The read model follows the conversation.
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.revert.complete",
+            commandId: yield* serverCommandId("checkpoint-revert-complete"),
+            threadId: event.payload.threadId,
+            turnCount: event.payload.turnCount,
+            createdAt: now,
+          })
+          .pipe(Effect.catch(() => Effect.void));
+      }
+      return;
+    }
+
+    // Refresh the workspace entry index so the @-mention file picker
+    // reflects the reverted filesystem state.
+    yield* workspaceEntries.refresh(sessionRuntime.value.cwd);
 
     const staleCheckpointRefs: Array<CheckpointRef> = [];
     for (const checkpoint of thread.checkpoints) {
