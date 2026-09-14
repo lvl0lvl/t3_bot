@@ -65,16 +65,20 @@
  *    whitespace anywhere in the name, because `-z` prints it as written where
  *    the line form quoted it.
  *
- * 7. It refuses a `file` that is a symlink in the index. The write lands in the
- *    link's target and `git checkout -- <link>` restores the link, so the target
- *    stays mutated: inside the tree, every later row is measured on a mutated
- *    file — measured, a kill credited to the link row and the next row NOT RUN
- *    on an anchor the leftover mutation had already replaced; outside it, a file
- *    the tool never created holds the mutation after the run, which is what 3
- *    promises cannot happen. Unlike 1 and 6 this is per ROW (NOT RUN, exit 3),
- *    the way an untracked or moved file is: it is answered by one more
- *    `ls-files` beside the tracked gate's, and the other rows are still
- *    measurable.
+ * 7. It refuses a `file` whose write would land where the restore does not
+ *    reach: a symlink in the index, or a regular file whose inode has another
+ *    name. Through a link the write lands in the target and `git checkout --
+ *    <link>` restores the link, so the target stays mutated: inside the tree,
+ *    every later row is measured on a mutated file — measured, a kill credited
+ *    to the link row and the next row NOT RUN on an anchor the leftover mutation
+ *    had already replaced; outside it, a file the tool never created holds the
+ *    mutation after the run, which is what 3 promises cannot happen. Through a
+ *    hard link the index says `100644` and porcelain is clean, the write
+ *    truncates the shared inode, and the restore recreates only this name —
+ *    measured, `killed by 1` at exit 0 with the other name left mutated. Unlike
+ *    1 and 6 this is per ROW (NOT RUN, exit 3), the way an untracked or moved
+ *    file is: it is answered by one more `ls-files` and a `stat` beside the
+ *    tracked gate's, and the other rows are still measurable.
  *
  * ITS EXIT CODE IS A VERDICT: 0 all killed, 2 a survivor, 3 something NOT RUN,
  * 1 the tool or config failed. Every outcome used to be 0 and only a crash was
@@ -109,6 +113,7 @@ import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -154,7 +159,7 @@ export const Mutation = Schema.Struct({
   guard: Schema.String,
   /**
    * Repo-relative path of the file to mutate — spelled as git prints it (refusal 6),
-   * a tracked regular file, not a symlink (refusal 7).
+   * a tracked regular file, not a symlink and not a name its inode shares (refusal 7).
    */
   file: Schema.String,
   /** Text to replace. It MUST occur exactly once in the file. */
@@ -750,8 +755,9 @@ const capture = Effect.fn("guardSweep.capture")(function* (
 /**
  * Why a tracked `file` cannot be mutated in place, or undefined when it can.
  *
- * One test, about where a write LANDS. `git ls-files -s` prints the index mode,
- * and `120000` is a symlink: `readFileString`/`writeFileString` follow the link,
+ * Two tests, both about where a write LANDS and what the restore returns.
+ * `git ls-files -s` prints the index mode, and `120000` is a symlink:
+ * `readFileString`/`writeFileString` follow the link,
  * so the mutation lands in the TARGET, and `git checkout -- <file>` returns the
  * LINK to HEAD — unchanged — leaving every later row measured on the mutated
  * target. Executed with the unfixed tool on the two-row fixture in
@@ -772,6 +778,16 @@ const capture = Effect.fn("guardSweep.capture")(function* (
  * sorted first and "could not read" otherwise. Only the entry whose path IS
  * `file` decides; a directory, a glob or a prefix has none and the read gate
  * names it. `-z` prints the path as written, so the equality is byte-exact.
+ *
+ * And the inode's LINK COUNT, because a hard link is the same defect with the
+ * index saying `100644`, porcelain clean and the path resolving inside the tree:
+ * `writeFileString` truncates the shared inode, so every other name holds the
+ * mutation, and `git checkout -- <file>` unlinks and recreates only this name.
+ * Measured (`t3_bot-43k`): a `--in-place` sweep of a file with a second name
+ * outside the tree was `killed by 1` at exit 0 and left `if (false) {` in the
+ * other name. A fresh worktree has every file at one link; a `setupCommand`
+ * that runs `ln`, or `--in-place` on a `cp -al` / `rsync --link-dest` checkout,
+ * does not. A stat that fails is left to the read gate, which names it.
  */
 const linkRefusal = Effect.fn("guardSweep.linkRefusal")(function* (root: string, file: string) {
   const listed = yield* capture(["git", "ls-files", "-s", "-z", "--", file], root);
@@ -782,6 +798,25 @@ const linkRefusal = Effect.fn("guardSweep.linkRefusal")(function* (root: string,
     return (
       `${file} is a symlink in the index — a write would land in its target, and ` +
       "`git checkout --` would restore only the link"
+    );
+  }
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const info = yield* fs.stat(path.join(root, file)).pipe(Effect.result);
+  // No admitted config reaches this: the tracked gate and a clean porcelain put the
+  // file in the worktree. A file removed between that check and this stat is the
+  // read gate's class (an unreadable file is NOT RUN, not a crash), so it is left
+  // to the read gate, which names it.
+  if (info._tag === "Failure") {
+    return undefined;
+  }
+  // A directory's link count is its entry count, so only a regular file is judged
+  // by it; a directory row falls through to the read gate, which names it.
+  const links = info.success.type === "File" ? Option.getOrElse(info.success.nlink, () => 1) : 1;
+  if (links > 1) {
+    return (
+      `${file} has ${links} links — a write lands in every name of its inode, and ` +
+      "`git checkout --` recreates only this one"
     );
   }
   return undefined;
@@ -935,7 +970,8 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
     // lacks the anchor (`src/plainlink.ts -> plain.ts`): read through here the pre-flight finds
     // no anchor and refuses the WHOLE config with `GuardSweepConfigError`, exit 1, blaming the
     // anchor, where the row loop gives exit 3 naming the link. A link whose target HAS it passes
-    // here and pays the baseline for a row the loop then refuses. Skipped, not refused, so the
+    // here and pays the baseline for a row the loop then refuses. A hard-linked file reads
+    // fine and would pass, then pay the baseline the same way. Skipped, not refused, so the
     // row loop keeps the accurate reason.
     if ((yield* linkRefusal(root, mutation.file)) !== undefined) {
       continue;
@@ -1171,8 +1207,9 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
  * does not resolve exactly once now refuses the config with exit 1 before the
  * baseline. The rule stands on what is left — a `setupCommand` that wrote a
  * mutation target, a path outside the swept tree, an untracked or unreadable
- * file, a symlinked file, a mutant that does not compile, an unconfirmed kill —
- * each of which is a row the run could not measure while measuring others,
+ * file, a symlinked or hard-linked file, a mutant that does not compile, an
+ * unconfirmed kill — each of which is a row the run could not measure while
+ * measuring others,
  * which is exactly the state that must not hide behind a survivor.
  *
  * 1 is not produced here. It is what the runtime already exits with when the
