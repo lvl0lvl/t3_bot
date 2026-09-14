@@ -1985,6 +1985,8 @@ describe("CheckpointReactor", () => {
 
       expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
       expect(NodeFS.readFileSync(NodePath.join(harness.cwd, "README.md"), "utf8")).toBe("v3\n");
+      // The failure branch stops here: the turn-2 ref is not deleted.
+      expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 2))).toBe(true);
       expect(thread.checkpoints.map((checkpoint) => checkpoint.checkpointTurnCount)).toEqual([1]);
       const events = Array.from(yield* Stream.runCollect(harness.engine.readEvents(0)));
       expect(events.filter((event) => event.type === "thread.reverted")).toHaveLength(1);
