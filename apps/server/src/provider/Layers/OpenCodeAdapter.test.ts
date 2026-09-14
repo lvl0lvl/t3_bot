@@ -10,8 +10,10 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -6572,6 +6574,201 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         "TurnId.make(id)",
         "TurnId.make(`opencode-turn-${yield* randomUUIDv4}`)",
       ]);
+    }),
+  );
+
+  it.effect("keys a timeline row only by a part id the brand's decoder admits", () => {
+    // A part id keys the assistant row ingestion builds from the delta. ""
+    // was dropped by the truthiness guard the gate replaced; "  " went
+    // through `.make` as a row keyed by whitespace; null and 42 from a
+    // broken server read `.slice` off themselves in the drop log and died
+    // in the event pump. All are refused now and each event goes out with
+    // no item, logged per event with a bounded preview (a part that
+    // completes is two events, and its completion is item-less too). An
+    // admitted id is carried DECODED, so " prt_1 " arrives as "prt_1": the
+    // event store decodes persisted events on read, and a raw padded key
+    // would name one row live and another after replay.
+    const dropLogs: Array<Record<string, unknown>> = [];
+    const logger = Logger.make(({ message }) => {
+      if (Array.isArray(message) && message[0] === "opencode.event.item_id_dropped") {
+        dropLogs.push(message[1] as Record<string, unknown>);
+      }
+    });
+    const rows: ReadonlyArray<{
+      partId: unknown;
+      text: string;
+      itemId: string | undefined;
+      dropped: ReadonlyArray<string>;
+      end?: number;
+    }> = [
+      { partId: "", text: "empty", itemId: undefined, dropped: ['""'] },
+      { partId: "  ", text: "blank", itemId: undefined, dropped: ['"  "'] },
+      { partId: "prt_1", text: "plain", itemId: "prt_1", dropped: [] },
+      { partId: " prt_1 ", text: "padded", itemId: "prt_1", dropped: [] },
+      { partId: null, text: "null", itemId: undefined, dropped: ["null"] },
+      { partId: 42, text: "number", itemId: undefined, dropped: ["42"] },
+      {
+        partId: " ".repeat(100),
+        text: "long",
+        itemId: undefined,
+        dropped: [`"${" ".repeat(64)}"… (100 chars)`],
+      },
+      {
+        partId: "  ",
+        text: "blank-completing",
+        itemId: undefined,
+        dropped: ['"  "', '"  "'],
+        end: 2,
+      },
+    ];
+    return Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      for (const row of rows) {
+        dropLogs.length = 0;
+        const threadId = asThreadId(`thread-item-id-gate-${row.text}`);
+        const busy = promiseWithResolvers<unknown>();
+        const header = promiseWithResolvers<unknown>();
+        const part = promiseWithResolvers<unknown>();
+        const idle = promiseWithResolvers<unknown>();
+        runtimeMock.state.subscribedEvents = [
+          busy.promise,
+          header.promise,
+          part.promise,
+          idle.promise,
+        ];
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+        const sendFiber = yield* adapter
+          .sendTurn({
+            threadId,
+            input: row.text,
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("opencode"),
+              "opencode/kimi-k3",
+            ),
+          })
+          .pipe(Effect.forkChild);
+        busy.resolve({
+          id: `evt-item-gate-busy-${row.text}`,
+          type: "session.status",
+          properties: { sessionID: "http://127.0.0.1:9999/session", status: { type: "busy" } },
+        });
+        yield* Fiber.join(sendFiber);
+        header.resolve({
+          id: `evt-item-gate-header-${row.text}`,
+          type: "message.updated",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            info: { id: `msg-item-gate-${row.text}`, role: "assistant" },
+          },
+        });
+        part.resolve({
+          id: `evt-item-gate-part-${row.text}`,
+          type: "message.part.updated",
+          properties: {
+            sessionID: "http://127.0.0.1:9999/session",
+            part: {
+              id: row.partId,
+              sessionID: "http://127.0.0.1:9999/session",
+              messageID: `msg-item-gate-${row.text}`,
+              type: "text",
+              text: row.text,
+              time: row.end === undefined ? { start: 1 } : { start: 1, end: row.end },
+            },
+            time: 1,
+          },
+        });
+        yield* Effect.yieldNow;
+        idle.resolve({
+          id: `evt-item-gate-idle-${row.text}`,
+          type: "session.status",
+          properties: { sessionID: "http://127.0.0.1:9999/session", status: { type: "idle" } },
+        });
+        // Under it.effect's TestClock a plain `Effect.timeout` never fires; a
+        // row whose id dies in the pump would hang to vitest's 60 s with no
+        // row named.
+        const events = Array.from(
+          yield* TestClock.withLive(
+            Fiber.join(eventsFiber).pipe(
+              Effect.timeoutOrElse({
+                duration: "2 seconds",
+                orElse: () => Effect.die(new Error(`${row.text}: the turn never completed`)),
+              }),
+            ),
+          ),
+        );
+        const delta = events.find((event) => event.type === "content.delta");
+        NodeAssert.ok(delta !== undefined, `${row.text}: the delta was emitted`);
+        NodeAssert.equal(delta.itemId, row.itemId, `${row.text}: the item id carried`);
+        if (row.end !== undefined) {
+          const completed = events.find((event) => event.type === "item.completed");
+          NodeAssert.ok(completed !== undefined, `${row.text}: the completion was emitted`);
+          NodeAssert.equal(completed.itemId, row.itemId, `${row.text}: the completion's item id`);
+        }
+        NodeAssert.deepEqual(
+          dropLogs.map((entry) => entry.itemId),
+          row.dropped,
+          `${row.text}: the drop log`,
+        );
+        yield* adapter.stopSession(threadId);
+      }
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Logger.layer([logger], { mergeWithExisting: false }),
+          Layer.succeed(References.MinimumLogLevel, "Debug"),
+        ),
+      ),
+    );
+  });
+
+  it.effect("sends a padded permission id back to OpenCode as it arrived", () =>
+    Effect.gen(function* () {
+      // A request id is carried raw by decision (#49): the answer goes back to
+      // OpenCode keyed by the string it sent. A gate that trimmed " per_pad "
+      // to "per_pad" would open the request under a name the provider never
+      // minted, and the answer keyed by that name would find no pending
+      // permission here and reach `permission.reply` never.
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-request-id-raw");
+      const request = permissionRequest(" per_pad ", "http://127.0.0.1:9999/session");
+      runtimeMock.state.subscribedEvents = [
+        {
+          id: "evt-permission-padded",
+          type: "permission.asked",
+          properties: request,
+        } satisfies OpenCodeEvent,
+      ];
+      const openedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "request.opened"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "approval-required",
+      });
+      const opened = Option.getOrThrow(yield* Fiber.join(openedFiber));
+      NodeAssert.equal(opened.requestId, " per_pad ");
+      yield* adapter.respondToRequest(
+        threadId,
+        ApprovalRequestId.make(opened.requestId as string),
+        "accept",
+      );
+      NodeAssert.deepEqual(runtimeMock.state.permissionReplyCalls, [
+        { requestID: " per_pad ", reply: "once" },
+      ]);
+      yield* adapter.stopSession(threadId);
     }),
   );
 

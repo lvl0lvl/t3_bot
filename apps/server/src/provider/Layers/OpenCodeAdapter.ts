@@ -513,6 +513,21 @@ const admitMessageTurnId = (id: string) =>
         }),
       )
     : Effect.succeed(TurnId.make(id));
+// A part id from the SDK (`part.id`, `partID`, `part.callID`) is outside
+// input that becomes a RuntimeItemId, the key of a timeline row.
+// `buildEventBase` gated the id by truthiness: "" was dropped before
+// `.make` could throw on it, "  " went through as a row keyed by
+// whitespace, and a number from a broken server reached `.make` and died
+// in the event pump. The decoder refuses all three, and a refused id is
+// dropped the way "" always was: a text part's events go out with no item
+// and ingestion folds the text into the turn's assistant row; a tool
+// `callID` emits the lifecycle without a `toolCallId`, which the clients
+// render uncollapsed. What passes is the DECODED value, unlike the turn id
+// above: the event store decodes persisted events on read
+// (`OrchestrationEventStore`), so a raw " prt_1 " would key one row live
+// and another after replay. The request id is not gated; the decision is
+// recorded at its spread in `buildEventBase`.
+const decodeRuntimeItemId = Schema.decodeUnknownOption(RuntimeItemId);
 
 /**
  * Map a `Cause.squash`-ed failure into a `ProviderAdapterProcessError`. The
@@ -531,8 +546,8 @@ const toProcessError = (threadId: ThreadId, cause: unknown): ProviderAdapterProc
 type EventBaseInput = {
   readonly threadId: ThreadId;
   readonly turnId?: TurnId | undefined;
-  readonly itemId?: string | undefined;
-  readonly requestId?: string | undefined;
+  readonly itemId?: unknown;
+  readonly requestId?: unknown;
   readonly createdAt?: string | undefined;
   readonly raw?: unknown;
 };
@@ -1059,18 +1074,34 @@ export function makeOpenCodeAdapter(
       return `msg_${encodedTime}${random}`;
     });
     const buildEventBase = (input: EventBaseInput) =>
-      Effect.all({
-        eventId: randomUUIDv4.pipe(Effect.map(EventId.make)),
-        createdAt: input.createdAt === undefined ? nowIso : Effect.succeed(input.createdAt),
-      }).pipe(
-        Effect.map(({ eventId, createdAt }) => ({
+      Effect.gen(function* () {
+        const itemId = decodeRuntimeItemId(input.itemId);
+        if (input.itemId !== undefined && Option.isNone(itemId)) {
+          yield* Effect.logDebug("opencode.event.item_id_dropped", {
+            threadId: input.threadId,
+            itemId: previewRefusedId(input.itemId),
+          });
+        }
+        const { eventId, createdAt } = yield* Effect.all({
+          eventId: randomUUIDv4.pipe(Effect.map(EventId.make)),
+          createdAt: input.createdAt === undefined ? nowIso : Effect.succeed(input.createdAt),
+        });
+        return {
           eventId,
           provider: PROVIDER,
           threadId: input.threadId,
           createdAt,
           ...(input.turnId ? { turnId: input.turnId } : {}),
-          ...(input.itemId ? { itemId: RuntimeItemId.make(input.itemId) } : {}),
-          ...(input.requestId ? { requestId: RuntimeRequestId.make(input.requestId) } : {}),
+          ...(Option.isSome(itemId) ? { itemId: itemId.value } : {}),
+          // Carried raw by decision: the provider must get its own string
+          // back (#49), so a padded request id stays padded here and in the
+          // reply; `.make` admitting whitespace is accepted (`t3_bot-1n6`).
+          // `.make` cannot throw on a non-empty string; a null or a number
+          // from a broken server would throw inside it, so it is not
+          // narrowed in and the request opens without an id.
+          ...(typeof input.requestId === "string" && input.requestId.length > 0
+            ? { requestId: RuntimeRequestId.make(input.requestId) }
+            : {}),
           ...(input.raw !== undefined
             ? {
                 raw: {
@@ -1079,8 +1110,8 @@ export function makeOpenCodeAdapter(
                 },
               }
             : {}),
-        })),
-      );
+        };
+      });
 
     // Layer-level finalizer: when the adapter layer shuts down, stop every
     // session. Each session's `Scope.close` tears down its spawned OpenCode
