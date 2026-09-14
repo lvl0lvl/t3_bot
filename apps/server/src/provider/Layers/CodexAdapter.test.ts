@@ -1190,6 +1190,43 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("keys an item's timeline row by the decoded item id and echoes the raw one", () =>
+    Effect.gen(function* () {
+      // The session runtime's door (`readRouteFields`) admits a padded
+      // " msg_1 " and brands it raw. The runtime event's `itemId` keys a
+      // timeline row that ingestion persists and the store decodes on read,
+      // so it carries the DECODED "msg_1" (at base the raw " msg_1 " keyed
+      // one row live and another after replay); `providerRefs.providerItemId`
+      // keeps the app-server's own string.
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      yield* runtime.emit({
+        id: asEventId("evt-msg-padded"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId(" msg_1 "),
+        payload: {
+          completedAtMs: 1_778_000_000_000,
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: { type: "agentMessage", id: " msg_1 ", text: "done" },
+        },
+      });
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.type, "item.completed");
+      NodeAssert.equal(firstEvent.value.itemId, "msg_1");
+      NodeAssert.equal(firstEvent.value.providerRefs?.providerItemId, " msg_1 ");
+    }),
+  );
+
   it.effect("maps completed agent message items to canonical item.completed events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

@@ -6,7 +6,6 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSendTurnInput,
   type ProviderSession,
-  RuntimeItemId,
   RuntimeRequestId,
   ThreadId,
   type ToolLifecycleItemType,
@@ -44,6 +43,7 @@ import {
   ProviderAdapterValidationError,
 } from "../Errors.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
+import { decodeRuntimeItemId, previewRefusedId } from "../runtimeItemId.ts";
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
   buildOpenCodePermissionRules,
@@ -487,22 +487,9 @@ const toRequestError = (cause: OpenCodeRuntimeError): ProviderAdapterRequestErro
 // gate cannot die; the gate refused everything it throws on.
 const decodeMessageTurnId = Schema.decodeUnknownOption(TurnId);
 // The refused id is echoed into `detail`, which the checkpoint reactor
-// persists as an activity row per revert attempt; a 1 MiB id would be
-// copied whole into each. The SDK types the id as string; a null or an
-// object from a broken server is refused by the decoder too, and reading
-// `.length` off it here would be the Die this gate exists to prevent.
-const REFUSED_ID_PREVIEW_LENGTH = 64;
-const previewRefusedId = (id: unknown) => {
-  if (typeof id === "string") {
-    return id.length <= REFUSED_ID_PREVIEW_LENGTH
-      ? JSON.stringify(id)
-      : `${JSON.stringify(id.slice(0, REFUSED_ID_PREVIEW_LENGTH))}… (${id.length} chars)`;
-  }
-  const text = String(JSON.stringify(id) ?? id);
-  return text.length <= REFUSED_ID_PREVIEW_LENGTH
-    ? text
-    : `${text.slice(0, REFUSED_ID_PREVIEW_LENGTH)}… (${text.length} chars)`;
-};
+// persists as an activity row per revert attempt; `previewRefusedId`
+// (`../runtimeItemId.ts`) bounds it, and previews a null or an object from a
+// broken server without reading `.length` off it.
 const admitMessageTurnId = (id: string) =>
   Option.isNone(decodeMessageTurnId(id))
     ? Effect.fail(
@@ -525,9 +512,10 @@ const admitMessageTurnId = (id: string) =>
 // render uncollapsed. What passes is the DECODED value, unlike the turn id
 // above: the event store decodes persisted events on read
 // (`OrchestrationEventStore`), so a raw " prt_1 " would key one row live
-// and another after replay. The request id is not gated; the decision is
-// recorded at its spread in `buildEventBase`.
-const decodeRuntimeItemId = Schema.decodeUnknownOption(RuntimeItemId);
+// and another after replay. The decoder is `decodeRuntimeItemId`
+// (`../runtimeItemId.ts`), the door the Claude and Codex adapters share. The
+// request id is not gated; the decision is recorded at its spread in
+// `buildEventBase`.
 
 /**
  * Map a `Cause.squash`-ed failure into a `ProviderAdapterProcessError`. The

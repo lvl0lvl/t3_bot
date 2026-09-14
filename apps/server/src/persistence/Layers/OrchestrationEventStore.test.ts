@@ -107,6 +107,32 @@ layer("OrchestrationEventStore", (it) => {
     }),
   );
 
+  it.effect("decodes a persisted id through its brand on read", () =>
+    Effect.gen(function* () {
+      // The reason every adapter carries a DECODED item id: a key branded raw
+      // (`MessageId.make("assistant: msg_1 ")`) is one identity live and,
+      // because the store decodes persisted events and the brand's decoder
+      // trims, another after replay. A store that stopped decoding on read
+      // would make the doors' reason false; this pins the boundary they rest on.
+      const eventStore = yield* OrchestrationEventStore;
+      const threadId = ThreadId.make("thread-padded-id");
+      const event = messageEvent(threadId, "evt-padded-id");
+      yield* eventStore.append({
+        ...event,
+        payload: { ...event.payload, messageId: MessageId.make("assistant: msg_1 ") },
+      });
+      // The store is shared across this file's tests: pick the event by id.
+      const replayed = yield* Stream.runCollect(eventStore.readFromSequence(0, 100)).pipe(
+        Effect.map((chunk) => Array.from(chunk).find((item) => item.eventId === "evt-padded-id")),
+      );
+      assert.equal(replayed?.type, "thread.message-sent");
+      assert.equal(
+        replayed?.type === "thread.message-sent" ? replayed.payload.messageId : undefined,
+        "assistant: msg_1",
+      );
+    }),
+  );
+
   it.effect("fails with PersistenceDecodeError when stored json is invalid", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;

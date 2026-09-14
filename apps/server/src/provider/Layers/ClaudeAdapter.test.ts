@@ -6184,6 +6184,107 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("keys a tool's timeline row only by an id the brand's decoder admits", () => {
+    // The SDK's `tool_use` id keys the tool's row. Ingestion persists that key
+    // and the event store decodes it on read, so a raw " tool-1 " would name
+    // one row live and another after replay: the event carries the DECODED
+    // "tool-1". "" and "  " are refused and the lifecycle goes out item-less
+    // with one drop log per event ("" reached `.make` at base and died in
+    // the event pump; "  " went through as a row keyed by whitespace). The
+    // turn state keeps the raw id, so a tool_result naming " tool-1 " still
+    // finds its tool. Four tools in one turn, one block index each.
+    const harness = makeHarness();
+    const dropLogs: Array<Record<string, unknown>> = [];
+    const logger = Logger.make(({ message }) => {
+      if (Array.isArray(message) && message[0] === "claude.event.item_id_dropped") {
+        dropLogs.push(message[1] as Record<string, unknown>);
+      }
+    });
+    const rows: ReadonlyArray<{
+      readonly label: string;
+      readonly toolUseId: string;
+      readonly itemId: string | undefined;
+    }> = [
+      { label: "plain", toolUseId: "tool-1", itemId: "tool-1" },
+      { label: "padded", toolUseId: " tool-2 ", itemId: "tool-2" },
+      { label: "blank", toolUseId: "  ", itemId: undefined },
+      { label: "empty", toolUseId: "", itemId: undefined },
+    ];
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+        },
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "hello", attachments: [] });
+      for (const [index, row] of rows.entries()) {
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-1",
+          uuid: `stream-start-${index}`,
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index,
+            content_block: {
+              type: "tool_use",
+              id: row.toolUseId,
+              name: "Bash",
+              input: { command: "ls" },
+            },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-1",
+          uuid: `stream-stop-${index}`,
+          parent_tool_use_id: null,
+          event: { type: "content_block_stop", index },
+        } as unknown as SDKMessage);
+      }
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-1",
+        uuid: "result-1",
+      } as unknown as SDKMessage);
+      const events = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      for (const lifecycle of ["item.started", "item.completed"] as const) {
+        const ids = events.filter((event) => event.type === lifecycle).map((event) => event.itemId);
+        assert.deepEqual(
+          ids,
+          rows.map((row) => row.itemId),
+          `${lifecycle}: the item ids, in emission order`,
+        );
+      }
+      assert.deepEqual(
+        dropLogs.map((entry) => entry.itemId).sort(),
+        ['"  "', '"  "', '""', '""'],
+        "one drop log per refused event (sorted; the started and completed logs interleave)",
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(
+        Layer.mergeAll(
+          harness.layer,
+          Logger.layer([logger], { mergeWithExisting: false }),
+          Layer.succeed(References.MinimumLogLevel, "Debug"),
+        ),
+      ),
+    );
+  });
+
   it.effect("passes Claude resume ids without pinning a stale assistant checkpoint", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

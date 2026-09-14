@@ -43,7 +43,6 @@ import {
   type TurnTokenUsage,
   type ProviderUserInputAnswers,
   type RuntimeContentStreamKind,
-  RuntimeItemId,
   RuntimeRequestId,
   RuntimeTaskId,
   type RuntimeTaskStatus,
@@ -84,6 +83,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
+import { runtimeItemIdField } from "../runtimeItemId.ts";
 import { claudeSignedOutMessage, makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { planClaudeSkillDispatch } from "../Drivers/ClaudeSkillDispatch.ts";
 import { discoverClaudeSkills } from "../Drivers/ClaudeSkills.ts";
@@ -545,9 +545,20 @@ function formatClaudeUsageLimitWait(waitMs: number): string {
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
 }
 
-function asRuntimeItemId(value: string): RuntimeItemId {
-  return RuntimeItemId.make(value);
-}
+// A tool block's id is the SDK's `tool_use` id, kept raw in the turn state so
+// the tool_result that names it (`tool_use_id`, the same string) still
+// matches. The runtime event's `itemId` keys a timeline row that ingestion
+// persists and the store decodes on read, so it carries the DECODED value
+// (`../runtimeItemId.ts`): at base a padded " tool-1 " went through `.make`
+// as a row keyed by whitespace, one identity live and another after replay,
+// and "" would have thrown inside `.make` in the event pump. A refused id is
+// dropped with a debug log; the tool's lifecycle then goes out item-less.
+const claudeItemIdField = (context: ClaudeSessionContext, itemId: string) =>
+  runtimeItemIdField({
+    logKey: "claude.event.item_id_dropped",
+    threadId: context.session.threadId,
+    itemId,
+  });
 
 function maxClaudeContextWindowFromModelUsage(
   modelUsage: Record<string, ModelUsage> | undefined,
@@ -2148,7 +2159,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         createdAt: deltaStamp.createdAt,
         threadId: context.session.threadId,
         turnId: turnState.turnId,
-        itemId: asRuntimeItemId(block.itemId),
+        ...(yield* claudeItemIdField(context, block.itemId)),
         payload: {
           streamKind: "assistant_text",
           delta: block.fallbackText,
@@ -2177,7 +2188,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       eventId: stamp.eventId,
       provider: PROVIDER,
       createdAt: stamp.createdAt,
-      itemId: asRuntimeItemId(block.itemId),
+      ...(yield* claudeItemIdField(context, block.itemId)),
       threadId: context.session.threadId,
       turnId: turnState.turnId,
       payload: {
@@ -2575,7 +2586,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         createdAt: toolStamp.createdAt,
         threadId: context.session.threadId,
         turnId: turnState.turnId,
-        itemId: asRuntimeItemId(tool.itemId),
+        ...(yield* claudeItemIdField(context, tool.itemId)),
         payload: {
           itemType: tool.itemType,
           status: status === "completed" ? "completed" : "failed",
@@ -2744,7 +2755,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           turnId: context.turnState.turnId,
           ...(assistantBlockEntry?.block
             ? {
-                itemId: asRuntimeItemId(assistantBlockEntry.block.itemId),
+                ...(yield* claudeItemIdField(context, assistantBlockEntry.block.itemId)),
               }
             : {}),
           payload: {
@@ -2814,7 +2825,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 turnId: asCanonicalTurnId(context.turnState.turnId),
               }
             : {}),
-          itemId: asRuntimeItemId(nextTool.itemId),
+          ...(yield* claudeItemIdField(context, nextTool.itemId)),
           payload: {
             itemType: nextTool.itemType,
             status: "inProgress",
@@ -2921,7 +2932,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         createdAt: stamp.createdAt,
         threadId: context.session.threadId,
         ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
-        itemId: asRuntimeItemId(tool.itemId),
+        ...(yield* claudeItemIdField(context, tool.itemId)),
         payload: {
           itemType: tool.itemType,
           status: "inProgress",
@@ -3001,7 +3012,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         createdAt: updatedStamp.createdAt,
         threadId: context.session.threadId,
         ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
-        itemId: asRuntimeItemId(tool.itemId),
+        ...(yield* claudeItemIdField(context, tool.itemId)),
         payload: {
           itemType: tool.itemType,
           status: toolResult.isError ? "failed" : "inProgress",
@@ -3031,7 +3042,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           createdAt: deltaStamp.createdAt,
           threadId: context.session.threadId,
           turnId: context.turnState.turnId,
-          itemId: asRuntimeItemId(tool.itemId),
+          ...(yield* claudeItemIdField(context, tool.itemId)),
           payload: {
             streamKind,
             delta: toolResult.text,
@@ -3055,7 +3066,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         createdAt: completedStamp.createdAt,
         threadId: context.session.threadId,
         ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
-        itemId: asRuntimeItemId(tool.itemId),
+        ...(yield* claudeItemIdField(context, tool.itemId)),
         payload: {
           itemType: tool.itemType,
           status: itemStatus,
