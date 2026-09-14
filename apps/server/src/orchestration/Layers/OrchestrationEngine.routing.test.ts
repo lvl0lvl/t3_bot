@@ -358,7 +358,7 @@ const readModel = (): OrchestrationReadModel => ({
       session: null,
     },
   ] as unknown as OrchestrationReadModel["threads"],
-  // Seeded, not created by the probe. Six of the seven channel commands call
+  // Seeded, not created by the probe. Seven of the eight channel commands call
   // requireChannel first and are refused without it — and a refused command
   // emits no events, so it drops out of the executed comparison silently.
   // The member is here for the same reason: channel.post.create additionally
@@ -496,10 +496,10 @@ it.layer(NodeServices.layer)("router and decider agree", (it) => {
 
       // The channel commands are NOT in the dual-id hazard set — they carry
       // channelId alone — so the assertion above is silent about them and would
-      // pass with all seven skipped. Six of them call requireChannel first and
+      // pass with all eight skipped. Seven of them call requireChannel first and
       // emit nothing if the read model lacks the channel, which is precisely
-      // how they would drop out. Named rather than counted: "seven compared"
-      // is satisfied by any seven.
+      // how they would drop out. Named rather than counted: "eight compared"
+      // is satisfied by any eight.
       const uncoveredChannels = CHANNEL_COMMAND_TYPES.filter((type) => !compared.includes(type));
       expect(
         uncoveredChannels,

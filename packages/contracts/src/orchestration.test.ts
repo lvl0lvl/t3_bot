@@ -1740,7 +1740,7 @@ it("isProviderSendTurnSupportedImageMimeType accepts raster formats and rejects 
  * The administrative channel commands, written out rather than derived as
  * "every channel command except the one".
  *
- * A derived list absorbs new members silently: add a seventh administrative
+ * A derived list absorbs new members silently: add an eighth administrative
  * command to `OrchestrationCommand` and a derived list would cover it without
  * anyone deciding that it should be covered. A written list does not — the set
  * assertion below goes red, and putting it right is an edit a reviewer sees in

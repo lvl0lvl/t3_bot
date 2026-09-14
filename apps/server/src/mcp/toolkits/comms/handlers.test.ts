@@ -1099,7 +1099,8 @@ describe("comms toolkit helpers", () => {
     // capitalised mention unresolvable and refused the post whole. The
     // aggregate canonicalises handles now - decider.ts runs
     // requireCanonicalChannelHandle on channel.create, channel.member.add,
-    // channel.member.remove and channel.post.create - so this side follows.
+    // channel.member.remove, channel.member.rename and channel.post.create - so
+    // this side follows.
     // Order was the whole risk, and the aggregate went first.
     const members: ReadonlyArray<ChannelGateway.ChannelMember> = [
       { handle: "boss1", memberKind: "thread", memberId: OTHER_THREAD_ID },
