@@ -514,18 +514,19 @@ const admitMessageTurnId = (id: string) =>
       )
     : Effect.succeed(TurnId.make(id));
 // A part id from the SDK (`part.id`, `partID`, `part.callID`) is outside
-// input that becomes a RuntimeItemId, the key of a timeline row. The
-// truthiness guard `buildEventBase` used to carry dropped "" before `.make`
-// could throw on it and let "  " through as a row keyed by whitespace; the
-// decoder refuses both, and a refused id is dropped the way "" always was:
-// the event goes out with no item and ingestion folds it into the turn's
-// assistant message. What passes is branded RAW, as with the turn id above:
-// the decoder trims, and the id is echoed back to OpenCode in tool and
-// question replies. A request id is NOT gated (`t3_bot-1n6`): it names an
-// approval the provider must get back byte-for-byte (#49's contract), no
-// server mints the shape the decoder would refuse, and `.make` admitting
-// whitespace is accepted there rather than answered with a refusal path
-// nothing but a test would ever exercise.
+// input that becomes a RuntimeItemId, the key of a timeline row.
+// `buildEventBase` gated the id by truthiness: "" was dropped before
+// `.make` could throw on it, "  " went through as a row keyed by
+// whitespace, and a number from a broken server reached `.make` and died
+// in the event pump. The decoder refuses all three, and a refused id is
+// dropped the way "" always was: a text part's events go out with no item
+// and ingestion folds the text into the turn's assistant row; a tool
+// `callID` emits the lifecycle without a `toolCallId`, which the clients
+// render uncollapsed. What passes is the DECODED value, unlike the turn id
+// above: the event store decodes persisted events on read
+// (`OrchestrationEventStore`), so a raw " prt_1 " would key one row live
+// and another after replay. The request id is not gated; the decision is
+// recorded at its spread in `buildEventBase`.
 const decodeRuntimeItemId = Schema.decodeUnknownOption(RuntimeItemId);
 
 /**
