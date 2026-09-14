@@ -1287,6 +1287,23 @@ it.layer(NodeServices.layer)("channel decider", (it) => {
     }),
   );
 
+  it.effect("admits a rename by a system issuer", () =>
+    Effect.gen(function* () {
+      // The admit side of the guard, which the thread refusal above cannot
+      // measure: a rename branch that admitted humans only, with the same
+      // refusal text, passes every other rename test here. The hierarchy
+      // seeder issues as `system` (`HierarchySeeder.ts`, SEED_ISSUER), so this
+      // is the production caller the guard has to admit.
+      const decided = yield* decideOrchestrationCommand({
+        command: renameCommand("boss1", "boss-one"),
+        readModel: makeReadModel(),
+        issuer: { memberKind: "system", memberId: "hierarchy-seeder" },
+      });
+      const event = Array.isArray(decided) ? decided[0] : decided;
+      expect(event?.type).toBe("channel.member-renamed");
+    }),
+  );
+
   it.effect("refuses a rename in an archived channel", () =>
     Effect.gen(function* () {
       const model = makeReadModel();
