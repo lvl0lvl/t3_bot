@@ -2,18 +2,21 @@
  * ONE CLAIM: a mutation file that is a tracked symlink, or that resolves outside the tree, is
  * NOT RUN before anything is written through it.
  *
- * The defect this pins (`t3_bot-k1v`, found by #42's review) produced a CONFIRMED FALSE KILL at
- * exit 0. `readFileString`/`writeFileString` follow a link, so a row on `src/link.ts -> thing.ts`
+ * The defect this pins (`t3_bot-k1v`, found by #42's review) is a FALSE KILL beside an unmeasured
+ * row. `readFileString`/`writeFileString` follow a link, so a row on `src/link.ts -> thing.ts`
  * mutated `thing.ts`; the restore, `git checkout -- src/link.ts`, returned the LINK to HEAD —
- * unchanged — and every later row was measured on the mutated target. On the two-row fixture
- * below, both rows were killed and the second was credited "the guard is present" for a red the
- * first row's leftover mutation caused. With an absolute-target link the mutation landed in a
+ * unchanged — and every later row was measured on the mutated target. Measured with the unfixed
+ * tool on the two-row fixture below: the link row was credited `killed by 1` for a mutation that
+ * landed in `thing.ts`, and the target row went `NOT RUN — anchor not found` because that
+ * mutation was still there when it was read — exit 3. The bead's own run, with a `setupCommand`,
+ * went further: both rows killed, exit 0. With an absolute-target link the mutation landed in a
  * file OUTSIDE the tree and stayed there after the run, which refusal 3 in the tool's header
  * ("it mutates only a tree it created") promises cannot happen.
  *
- * THE END-TO-END TEST IS THE POINT: the assertion is on the target's bytes after the run and on
- * the second row's verdict, not on the predicate. Separate from `guard-sweep.paths.test.ts`
- * (a spelling git prints differently) — a link is spelled exactly as porcelain prints it.
+ * THE END-TO-END TEST IS THE POINT: the first test sweeps `--in-place` and asserts on the
+ * target's bytes and on porcelain after the run, and on the second row's verdict, not on the
+ * predicate. Separate from `guard-sweep.paths.test.ts` (a spelling git prints differently) — a
+ * link is spelled exactly as porcelain prints it.
  */
 import { describe, expect, it } from "vite-plus/test";
 
