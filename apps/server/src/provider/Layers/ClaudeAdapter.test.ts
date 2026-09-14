@@ -6285,9 +6285,9 @@ describe("ClaudeAdapterLive", () => {
         );
       }
       assert.deepEqual(
-        dropLogs.map((entry) => entry.itemId).sort(),
-        ['"  "', '"  "', '""', '""', "42", "42"],
-        "one drop log per refused event (sorted; the started and completed logs interleave)",
+        dropLogs.map((entry) => entry.itemId),
+        ['"  "', '""', "42", '"  "', '""', "42"],
+        "one drop log per refused event: the started logs in row order, then the completed logs in row order",
       );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -6300,6 +6300,112 @@ describe("ClaudeAdapterLive", () => {
       ),
     );
   });
+
+  it.effect(
+    "keys a tool's row by one decoded id across start, input, result, output and completion",
+    () => {
+      // The table above reaches only the `content_block_start` and turn-teardown
+      // sites. A tool's row is also keyed at the input delta (item.updated), the
+      // tool_result (item.updated, content.delta, item.completed); a raw `.make`
+      // restored at any one of those four keys that event by " tool-2 " and the
+      // pairs below no longer agree.
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const runtimeEventsFiber = yield* Stream.takeUntil(
+          adapter.streamEvents,
+          (event) => event.type === "turn.completed",
+        ).pipe(Stream.runCollect, Effect.forkChild);
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+          },
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "hello", attachments: [] });
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-1",
+          uuid: "lifecycle-start",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "tool_use", id: " tool-2 ", name: "Bash", input: {} },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-1",
+          uuid: "lifecycle-input",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "input_json_delta", partial_json: '{"command":"ls"}' },
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-1",
+          uuid: "lifecycle-stop",
+          parent_tool_use_id: null,
+          event: { type: "content_block_stop", index: 0 },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-1",
+          uuid: "lifecycle-user",
+          parent_tool_use_id: null,
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: " tool-2 ", content: "file-a\nfile-b" }],
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          session_id: "sdk-session-1",
+          uuid: "lifecycle-result",
+        } as unknown as SDKMessage);
+        const events = Array.from(
+          yield* TestClock.withLive(
+            Fiber.join(runtimeEventsFiber).pipe(
+              Effect.timeoutOrElse({
+                duration: "2 seconds",
+                orElse: () =>
+                  Effect.die(new Error("the turn never completed: a tool id died in the pump")),
+              }),
+            ),
+          ),
+        );
+        const keyed = events
+          .filter(
+            (event) =>
+              event.type === "item.started" ||
+              event.type === "item.updated" ||
+              event.type === "item.completed" ||
+              event.type === "content.delta",
+          )
+          .map((event): readonly [string, string | undefined] => [event.type, event.itemId]);
+        assert.deepEqual(keyed, [
+          ["item.started", "tool-2"],
+          ["item.updated", "tool-2"],
+          ["item.updated", "tool-2"],
+          ["content.delta", "tool-2"],
+          ["item.completed", "tool-2"],
+        ]);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect("passes Claude resume ids without pinning a stale assistant checkpoint", () => {
     const harness = makeHarness();
