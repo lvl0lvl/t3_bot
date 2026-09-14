@@ -1773,13 +1773,19 @@ describe("CheckpointReactor", () => {
       const harness = yield* Effect.promise(() => createHarness());
       const threadId = ThreadId.make("thread-1");
       const createdAt = "2026-01-01T00:00:00.000Z";
+      const rolledBack = yield* Deferred.make<void>();
       harness.provider.rollbackConversation.mockImplementation(() =>
-        Effect.fail(
-          new ProviderAdapterRequestError({
-            provider: "opencode",
-            method: "session.messages",
-            detail: "OpenCode returned an assistant message whose id undefined is not a turn id.",
-          }),
+        Deferred.succeed(rolledBack, undefined).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "opencode",
+                method: "session.messages",
+                detail:
+                  "OpenCode returned an assistant message whose id undefined is not a turn id.",
+              }),
+            ),
+          ),
         ),
       );
       yield* harness.engine.dispatch({
@@ -1820,12 +1826,11 @@ describe("CheckpointReactor", () => {
         turnCount: 1,
         createdAt,
       });
-      const thread = yield* Effect.promise(() =>
-        waitForThread(harness.readModel, (entry) =>
-          entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
-        ),
-      );
+      yield* Deferred.await(rolledBack);
       yield* Effect.promise(() => harness.drain());
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
 
       expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
       // The files are still the current turn's.
