@@ -5,10 +5,14 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import { ClaudeSettings } from "@t3tools/contracts";
+import { isHostWindows } from "@t3tools/shared/hostProcess";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -207,6 +211,42 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
         }),
         0,
       );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("the survivor check reports a child the SDK's SIGTERM would have reaped", () =>
+    Effect.gen(function* () {
+      // `ps` is not there; the check returns without measuring.
+      if (yield* isHostWindows) return;
+      const fs = yield* FileSystem.FileSystem;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-probe-survivor-" });
+      // A child of this process whose argv names the fixture directory and which
+      // quits by itself when the SDK's 2 s SIGTERM would land. THE INPUT THAT
+      // BREAKS THIS: `SURVIVOR_WINDOW_MS` widened past 2 s — the check then
+      // outwaits the child and returns clean.
+      const child = NodeChildProcess.spawn(
+        process.execPath,
+        ["-e", "setTimeout(() => process.exit(0), 2_000)", tempDir],
+        { stdio: "ignore" },
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          child.kill("SIGKILL");
+        }),
+      );
+
+      const exit = yield* Effect.exit(assertNoFakeClaudeChildren(tempDir));
+
+      assert.isTrue(Exit.isFailure(exit));
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause);
+        assert.instanceOf(error, Error);
+        assert.include(
+          error.message,
+          `1 fake claude child(ren) of pid ${process.pid} outlived the probe: ${child.pid} `,
+        );
+        assert.include(error.message, tempDir);
+      }
     }).pipe(Effect.scoped),
   );
 });

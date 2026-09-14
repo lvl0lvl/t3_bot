@@ -12,24 +12,22 @@ const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 
 /**
  * The line every fake `claude` ends with. The real binary exits when its stdin
- * closes, and the SDK relies on that: `probeClaudeCapabilities` aborts the
- * query, which ends the child's stdin and awaits nothing — the SIGTERM
- * fallback lives in a parent-exit handler a terminated vitest worker never
- * runs. A fake that ignores the end of stdin outlives every test that spawned
- * it: 424 of them, 16 GB, were found on one machine (`t3_bot-4ra`).
+ * closes and the SDK relies on that: a fake that ignores the end of its stdin
+ * is orphaned by every test that spawned it — `assertNoFakeClaudeChildren`
+ * below says how, and why its window is the width it is.
  */
 export const FAKE_CLAUDE_EXIT_ON_STDIN_END = 'lines.on("close", () => process.exit(0));';
 
 /**
  * Spawns the fake the way the SDK does and closes its stdin at once. Resolves
- * with the exit code when the fake exits; rejects after `timeoutMs` naming the
- * child it had to kill. A plain Promise on Node's own timer, because the
+ * with the exit code when the fake exits; rejects after five seconds naming
+ * the child it had to kill. A plain Promise on Node's own timer, because the
  * callers run under `it.effect`'s TestClock where an Effect timeout would
  * wait for time nobody advances.
  */
 export const assertFakeClaudeExitsOnStdinEnd = (
   executablePath: string,
-  options: { readonly env?: NodeJS.ProcessEnv; readonly timeoutMs?: number } = {},
+  options: { readonly env?: NodeJS.ProcessEnv } = {},
 ): Effect.Effect<number> =>
   Effect.promise(
     () =>
@@ -39,7 +37,7 @@ export const assertFakeClaudeExitsOnStdinEnd = (
           [executablePath, "--output-format", "stream-json", "--input-format", "stream-json"],
           { stdio: ["pipe", "pipe", "pipe"], env: options.env ?? process.env },
         );
-        const timeoutMs = options.timeoutMs ?? 5_000;
+        const timeoutMs = 5_000;
         const timer = setTimeout(() => {
           child.kill("SIGKILL");
           reject(
@@ -69,26 +67,34 @@ export const assertFakeClaudeExitsOnStdinEnd = (
  * never by name alone, so another session's fakes do not count against this
  * test — and this test's survivors cannot hide behind them.
  *
- * THE WINDOW IS SHORT ON PURPOSE. After the abort the SDK arms an unref'd
- * five-second SIGKILL timer; a test that finishes leaves the worker with
- * nothing to keep it alive, so that timer never fires and the fake is
- * orphaned. A wait of five seconds or more keeps the worker alive until the
- * timer lands and reports a leak as clean (measured: the keepalive fake reads
- * as gone at 5.0 s). One second is longer than any honest exit on stdin end
- * and shorter than the timer.
+ * HOW THE FAKE LEAKS, AND WHY THE WINDOW IS 1 s. On abort the SDK
+ * (`@anthropic-ai/claude-agent-sdk` 0.3.260, `ProcessTransport.close()` in
+ * `sdk.mjs` — the `close()` that ends `processStdin`; `rg -n "DFe=" sdk.mjs`
+ * lands on its constant) ends the child's stdin at once and awaits nothing.
+ * If the child is still alive it arms an unref'd 2 000 ms timer that
+ * SIGTERMs, whose callback arms an unref'd 5 000 ms SIGKILL; a separate
+ * `process.on("exit")` handler SIGTERMs tracked children on a normal parent
+ * exit. A finished test leaves the vitest worker nothing to keep it alive, so
+ * none of that fires: a fake that ignored the end of its stdin is orphaned —
+ * 424 of them, 16 GB, on one machine (`t3_bot-4ra`). THE INPUT THAT BLINDS
+ * THIS CHECK is a window past the SDK's SIGTERM: it keeps the worker alive
+ * until the signal lands and reads the leak as clean (measured with the
+ * keepalive fake: 2.5 s passed at 2.1 s; 1.9 s and 1 s failed). A fixed fake
+ * is gone ~20 ms after its stdin ends (measured), so 1 s sees every honest
+ * exit and never the SDK's.
  */
-export const assertNoFakeClaudeChildren = (
-  fixtureDirectory: string,
-  timeoutMs = 1_000,
-): Effect.Effect<void> =>
+export const assertNoFakeClaudeChildren = (fixtureDirectory: string): Effect.Effect<void> =>
   Effect.gen(function* () {
     // `ps` is not there; the callers skip on Windows the same way.
     if (yield* isHostWindows) return;
-    yield* Effect.promise(() => awaitNoFakeClaudeChildren(fixtureDirectory, timeoutMs));
+    yield* Effect.promise(() => awaitNoFakeClaudeChildren(fixtureDirectory));
   });
 
-const awaitNoFakeClaudeChildren = async (fixtureDirectory: string, timeoutMs: number) => {
-  const deadline = Date.now() + timeoutMs;
+/** Under the SDK's 2 s SIGTERM and over a fixed fake's ~20 ms; the docstring above says why. */
+const SURVIVOR_WINDOW_MS = 1_000;
+
+const awaitNoFakeClaudeChildren = async (fixtureDirectory: string) => {
+  const deadline = Date.now() + SURVIVOR_WINDOW_MS;
   let survivors = await fakeClaudeChildren(fixtureDirectory);
   while (survivors.length > 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 25));
