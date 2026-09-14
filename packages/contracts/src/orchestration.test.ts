@@ -146,6 +146,27 @@ it.effect("decodes a refusal tag it does not know as an untagged refusal", () =>
   }),
 );
 
+it.effect("decodes a known tag with a payload it cannot read as an untagged refusal", () =>
+  Effect.gen(function* () {
+    // A member's payload is frozen once it ships: the wrapper drops any value
+    // it cannot decode, not only a foreign tag, so a client that knows the tag
+    // gets the untagged shape when the payload changes under it. THE INPUT
+    // THAT BREAKS THIS: a wrapper that checks only the tag and passes a known
+    // one through, which fails the whole error on `handles: "walt"`.
+    const error = yield* decodeDispatchCommandError({
+      _tag: "OrchestrationDispatchCommandError",
+      message: "Orchestration command invariant failed (channel.post.create): unresolved.",
+      refusal: { _tag: "mentions-unresolved", handles: "walt" },
+    });
+
+    assert.strictEqual(error.refusal, undefined);
+    assert.strictEqual(
+      error.message,
+      "Orchestration command invariant failed (channel.post.create): unresolved.",
+    );
+  }),
+);
+
 it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeTurnDiffInput({

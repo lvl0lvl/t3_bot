@@ -213,8 +213,9 @@ export class EnvironmentInternalError extends Schema.TaggedError<EnvironmentInte
  * (`author-not-member`) are still a state the caller can change, not a scope
  * it lacks - `insufficient_scope` is the 403 here. `message` is the decider's
  * prose, the same sentence the socket door forwards; `refusal` is the tag a
- * caller branches on, when the decider gave one and this build knows it — an
- * unknown tag decodes as absent, like the socket door (`t3_bot-1tn`).
+ * caller branches on, when the decider gave one and this build can decode it —
+ * a tag it does not know, or a known tag whose payload it cannot read, decodes
+ * as absent, like the socket door (`t3_bot-1tn`).
  *
  * A non-member WRITE answers `author-not-member` where a non-member read
  * answers `channel_not_found` (below). The read rule protects readers from
