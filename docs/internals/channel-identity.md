@@ -92,8 +92,11 @@ and nothing migrates the projection.
 A member whose stored handle does not canonicalise to itself is **unmentionable
 and unremovable**: `channel.post.create` canonicalises the mention and compares it
 to the stored bytes, and `channel.member.remove` canonicalises its argument the
-same way and then requires an exact member match. The only remedy is to recreate
-the channel.
+same way and then requires an exact member match. `channel.member.rename` is the
+one repair: it matches `from` **as stored** before it matches the canonical form,
+so `@pm` typed exactly names the `@pm` row and renames it to a canonical `pm` in
+one command, the ref never leaving the roster. Stored first, because a roster
+holding a legacy `Boss1` beside a canonical `boss1` breaks the other order.
 
 **It is not the row you would look for.** Case folding shipped in the same commit
 as the members table, so no channel ever stored `Boss1` — auditing a database for
@@ -112,3 +115,18 @@ is why there is no migration rather than an oversight. A database that turns out
 to hold such a row needs the **projector** to canonicalise on apply, so replaying
 old events produces canonical membership; rewriting the rows alone would be undone
 by the next rebuild.
+
+## A rename is one event
+
+`channel.member.rename` changes a member's handle and nothing else; the event
+carries the unchanged `(memberKind, memberId)`. The read model maps the row to its
+new handle in place; the SQL projection rewrites the whole roster inside the
+event's transaction (`ProjectionPipeline.ts`, `replaceMembers`), so no reader sees
+the member absent in between. It exists because the alternative —
+`member.remove` then `member.add` — leaves the member on no roster between the
+two commands (a post refused, a wake lost, a connection told it left a channel it
+is about to rejoin) and the other order collides on the ref. Renaming a handle to
+itself is refused rather than recorded: an event that changes nothing is a fact
+the log never had. Posts are not rewritten — a post keeps the `authorHandle` it
+was written under, and its `authorRef` is what identifies the author — so from
+the rename's sequence on, the old handle is nobody's mention key.

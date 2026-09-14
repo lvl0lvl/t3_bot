@@ -138,6 +138,14 @@ function channelProbe(type: string) {
         channelId: CHANNEL,
         handle: BOSS1,
       };
+    case "channel.member.rename":
+      return {
+        type,
+        commandId: CommandId.make(`cmd-${type}`),
+        channelId: CHANNEL,
+        from: BOSS1,
+        to: ChannelMemberHandle.make("boss-one"),
+      };
     case "channel.post.create":
       return {
         type,
@@ -255,7 +263,7 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
     // If this drops to zero the traversal broke and every test below turns
     // vacuous while still passing.
     const types = channelCommandTypes();
-    expect(types.length, `found: ${types.join(", ")}`).toBe(7);
+    expect(types.length, `found: ${types.join(", ")}`).toBe(8);
     expect(types).toContain("channel.post.create");
     expect(types).toContain("channel.member.add");
   });
@@ -269,7 +277,7 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       // THE REFUSAL HAS TO BE THE TYPED INVARIANT ERROR, not merely something going
       // wrong. Force this guard's presence check to take the issuer-present branch
       // and it succeeds with `undefined`, the next guard dereferences that, and all
-      // seven commands come back as a DEFECT — which an `exit._tag === "Failure"`
+      // eight commands come back as a DEFECT — which an `exit._tag === "Failure"`
       // check counts as a refusal, because `Failure` is true of a Die as well as a
       // Fail. That is what this test could not see.
       //
@@ -292,8 +300,8 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
         // `Effect.flip` yields the typed error and lets a defect through, so a
         // dereference crash fails this test instead of being counted here.
         //
-        // THE MESSAGE, because the tag alone is not enough for one of the seven.
-        // Six call this guard first in their branch, so nothing else can refuse
+        // THE MESSAGE, because the tag alone is not enough for one of the eight.
+        // Seven call this guard first in their branch, so nothing else can refuse
         // them; `channel.post.create` has `requireChannel` ahead of it, so against
         // an absent channel a DIFFERENT invariant refuses first and satisfies the
         // tag while the issuer check is gone. Measured on that input: with the
@@ -317,7 +325,7 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       // throws first and reaching this line implies it passes. Before this test
       // asserted the typed error it was the load-bearing assertion; it is not any
       // more, and a reader trusting it to catch a command that does not refuse
-      // would be wrong. What it still does is prove the loop ran over all seven.
+      // would be wrong. What it still does is prove the loop ran over all eight.
       expect(refused).toEqual(channelCommandTypes());
     }),
   );
@@ -328,7 +336,7 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       // rights on any channel whose id it can name; one that could remove a
       // peer would evict it from the wake set silently.
       const administration = channelCommandTypes().filter((type) => type !== "channel.post.create");
-      expect(administration.length).toBe(6);
+      expect(administration.length).toBe(7);
       for (const type of administration) {
         const command = channelProbe(type);
         if (command === undefined) continue;

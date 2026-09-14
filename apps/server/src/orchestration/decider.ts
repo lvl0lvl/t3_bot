@@ -2254,6 +2254,89 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "channel.member.rename": {
+      yield* requireIssuerCanAdminister({
+        command,
+        issuer: yield* requireCommandIssuer({ command, issuer }),
+      });
+      const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
+      // A retired channel's roster does not move (see member.add).
+      yield* requireChannelNotArchived({ command, channel });
+      // `to` is canonical, as add and remove store: a later mention is compared
+      // against the stored bytes. `from` is matched AS STORED first and by its
+      // canonical form second. A row stored before the canonicalisation rule
+      // (`@pm`, `Boss1`; channel-identity.md) folds to bytes it does not hold,
+      // so post.create cannot mention it and member.remove cannot name it — this
+      // is the one command that reaches it, and only when `@pm` typed exactly
+      // finds the `@pm` row. Stored first, because a roster holding a legacy
+      // `Boss1` beside a canonical `boss1` breaks the other order: canonical
+      // first folds `Boss1` to `boss1` and renames the wrong row.
+      //
+      // `from` is still required to HAVE a canonical form: a handle of only
+      // sigils folds to "", which the schema refuses to store, so it can name no
+      // row and is refused here by its fault rather than as "not a member".
+      const canonicalFrom = yield* requireCanonicalChannelHandle({
+        command,
+        handle: command.from,
+      });
+      const to = yield* requireCanonicalChannelHandle({ command, handle: command.to });
+      const renamed =
+        channel.members.find((member) => member.handle === command.from) ??
+        channel.members.find((member) => member.handle === canonicalFrom);
+      if (renamed === undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Handle '${command.from}' is not a member of channel '${command.channelId}'.`,
+        });
+      }
+      // The SEATED row's bytes, never the typed ones: both projections match the
+      // row on `from`, and a legacy `@pm` is found under `@pm`.
+      const from = renamed.handle;
+      // REFUSED rather than a no-op. `channel.meta.update` to the name a channel
+      // already has is a no-op because that command is a partial update and
+      // "nothing changed" is one of its outcomes; a rename carries nothing but the
+      // change, so an event recording none would be a fact the log never had —
+      // the same class as the removal a remove-then-add announces (`t3_bot-uw9`).
+      // Compared against the SEATED handle: a legacy `@pm` renamed to `pm` is
+      // the repair, not a no-op.
+      if (to === from) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Handle '${command.to}' is already '${from}' in channel '${command.channelId}'.`,
+        });
+      }
+      // The renamed row is lifted out of the roster, so on a roster every command
+      // built the only refusal left is the HANDLE clause — a rename onto a handle
+      // another member holds — with the same text an add would give. On a roster
+      // replayed from before `t3_bot-1ez` (one ref under two handles,
+      // `testing/collidingRoster.ts`) the REF clause fires too: the other row
+      // still holds the ref, so renaming EITHER handle is refused naming the
+      // other. That is the delta rule doing its job — a rename answers for the
+      // row it seats — and `member.remove` of one duplicate is the repair.
+      yield* requireChannelMembersUnique({
+        command,
+        seated: channel.members.filter((member) => member.handle !== from),
+        adding: [{ ...renamed, handle: to }],
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "channel",
+          aggregateId: command.channelId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "channel.member-renamed",
+        payload: {
+          channelId: command.channelId,
+          from,
+          to,
+          member: { memberKind: renamed.memberKind, memberId: renamed.memberId },
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
     case "channel.post.create": {
       const channel = yield* requireChannel({ readModel, command, channelId: command.channelId });
       // Membership and mention resolution are enforced here, not only in the
@@ -2284,6 +2367,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // post. Dedupe here rather than in the reactor: the event is what replays.
       const mentions = [...new Set(canonicalMentions)];
       yield* requireChannelMentionsResolve({ command, channel, mentions });
+      // The refs the mentions resolve to, in mention order, one per member. The
+      // reactor matches the CURRENT roster by ref: a rename between this post
+      // and the reactor reading it keeps the ref seated under a new handle, and
+      // a handle match would wake nobody. Deduped by ref because a roster
+      // replayed from before `t3_bot-1ez` can hold one ref under two handles,
+      // and two mentions of one member are one wake.
+      const mentionRefs = [
+        ...new Map(
+          mentions.flatMap((handle) =>
+            channel.members
+              .filter((member) => member.handle === handle)
+              .map(
+                (member) =>
+                  [
+                    `${member.memberKind}:${member.memberId}`,
+                    { memberKind: member.memberKind, memberId: member.memberId },
+                  ] as const,
+              ),
+          ),
+        ).values(),
+      ];
       return {
         ...(yield* withEventBase({
           aggregateKind: "channel",
@@ -2300,6 +2404,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           authorHandle: author.handle,
           body: command.body,
           mentions,
+          mentionRefs,
           parentPostId: command.parentPostId,
           createdAt: command.createdAt,
         },

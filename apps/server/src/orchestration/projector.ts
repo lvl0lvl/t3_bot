@@ -31,6 +31,7 @@ import {
   ChannelCreatedPayload,
   ChannelMemberAddedPayload,
   ChannelMemberRemovedPayload,
+  ChannelMemberRenamedPayload,
   ChannelMetaUpdatedPayload,
   ChannelUnarchivedPayload,
   ProjectCreatedPayload,
@@ -1147,6 +1148,27 @@ export function projectEvent(
               ? {
                   ...entry,
                   members: entry.members.filter((member) => member.handle !== payload.handle),
+                  updatedAt: payload.updatedAt,
+                }
+              : entry,
+          ),
+        })),
+      );
+
+    // The row changes handle IN PLACE: its ref and its position are untouched, so
+    // nothing that resolves membership by ref sees a gap. A remove-then-add would
+    // have moved the row to the end and, between the two, out of the roster.
+    case "channel.member-renamed":
+      return decodeForEvent(ChannelMemberRenamedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          channels: nextBase.channels.map((entry) =>
+            entry.id === payload.channelId
+              ? {
+                  ...entry,
+                  members: entry.members.map((member) =>
+                    member.handle === payload.from ? { ...member, handle: payload.to } : member,
+                  ),
                   updatedAt: payload.updatedAt,
                 }
               : entry,

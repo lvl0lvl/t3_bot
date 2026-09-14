@@ -158,6 +158,7 @@ function commandToAggregateRef(command: OrchestrationCommand): {
     case "channel.unarchive":
     case "channel.member.add":
     case "channel.member.remove":
+    case "channel.member.rename":
     case "channel.post.create":
       return {
         aggregateKind: "channel",

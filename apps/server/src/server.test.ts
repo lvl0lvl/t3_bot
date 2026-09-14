@@ -9840,6 +9840,81 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
+  it.effect("says nothing when someone else is RENAMED in a channel it is not in", () =>
+    Effect.gen(function* () {
+      // THE INPUT THAT TELLS A RENAME FROM A REMOVAL AT THIS GATE. A rename of
+      // this connection's own member cannot go wrong here: the refetched row
+      // still holds the member (under its new handle) and the row answers
+      // first. The row does NOT answer for a channel this connection is not in
+      // — there the gate falls through to `removalObligesThisConnection`, and
+      // `channel.member-renamed` carries no `removedMember`. A gate that reads
+      // "member event without a removed ref" as an unattributed removal (the
+      // fail-open that `t3_bot-7br` keeps for OLD removal rows) emits
+      // `channel-removed` for a channel this connection was never told about:
+      // the disclosure, back through the new event type.
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const foreignRename = {
+        ...foreignRemovalEvent,
+        eventId: EventId.make("event-channel-member-renamed-foreign"),
+        type: "channel.member-renamed",
+        payload: {
+          channelId: ChannelId.make("channel-project"),
+          from: ChannelMemberHandle.make("pm"),
+          to: ChannelMemberHandle.make("chair"),
+          member: { memberKind: "thread", memberId: "thread-pm" },
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      } as unknown as OrchestrationEvent;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionChannels: {
+            // The roster after the rename: the renamed member under its new
+            // handle, and NOT this connection.
+            getChannelWithActivityById: () =>
+              Effect.succeedSome(
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [{ handle: "chair", memberKind: "thread", memberId: "thread-pm" }],
+                }),
+              ),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(liveEvents, foreignRename);
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      // Snapshot, then the completion marker, and nothing between: the stream
+      // reached its end, so the silence is a decision rather than a delay.
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.deepEqual(items[1], { kind: "synchronized" });
+      assert.equal(items.filter((item) => item.kind === "channel-removed").length, 0);
+      assert.equal(items.filter((item) => item.kind === "channel-upserted").length, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
   it.effect("reports a removal it cannot attribute, because a stored event carries no ref", () =>
     Effect.gen(function* () {
       // THE FAIL-OPEN, AND NOTHING PINNED IT. `removedMember` landed with

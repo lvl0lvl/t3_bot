@@ -4053,6 +4053,172 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       assert.strictEqual(postRows[0]?.mentions_json, '["boss1"]');
     }),
   );
+
+  it.effect("projects a member rename as the same row under its new handle", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const later = "2026-01-02T00:00:00.000Z";
+      const channelId = ChannelId.make("channel-rename");
+
+      const base = (eventId: string) => ({
+        eventId: EventId.make(eventId),
+        aggregateKind: "channel" as const,
+        aggregateId: channelId,
+        occurredAt: now,
+        commandId: CommandId.make(eventId),
+        causationEventId: null,
+        correlationId: CommandId.make(eventId),
+        metadata: {},
+      });
+
+      yield* eventStore.append({
+        ...base("evt-rename-created"),
+        type: "channel.created",
+        payload: {
+          channelId,
+          name: "renamers",
+          members: [
+            {
+              handle: ChannelMemberHandle.make("pm"),
+              memberKind: "thread" as const,
+              memberId: "thread-pm",
+            },
+            {
+              handle: ChannelMemberHandle.make("boss1"),
+              memberKind: "thread" as const,
+              memberId: "thread-boss1",
+            },
+          ],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      // A post by the member under its old handle, mentioned under it too: the
+      // rename must leave both as written. The log is the history; the post's
+      // authorRef is what identifies the author.
+      yield* eventStore.append({
+        ...base("evt-rename-post"),
+        type: "channel.post-created",
+        payload: {
+          channelId,
+          postId: ChannelPostId.make("post-before-rename"),
+          authorRef: { memberKind: "thread" as const, memberId: "thread-boss1" },
+          authorHandle: ChannelMemberHandle.make("boss1"),
+          body: "still me",
+          mentions: [ChannelMemberHandle.make("boss1")],
+          parentPostId: null,
+          createdAt: now,
+        },
+      });
+      yield* eventStore.append({
+        ...base("evt-rename"),
+        type: "channel.member-renamed",
+        payload: {
+          channelId,
+          from: ChannelMemberHandle.make("boss1"),
+          to: ChannelMemberHandle.make("boss-one"),
+          member: { memberKind: "thread" as const, memberId: "thread-boss1" },
+          updatedAt: later,
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const memberRows = yield* sql<{
+        readonly handle: string;
+        readonly member_kind: string;
+        readonly member_id: string;
+      }>`SELECT handle, member_kind, member_id FROM projection_channel_members WHERE channel_id = ${channelId} ORDER BY handle ASC`;
+      // The ref survives under the new handle and the old handle is gone: a
+      // projection that appended the renamed row without removing the old one
+      // leaves three rows; one that dropped the ref leaves the wrong member_id.
+      assert.deepStrictEqual(memberRows, [
+        { handle: "boss-one", member_kind: "thread", member_id: "thread-boss1" },
+        { handle: "pm", member_kind: "thread", member_id: "thread-pm" },
+      ]);
+
+      const postRows = yield* sql<{
+        readonly author_handle: string;
+        readonly mentions_json: string;
+      }>`SELECT author_handle, mentions_json FROM projection_channel_posts WHERE channel_id = ${channelId}`;
+      assert.deepStrictEqual(postRows, [{ author_handle: "boss1", mentions_json: '["boss1"]' }]);
+    }),
+  );
+
+  it.effect("projects a rename of a row stored non-canonical by its stored bytes", () =>
+    Effect.gen(function* () {
+      // A roster written before the canonicalisation rule holds `@pm`. The
+      // decider emits `from` as stored; a pipeline that folded `from` before
+      // matching would look for `pm`, rewrite the roster unchanged, and leave
+      // the ref under the handle nothing can mention.
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const channelId = ChannelId.make("channel-rename-legacy");
+
+      const base = (eventId: string) => ({
+        eventId: EventId.make(eventId),
+        aggregateKind: "channel" as const,
+        aggregateId: channelId,
+        occurredAt: now,
+        commandId: CommandId.make(eventId),
+        causationEventId: null,
+        correlationId: CommandId.make(eventId),
+        metadata: {},
+      });
+
+      yield* eventStore.append({
+        ...base("evt-rename-legacy-created"),
+        type: "channel.created",
+        payload: {
+          channelId,
+          name: "legacy",
+          members: [
+            {
+              handle: ChannelMemberHandle.make("@pm"),
+              memberKind: "thread" as const,
+              memberId: "thread-pm",
+            },
+            {
+              handle: ChannelMemberHandle.make("boss1"),
+              memberKind: "thread" as const,
+              memberId: "thread-boss1",
+            },
+          ],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      yield* eventStore.append({
+        ...base("evt-rename-legacy"),
+        type: "channel.member-renamed",
+        payload: {
+          channelId,
+          from: ChannelMemberHandle.make("@pm"),
+          to: ChannelMemberHandle.make("pm"),
+          member: { memberKind: "thread" as const, memberId: "thread-pm" },
+          updatedAt: "2026-01-02T00:00:00.000Z",
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const memberRows = yield* sql<{
+        readonly handle: string;
+        readonly member_kind: string;
+        readonly member_id: string;
+      }>`SELECT handle, member_kind, member_id FROM projection_channel_members WHERE channel_id = ${channelId} ORDER BY handle ASC`;
+      // The ref never leaves the roster and the stuck handle is gone.
+      assert.deepStrictEqual(memberRows, [
+        { handle: "boss1", member_kind: "thread", member_id: "thread-boss1" },
+        { handle: "pm", member_kind: "thread", member_id: "thread-pm" },
+      ]);
+    }),
+  );
 });
 
 it.layer(makeProjectionPipelinePrefixedTestLayer("t3-pending-turn-terminal-test-"))(

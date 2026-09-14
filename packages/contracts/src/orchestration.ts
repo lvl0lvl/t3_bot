@@ -1439,6 +1439,24 @@ const ChannelMemberRemoveCommand = Schema.Struct({
   handle: ChannelMemberHandle,
 });
 
+/**
+ * One member, one new handle, the ref unchanged. Without this a rename is
+ * `member.remove` then `member.add` (the other order collides on the ref since
+ * `t3_bot-1ez`), and between the two the member is on no roster: a post it
+ * writes is refused, a mention of it wakes nothing, and the removal event tells
+ * its connection it lost a channel it is about to rejoin (`t3_bot-uw9`).
+ *
+ * Keyed by handle on the `from` side for the same reason `member.remove` is:
+ * the handle is what an operator names and what the projector keys rows by.
+ */
+const ChannelMemberRenameCommand = Schema.Struct({
+  type: Schema.Literal("channel.member.rename"),
+  commandId: CommandId,
+  channelId: ChannelId,
+  from: ChannelMemberHandle,
+  to: ChannelMemberHandle,
+});
+
 const ChannelPostCreateCommand = Schema.Struct({
   type: Schema.Literal("channel.post.create"),
   commandId: CommandId,
@@ -1800,6 +1818,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ChannelUnarchiveCommand,
   ChannelMemberAddCommand,
   ChannelMemberRemoveCommand,
+  ChannelMemberRenameCommand,
   ChannelPostCreateCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
@@ -1814,15 +1833,16 @@ export type DispatchableClientOrchestrationCommand =
  * `requireIssuerCanAuthor` admits human and thread, `requireIssuerCanAdminister`
  * admits human and system — and this union respects that separation instead of
  * collapsing it. An RPC client is issued as `human`, which can do both, so the
- * six administrative channel commands (create, archive, unarchive, meta.update,
- * member.add, member.remove) staying off the wire is the only thing keeping a
- * browser session from being a channel administrator.
+ * seven administrative channel commands (create, archive, unarchive,
+ * meta.update, member.add, member.remove, member.rename) staying off the wire
+ * is the only thing keeping a browser session from being a channel
+ * administrator.
  *
- * The exclusion used to cover all seven, and it used to be the ONLY thing
- * preventing forged authorship, by accident: nothing recorded it was
+ * The exclusion used to cover every channel command, and it used to be the
+ * ONLY thing preventing forged authorship, by accident: nothing recorded it was
  * load-bearing, so adding a channel command here to "finish the integration"
  * would have opened it silently. `orchestration.test.ts` now asserts the
- * BOUNDARY rather than the absence — the six by name must not decode, and the
+ * BOUNDARY rather than the absence — the seven by name must not decode, and the
  * one must — so widening this is a failing test in either direction.
  */
 export const ClientOrchestrationCommand = Schema.Union([
@@ -2033,6 +2053,7 @@ export const OrchestrationEventType = Schema.Literals([
   "channel.unarchived",
   "channel.member-added",
   "channel.member-removed",
+  "channel.member-renamed",
   "channel.post-created",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
@@ -2173,6 +2194,27 @@ export const ChannelMemberRemovedPayload = Schema.Struct({
 });
 
 /**
+ * The ref is REQUIRED here where `ChannelMemberRemovedPayload` makes it
+ * optional: that optionality exists for rows written before the ref was
+ * carried, and no rename was ever written without one. A consumer that reads
+ * `member` off this event needs no `!== undefined` and no roster lookup.
+ *
+ * `from` is the handle AS STORED — a row written before the canonicalisation
+ * rule holds bytes that do not fold to themselves, and this event is how such a
+ * row is repaired — and `to` is canonical, stored from this sequence on. The
+ * member's posts are not rewritten: a post keeps the
+ * `authorHandle` it was written under, and its `authorRef` — this same ref —
+ * is what identifies the author.
+ */
+export const ChannelMemberRenamedPayload = Schema.Struct({
+  channelId: ChannelId,
+  from: ChannelMemberHandle,
+  to: ChannelMemberHandle,
+  member: ChannelMemberRefPayload,
+  updatedAt: IsoDateTime,
+});
+
+/**
  * Carries `mentions` and `authorHandle` on the event, not only the command:
  * the post->turn reactor decides from one event, and must never wake the
  * post's own author. Reading either from a projection would reintroduce a join.
@@ -2188,6 +2230,21 @@ export const ChannelPostCreatedPayload = Schema.Struct({
   // Tightening a persisted-event schema is only safe because no channel event
   // exists yet; after the first one this becomes a migration.
   mentions: ChannelMentions,
+  /**
+   * The seated members the mentions resolved to, one ref per member, in
+   * mention order. The wake reactor matches the channel's CURRENT roster by
+   * this and not by `mentions`: a `channel.member.rename` between the post and
+   * the reactor reading it keeps the ref seated and changes the handle, so a
+   * handle match wakes nobody for a post its target can still read. `mentions`
+   * stays — the client renders handles, and rows written before this field
+   * carry nothing else.
+   *
+   * OPTIONAL for the reason `ChannelMemberRemovedPayload.removedMember` is:
+   * events already in the log carry no refs and replay through here forever.
+   * Absent means "written before this landed", and the reactor matches those
+   * by handle as it always did.
+   */
+  mentionRefs: Schema.optional(Schema.Array(ChannelMemberRefPayload)),
   parentPostId: Schema.NullOr(ChannelPostId),
   createdAt: IsoDateTime,
 });
@@ -2678,6 +2735,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("channel.member-removed"),
     payload: ChannelMemberRemovedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("channel.member-renamed"),
+    payload: ChannelMemberRenamedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

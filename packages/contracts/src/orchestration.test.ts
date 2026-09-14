@@ -937,6 +937,56 @@ it.effect("decodes thread archived and unarchived events", () =>
   }),
 );
 
+it.effect("decodes channel.member-renamed only with the member's ref on it", () =>
+  Effect.gen(function* () {
+    const base = {
+      sequence: 7,
+      eventId: "event-rename-1",
+      aggregateKind: "channel",
+      aggregateId: "channel-1",
+      type: "channel.member-renamed",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      commandId: "cmd-rename-1",
+      causationEventId: null,
+      correlationId: "cmd-rename-1",
+      metadata: {},
+    };
+    const renamed = yield* decodeOrchestrationEvent({
+      ...base,
+      payload: {
+        channelId: "channel-1",
+        from: "boss1",
+        to: "boss-one",
+        member: { memberKind: "thread", memberId: "thread-boss1" },
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    if (renamed.type !== "channel.member-renamed") {
+      assert.fail(`Expected channel.member-renamed event, received ${renamed.type}.`);
+    }
+    assert.deepStrictEqual(renamed.payload.member, {
+      memberKind: "thread",
+      memberId: "thread-boss1",
+    });
+
+    // `member-removed` carries its ref optionally for rows written before the ref
+    // existed; no rename was ever written without one, so a payload missing it is
+    // not a historical shape — it is a malformed one.
+    const withoutRef = yield* Effect.exit(
+      decodeOrchestrationEvent({
+        ...base,
+        payload: {
+          channelId: "channel-1",
+          from: "boss1",
+          to: "boss-one",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      }),
+    );
+    assert.isTrue(Exit.isFailure(withoutRef), "a rename without the member's ref decoded");
+  }),
+);
+
 it.effect("decodes thread settled and unsettled events", () =>
   Effect.gen(function* () {
     const settled = yield* decodeOrchestrationEvent({
@@ -1680,6 +1730,35 @@ it.effect("the mention cap binds the post EVENT, not only the command", () =>
   }),
 );
 
+it.effect("a post event decodes with and without mentionRefs", () =>
+  Effect.gen(function* () {
+    // Rows written before the field carry none and replay forever; a required
+    // field would fail every one of them at the reactor. With it, the refs come
+    // through as written — a decoder that dropped the key would leave the
+    // reactor on the handle match for every post.
+    const decodePostCreated = Schema.decodeUnknownEffect(ChannelPostCreatedPayload);
+    const payload = {
+      channelId: "channel-1",
+      postId: "post-1",
+      authorRef: { memberKind: "thread", memberId: "thread-pm" },
+      authorHandle: "pm",
+      body: "what is 2+2",
+      mentions: ["boss1"],
+      parentPostId: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    const before = yield* decodePostCreated(payload);
+    assert.strictEqual(before.mentionRefs, undefined);
+
+    const after = yield* decodePostCreated({
+      ...payload,
+      mentionRefs: [{ memberKind: "thread", memberId: "thread-boss1" }],
+    });
+    assert.deepStrictEqual(after.mentionRefs, [{ memberKind: "thread", memberId: "thread-boss1" }]);
+  }),
+);
+
 it("isProviderSendTurnSupportedImageMimeType accepts raster formats and rejects svg", () => {
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("image/png"), true);
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("IMAGE/JPEG"), true);
@@ -1690,7 +1769,7 @@ it("isProviderSendTurnSupportedImageMimeType accepts raster formats and rejects 
  * The administrative channel commands, written out rather than derived as
  * "every channel command except the one".
  *
- * A derived list absorbs new members silently: add a seventh administrative
+ * A derived list absorbs new members silently: add an eighth administrative
  * command to `OrchestrationCommand` and a derived list would cover it without
  * anyone deciding that it should be covered. A written list does not — the set
  * assertion below goes red, and putting it right is an edit a reviewer sees in
@@ -1701,6 +1780,7 @@ const ADMINISTRATIVE_CHANNEL_COMMANDS = [
   "channel.create",
   "channel.member.add",
   "channel.member.remove",
+  "channel.member.rename",
   "channel.meta.update",
   "channel.unarchive",
 ] as const;
@@ -1714,7 +1794,7 @@ const ADMINISTRATIVE_CHANNEL_COMMANDS = [
  * to "finish the integration" would have opened the hole with every test green.
  *
  * `t3_bot-zuy` needs exactly one of them on the wire, so the assertion is the
- * line rather than the absence: `channel.post.create` MUST decode, and the six
+ * line rather than the absence: `channel.post.create` MUST decode, and the seven
  * administrative commands MUST NOT, by name. Both halves matter, for different
  * reasons. Without the first, the web composer silently stops working and the
  * failure reads as "the server did not understand that". Without the second,
@@ -1723,7 +1803,7 @@ const ADMINISTRATIVE_CHANNEL_COMMANDS = [
  * admits `human`.
  *
  * The admitting half is also what stops this test measuring its own payload. Its
- * predecessor sent ONE probe shape for all seven commands — `channel.create`'s
+ * predecessor sent ONE probe shape for every channel command — `channel.create`'s
  * shape — and `channel.post.create` cannot decode as that shape, so the test
  * recorded "did not decode" for a schema reason and would have passed with the
  * command on the wire. Measured, on the union that has it: the old probe does
@@ -1765,6 +1845,8 @@ it.effect("decodes channel.post.create from a client and nothing else channel-sh
           members: [],
           member: { handle: "walt", memberKind: "human", memberId: "human-walt" },
           handle: "walt",
+          from: "walt",
+          to: "walter",
           title: "Seniors",
           createdAt: "2026-01-01T00:00:00.000Z",
         }),

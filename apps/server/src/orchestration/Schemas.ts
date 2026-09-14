@@ -3,6 +3,7 @@ import {
   ChannelCreatedPayload as ContractsChannelCreatedPayloadSchema,
   ChannelMemberAddedPayload as ContractsChannelMemberAddedPayloadSchema,
   ChannelMemberRemovedPayload as ContractsChannelMemberRemovedPayloadSchema,
+  ChannelMemberRenamedPayload as ContractsChannelMemberRenamedPayloadSchema,
   ChannelMetaUpdatedPayload as ContractsChannelMetaUpdatedPayloadSchema,
   ChannelPostCreatedPayload as ContractsChannelPostCreatedPayloadSchema,
   ChannelUnarchivedPayload as ContractsChannelUnarchivedPayloadSchema,
@@ -44,6 +45,7 @@ export const ChannelArchivedPayload = ContractsChannelArchivedPayloadSchema;
 export const ChannelCreatedPayload = ContractsChannelCreatedPayloadSchema;
 export const ChannelMemberAddedPayload = ContractsChannelMemberAddedPayloadSchema;
 export const ChannelMemberRemovedPayload = ContractsChannelMemberRemovedPayloadSchema;
+export const ChannelMemberRenamedPayload = ContractsChannelMemberRenamedPayloadSchema;
 export const ChannelMetaUpdatedPayload = ContractsChannelMetaUpdatedPayloadSchema;
 export const ChannelPostCreatedPayload = ContractsChannelPostCreatedPayloadSchema;
 export const ChannelUnarchivedPayload = ContractsChannelUnarchivedPayloadSchema;

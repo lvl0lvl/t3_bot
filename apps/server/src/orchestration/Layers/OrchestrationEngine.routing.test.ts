@@ -113,14 +113,15 @@ const EXPECTED_AGGREGATE: Readonly<Record<string, OrchestrationAggregateKind>> =
   "channel.unarchive": "channel",
   "channel.member.add": "channel",
   "channel.member.remove": "channel",
+  "channel.member.rename": "channel",
   "channel.post.create": "channel",
 };
 
 /**
  * Channel commands that must appear in the executed comparison.
  *
- * Asserted by NAME rather than by count: "seven were compared" is satisfied by
- * any seven, and stops meaning these seven the moment an eighth lands or one of
+ * Asserted by NAME rather than by count: "eight were compared" is satisfied by
+ * any eight, and stops meaning these eight the moment a ninth lands or one of
  * these drops out and an unrelated command drops in.
  */
 const CHANNEL_COMMAND_TYPES = [
@@ -130,6 +131,7 @@ const CHANNEL_COMMAND_TYPES = [
   "channel.unarchive",
   "channel.member.add",
   "channel.member.remove",
+  "channel.member.rename",
   "channel.post.create",
 ] as const;
 
@@ -237,6 +239,12 @@ const PROBE_EXTRAS: Readonly<Record<string, Readonly<Record<string, unknown>>>> 
   },
   // The seeded handle, because removing one that is not a member is refused.
   "channel.member.remove": { handle: CHANNEL_HANDLE },
+  // From the seeded handle to one nobody holds: the same handle is refused, and
+  // so is one another member holds.
+  "channel.member.rename": {
+    from: CHANNEL_HANDLE,
+    to: ChannelMemberHandle.make("renamed-by-probe"),
+  },
   // The author must BE a member and every mention must resolve to one, so both
   // point at the seeded member rather than at anything invented here.
   "channel.post.create": {
@@ -350,7 +358,7 @@ const readModel = (): OrchestrationReadModel => ({
       session: null,
     },
   ] as unknown as OrchestrationReadModel["threads"],
-  // Seeded, not created by the probe. Six of the seven channel commands call
+  // Seeded, not created by the probe. Seven of the eight channel commands call
   // requireChannel first and are refused without it — and a refused command
   // emits no events, so it drops out of the executed comparison silently.
   // The member is here for the same reason: channel.post.create additionally
@@ -488,10 +496,10 @@ it.layer(NodeServices.layer)("router and decider agree", (it) => {
 
       // The channel commands are NOT in the dual-id hazard set — they carry
       // channelId alone — so the assertion above is silent about them and would
-      // pass with all seven skipped. Six of them call requireChannel first and
+      // pass with all eight skipped. Seven of them call requireChannel first and
       // emit nothing if the read model lacks the channel, which is precisely
-      // how they would drop out. Named rather than counted: "seven compared"
-      // is satisfied by any seven.
+      // how they would drop out. Named rather than counted: "eight compared"
+      // is satisfied by any eight.
       const uncoveredChannels = CHANNEL_COMMAND_TYPES.filter((type) => !compared.includes(type));
       expect(
         uncoveredChannels,
