@@ -266,7 +266,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           return {
             data: {
               id: sessionID,
-              ...(runtimeMock.state.revertMessageID
+              ...(runtimeMock.state.revertMessageID !== undefined
                 ? { revert: { messageID: runtimeMock.state.revertMessageID } }
                 : {}),
               ...(directory ? { directory } : {}),
@@ -6423,9 +6423,17 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         });
 
         // The non-string rows are what a broken server can send past the
-        // SDK's `string`; the id-less row needs a boundary present, or the
-        // raw boundary compare would end the snapshot before the gate.
-        const rows: ReadonlyArray<readonly [unknown, string, string | undefined]> = [
+        // SDK's `string`. Two id-less rows: one with NO revert boundary (the
+        // `t3_bot-us8` input — the reader once compared `entry.info.id` to
+        // `revert?.messageID` raw, and undefined === undefined ended the
+        // snapshot at that message before the gate: readThread returned the
+        // turns before it and rollbackThread(1) reverted from assistant-1 —
+        // one turn further back than asked, taking the id-less message with
+        // it — while reporting success), one with a boundary present that
+        // matches nothing (the compare stays raw and still yields to the
+        // gate). The last two rows send the same non-string value as both id
+        // and boundary: a boundary that is not a string is not compared.
+        const rows: ReadonlyArray<readonly [unknown, string, unknown]> = [
           ["", '""', undefined],
           [" ", '" "', undefined],
           [" ".repeat(1024 * 1024), `"${" ".repeat(64)}"… (1048576 chars)`, undefined],
@@ -6433,7 +6441,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           [42, "42", undefined],
           [{ a: 1 }, '{"a":1}', undefined],
           [{ a: "x".repeat(1024) }, `${'{"a":"'}${"x".repeat(58)}… (1032 chars)`, undefined],
+          [undefined, "undefined", undefined],
           [undefined, "undefined", "never-matches"],
+          [null, "null", null],
+          [42, "42", 42],
         ];
         for (const [refused, quoted, boundary] of rows) {
           runtimeMock.state.messages = [
@@ -6444,11 +6455,20 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
             },
             { info: { id: refused as string, role: "assistant" }, parts: [] },
           ];
-          runtimeMock.state.revertMessageID = boundary;
+          runtimeMock.state.revertMessageID = boundary as string | undefined;
           runtimeMock.state.revertCalls.length = 0;
 
           for (const read of [adapter.readThread(threadId), adapter.rollbackThread(threadId, 1)]) {
-            const error = yield* read.pipe(Effect.flip);
+            const error = yield* read.pipe(
+              Effect.flip,
+              Effect.catch((snapshot) =>
+                Effect.die(
+                  new Error(
+                    `${quoted}${boundary === undefined ? " with no boundary" : ` with boundary ${JSON.stringify(boundary)}`}: the read succeeded with ${snapshot.turns.length} turn(s)`,
+                  ),
+                ),
+              ),
+            );
             NodeAssert.equal(error._tag, "ProviderAdapterRequestError");
             if (error._tag !== "ProviderAdapterRequestError") {
               throw new Error("Unexpected error type");
@@ -6482,6 +6502,19 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
           ["assistant-1", "assistant-2"],
         );
+        // Nor is an id-less one: with no revert boundary it is skipped, not
+        // taken for the boundary (undefined === undefined) with the turns
+        // after it dropped from the snapshot. The 42 row, last in the table,
+        // left a boundary set; with one present this row proved nothing.
+        runtimeMock.state.revertMessageID = undefined;
+        runtimeMock.state.messages[0] = {
+          info: { id: undefined as unknown as string, role: "user" },
+          parts: [],
+        };
+        NodeAssert.deepEqual(
+          (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
+          ["assistant-1", "assistant-2"],
+        );
         // The revert boundary is compared raw and reached before the gate: a
         // refused id AT the boundary ends the read with the turns before it.
         runtimeMock.state.messages = [
@@ -6493,6 +6526,13 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           { info: { id: " ", role: "assistant" }, parts: [] },
         ];
         runtimeMock.state.revertMessageID = " ";
+        NodeAssert.deepEqual(
+          (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
+          ["assistant-1"],
+        );
+        // A present-but-empty boundary compares raw too: "" is a string.
+        runtimeMock.state.messages[2] = { info: { id: "", role: "assistant" }, parts: [] };
+        runtimeMock.state.revertMessageID = "";
         NodeAssert.deepEqual(
           (yield* adapter.readThread(threadId)).turns.map((turn) => turn.id),
           ["assistant-1"],
