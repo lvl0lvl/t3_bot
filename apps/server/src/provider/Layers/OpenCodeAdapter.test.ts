@@ -6582,18 +6582,25 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     // was dropped by the truthiness guard the gate replaced; "  " went
     // through `.make` as a row keyed by whitespace; null and 42 from a
     // broken server read `.slice` off themselves in the drop log and died
-    // in the event pump. All are refused now and the delta goes out with no
-    // item, logged once with a bounded preview. An admitted id is carried
-    // DECODED, so " prt_1 " arrives as "prt_1": the event store decodes
-    // persisted events on read, and a raw padded key would name one row
-    // live and another after replay.
+    // in the event pump. All are refused now and each event goes out with
+    // no item, logged per event with a bounded preview (a part that
+    // completes is two events, and its completion is item-less too). An
+    // admitted id is carried DECODED, so " prt_1 " arrives as "prt_1": the
+    // event store decodes persisted events on read, and a raw padded key
+    // would name one row live and another after replay.
     const dropLogs: Array<Record<string, unknown>> = [];
     const logger = Logger.make(({ message }) => {
       if (Array.isArray(message) && message[0] === "opencode.event.item_id_dropped") {
         dropLogs.push(message[1] as Record<string, unknown>);
       }
     });
-    const rows = [
+    const rows: ReadonlyArray<{
+      partId: unknown;
+      text: string;
+      itemId: string | undefined;
+      dropped: ReadonlyArray<string>;
+      end?: number;
+    }> = [
       { partId: "", text: "empty", itemId: undefined, dropped: ['""'] },
       { partId: "  ", text: "blank", itemId: undefined, dropped: ['"  "'] },
       { partId: "prt_1", text: "plain", itemId: "prt_1", dropped: [] },
@@ -6606,7 +6613,14 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         itemId: undefined,
         dropped: [`"${" ".repeat(64)}"… (100 chars)`],
       },
-    ] as const;
+      {
+        partId: "  ",
+        text: "blank-completing",
+        itemId: undefined,
+        dropped: ['"  "', '"  "'],
+        end: 2,
+      },
+    ];
     return Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
       for (const row of rows) {
@@ -6668,7 +6682,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
               messageID: `msg-item-gate-${row.text}`,
               type: "text",
               text: row.text,
-              time: { start: 1 },
+              time: row.end === undefined ? { start: 1 } : { start: 1, end: row.end },
             },
             time: 1,
           },
@@ -6695,6 +6709,11 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         const delta = events.find((event) => event.type === "content.delta");
         NodeAssert.ok(delta !== undefined, `${row.text}: the delta was emitted`);
         NodeAssert.equal(delta.itemId, row.itemId, `${row.text}: the item id carried`);
+        if (row.end !== undefined) {
+          const completed = events.find((event) => event.type === "item.completed");
+          NodeAssert.ok(completed !== undefined, `${row.text}: the completion was emitted`);
+          NodeAssert.equal(completed.itemId, row.itemId, `${row.text}: the completion's item id`);
+        }
         NodeAssert.deepEqual(
           dropLogs.map((entry) => entry.itemId),
           row.dropped,
