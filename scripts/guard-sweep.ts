@@ -72,8 +72,8 @@
  *    on an anchor the leftover mutation had already replaced; outside it, a file
  *    the tool never created holds the mutation after the run, which is what 3
  *    promises cannot happen. Unlike 1 and 6 this is per ROW (NOT RUN, exit 3),
- *    the way an untracked or moved file is: it is answered by the same
- *    `ls-files` the tracked gate already pays for, and the other rows are still
+ *    the way an untracked or moved file is: it is answered by one more
+ *    `ls-files` beside the tracked gate's, and the other rows are still
  *    measurable.
  *
  * ITS EXIT CODE IS A VERDICT: 0 all killed, 2 a survivor, 3 something NOT RUN,
