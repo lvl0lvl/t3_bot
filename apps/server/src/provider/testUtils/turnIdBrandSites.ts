@@ -1,9 +1,10 @@
 // The one definition of "a literal `TurnId.make(` call outside a comment-only
 // line", shared by the two source-reading pins (`OpenCodeAdapter.test.ts`,
-// `CodexSessionRuntime.ingestion.integration.test.ts`). The strip was revised
-// three times while it lived in both files (#53, #54, #56), each fix after the
-// first needing a second PR to reach the other copy; `OpenCodeAdapter.test.ts`
-// is also the file upstream edits most. This file has no upstream history.
+// `CodexSessionRuntime.ingestion.integration.test.ts`). The strip was
+// introduced in #53 (OpenCode), copied and fixed in #54 (Codex; the OpenCode
+// copy stayed on #53's form), and the fix carried to OpenCode in #56 — a second
+// PR for one fix; `OpenCodeAdapter.test.ts` is also the file upstream edits
+// most. This file has no upstream history.
 //
 // A line is a comment only when no code follows its `*/`: `/* note */ const x`
 // and a block closed as ` */ const x` both keep their code, so a call after
