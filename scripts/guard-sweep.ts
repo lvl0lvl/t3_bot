@@ -803,10 +803,14 @@ const linkRefusal = Effect.fn("guardSweep.linkRefusal")(function* (root: string,
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const info = yield* fs.stat(path.join(root, file)).pipe(Effect.result);
-  // No admitted config reaches this: the tracked gate and a clean porcelain put the
-  // file in the worktree. A file removed between that check and this stat is the
-  // read gate's class (an unreadable file is NOT RUN, not a crash), so it is left
-  // to the read gate, which names it.
+  // REACHED by a tracked file the stat cannot see: `--in-place` with the file under a
+  // mode-000 parent directory (porcelain prints nothing for it, `ls-files` answers
+  // from the index, the stat is EACCES), a `setupCommand` that `chmod 000`s that
+  // directory, or a tracked file the swept suite deletes during the baseline (`moved`
+  // is read once, before it). That is the read gate's class — an unreadable file is
+  // NOT RUN, not a crash — so it is left to the read gate, which names it. Returning
+  // a reason here would name the stat instead; unwrapping the result would be a
+  // `TypeError` at the pre-flight, exit 1, no report.
   if (info._tag === "Failure") {
     return undefined;
   }

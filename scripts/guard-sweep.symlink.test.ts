@@ -265,4 +265,35 @@ describe("a mutation file that is a symlink is not written through", () => {
       remove(root, elsewhere);
     }
   });
+
+  it("hands a tracked file its stat cannot see to the read gate, and measures the next row", () => {
+    const { root, elsewhere, config } = scaffold([
+      rowOn("under-locked-dir", "sub/deep.ts"),
+      rowOn("on-thing", "src/thing.ts"),
+    ]);
+    const sub = NodePath.join(root, "sub");
+    try {
+      // THE INPUT: a committed file under a directory the sweep cannot open. Porcelain prints
+      // nothing for it and `ls-files` answers from the index, so every gate before the link
+      // gate passes and its `stat` is EACCES — the one tracked-file shape whose stat fails.
+      NodeFS.mkdirSync(sub);
+      NodeFS.writeFileSync(NodePath.join(sub, "deep.ts"), "a\nif (guard) {\nb\n");
+      git(root, "add", "-A");
+      git(root, "commit", "--quiet", "-m", "deep");
+      NodeFS.chmodSync(sub, 0o000);
+      expect(git(root, "ls-files", "-s", "--", "sub/deep.ts").startsWith("100644 ")).toBe(true);
+
+      const done = runSweep(root, config, "--in-place");
+
+      // An unreadable file is NOT RUN with the read gate's reason — not the stat's, and not a
+      // `TypeError` at the pre-flight (exit 1, no report) if the stat's result were unwrapped.
+      expect(done.stdout).toContain("under-locked-dir: NOT RUN — could not read sub/deep.ts");
+      expect(done.stdout).toContain("on-thing: killed by 1");
+      expect(done.status).toBe(3);
+    } finally {
+      // Before `remove`: `rmSync` cannot enter a mode-000 directory, and the scratch repo leaks.
+      NodeFS.chmodSync(sub, 0o755);
+      remove(root, elsewhere);
+    }
+  });
 });
