@@ -891,14 +891,17 @@ export const make = (options?: StartupOptions) =>
         ),
       );
 
-      // BEFORE `reactors.start` (`t3_bot-gn4`). The seed carries an instance repair for a
-      // seeded thread, and a reactor draining its backlog can read the row first: an
-      // un-consumed post mentioning that thread wakes it against the unrepaired selection,
-      // the turn fails at the provider boundary, and MentionWakeReactor's cursor has already
-      // advanced past the post — consumed unanswered on the boot that was going to make
-      // answering possible. Nothing here waits on a reactor: the seeder dispatches and awaits
-      // no receipt, and the one reactor that keys on `thread.created` backfills every thread
-      // when it starts. The startup harness pins this order.
+      // BEFORE `reactors.start` (`t3_bot-gn4`), so the instance repair inside the seed has
+      // landed before any reactor can read the row — true by position, not by wiring: reactor
+      // roots fork parked behind `ServerActivation`, which the server activates after this
+      // phase in either order, and that ordering is pinned by no test (`t3_bot-g12`). Nothing
+      // here waits on a reactor: the seeder dispatches and awaits no receipt, and of the five
+      // event types it writes (`project.created`, `thread.created`, `thread.meta-updated`,
+      // `channel.created`, `channel.member-added`) the only reactor keys are `thread.created`
+      // in ThreadPullRequestReactor, which backfills every thread when it starts, and
+      // `thread.meta-updated` behind field gates (`regenerateTitle`, `branch`, `worktreePath`,
+      // `linkedPullRequest`) the repair's event does not carry. The startup harness pins this
+      // order.
       // AND BEFORE the bootstrap fork. `welcome.autobootstrap` is forked and also creates a
       // project for this cwd, so seeding alongside it would race another writer of the same
       // workspace root and one of the two would be refused by
