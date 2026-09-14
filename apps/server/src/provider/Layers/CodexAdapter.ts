@@ -15,6 +15,7 @@ import {
   ProviderDriverKind,
   type ProviderEvent,
   ProviderInstanceId,
+  type ProviderItemId,
   type ProviderRuntimeEvent,
   type ProviderRequestKind,
   type ThreadTokenUsageSnapshot,
@@ -954,8 +955,11 @@ function contentStreamKindFromMethod(
 // so it carries the DECODED value (`../runtimeItemId.ts`): at base a padded
 // " msg_1 " keyed one row live and another after replay. A value the gate
 // admitted is never refused here; the empty branch is the Option's shape, not
-// a second gate.
-function runtimeItemIdField(itemId: ProviderEvent["itemId"] & string): {
+// a second gate. The gate decodes `ProviderItemId`, this fold `RuntimeItemId`;
+// both are `makeEntityId` (`baseSchemas.ts`), so the empty branch is
+// unreachable only while the two refinements stay the same — if either brand
+// tightens (`makeOpaqueEntityId`), this branch must log.
+function decodedItemIdField(itemId: ProviderItemId): {
   readonly itemId?: RuntimeItemId;
 } {
   const decoded = decodeRuntimeItemId(itemId);
@@ -992,7 +996,7 @@ function runtimeEventBase(
     threadId: canonicalThreadId,
     createdAt: event.createdAt,
     ...(event.turnId ? { turnId: event.turnId } : {}),
-    ...(event.itemId ? runtimeItemIdField(event.itemId) : {}),
+    ...(event.itemId ? decodedItemIdField(event.itemId) : {}),
     ...(event.requestId ? { requestId: asRuntimeRequestId(event.requestId) } : {}),
     ...(refs ? { providerRefs: refs } : {}),
     raw: {
