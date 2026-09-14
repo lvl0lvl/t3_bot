@@ -2979,19 +2979,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     if (event.type === "content_block_stop") {
-      const { index } = event;
-      const assistantBlock = context.turnState?.assistantTextBlocks.get(index);
+      // A subagent's stop has nothing to close here: its tool entry completes
+      // on its tool_result or in the turn-end sweep, and assistantTextBlocks is
+      // keyed by bare index. The input that breaks the bare lookup: a
+      // backgrounded Task whose subagent stops its block 0 while the parent's
+      // text block 0 is still open — the lookup below would complete the
+      // parent's text and the parent's next delta would open a second item.
+      if (message.parent_tool_use_id !== null && message.parent_tool_use_id !== undefined) {
+        return;
+      }
+      const assistantBlock = context.turnState?.assistantTextBlocks.get(event.index);
       if (assistantBlock) {
         assistantBlock.streamClosed = true;
         yield* completeAssistantTextBlock(context, assistantBlock, {
           rawMethod: "claude/stream_event/content_block_stop",
           rawPayload: message,
         });
-        return;
-      }
-      const tool = context.inFlightTools.get(inFlightToolKey(message, index));
-      if (!tool) {
-        return;
       }
     }
   });
