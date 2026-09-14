@@ -734,6 +734,43 @@ const capture = Effect.fn("guardSweep.capture")(function* (
 }, Effect.scoped);
 
 /**
+ * Why a tracked `file` cannot be mutated in place, or undefined when it can.
+ *
+ * Two tests, both about where a write LANDS. `git ls-files -s` prints the index
+ * mode, and `120000` is a symlink: `readFileString`/`writeFileString` follow the
+ * link, so the mutation lands in the TARGET, and `git checkout -- <file>` returns
+ * the LINK to HEAD — unchanged — leaving every later row measured on the mutated
+ * target. Executed on the two-row fixture in `guard-sweep.symlink.test.ts`: both
+ * rows killed, exit 0, the second credited "the guard is present" for a red the
+ * first row's leftover mutation caused — a confirmed false kill at the exit that
+ * gates a merge. And `realPath` compared with the root's: a link (or a path
+ * through a linked directory) whose target lies outside the tree would put the
+ * write in a file this tool never created and never restores, which refusal 3
+ * in the header promises cannot happen. `path.resolve` in the containment check
+ * above cannot see either — it resolves `..`, not links.
+ */
+const linkRefusal = Effect.fn("guardSweep.linkRefusal")(function* (root: string, file: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const entry = yield* capture(["git", "ls-files", "-s", "--", file], root);
+  if (entry.stdout.startsWith("120000 ")) {
+    return (
+      `${file} is a symlink in the index — a write would land in its target, and ` +
+      "`git checkout --` would restore only the link"
+    );
+  }
+  const real = yield* fs.realPath(path.join(root, file)).pipe(Effect.result);
+  if (real._tag === "Failure") {
+    return undefined;
+  }
+  const inside = yield* fs.realPath(root);
+  if (real.success !== inside && !real.success.startsWith(inside + path.sep)) {
+    return `${file} resolves to ${real.success}, outside the swept tree`;
+  }
+  return undefined;
+});
+
+/**
  * For a command whose failure means there is no measurement to report.
  *
  * `git status` deciding whether the tree is dirty, `git checkout` putting a
@@ -877,6 +914,12 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
     if (tracked.exitCode !== 0) {
       continue;
     }
+    // AND NOT A LINK, the row loop's fourth gate: reading through one here would judge the
+    // anchor against the target's text and pass a row the sweep must not write. Skipped,
+    // not refused, for the same reason as the two gates above.
+    if ((yield* linkRefusal(root, mutation.file)) !== undefined) {
+      continue;
+    }
     const read = yield* fs.readFileString(target).pipe(Effect.result);
     if (read._tag === "Success") {
       sources.set(mutation.file, read.success);
@@ -967,6 +1010,15 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
         `${mutation.id}: NOT RUN — git does not track ${mutation.file} — the path may be ` +
           "misspelled, or the file may be gitignored — so it could not be restored",
       );
+      continue;
+    }
+    // WHERE THE WRITE WOULD LAND, before anything is read through the path. A tracked
+    // symlink passes every gate above — porcelain is clean, git tracks the link — and
+    // the write goes to its target while the restore returns the link (`linkRefusal`).
+    const link = yield* linkRefusal(root, mutation.file);
+    if (link !== undefined) {
+      swept.push({ mutation, verdict: { _tag: "not-run", reason: link } });
+      yield* Console.log(`${mutation.id}: NOT RUN — ${link}`);
       continue;
     }
     // A STALE PATH IS THE SAME CLASS AS A STALE ANCHOR, so it gets the same
