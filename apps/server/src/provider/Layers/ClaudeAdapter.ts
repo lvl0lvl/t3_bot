@@ -553,7 +553,10 @@ function formatClaudeUsageLimitWait(waitMs: number): string {
 // through `.make` raw, so ingestion's in-memory caches keyed by whitespace
 // while every persisted identity was trimmed, and "" threw inside `.make` in
 // the event pump and hung the turn. A refused id is dropped with a debug log;
-// the tool's lifecycle then goes out item-less.
+// the tool's lifecycle then goes out item-less. The assistant-text sites
+// (`content.delta`, `item.completed`) pass a block id T3 mints
+// (`randomUUIDv4`, `ensureAssistantTextBlock`) that the decoder cannot refuse;
+// they take the door for uniformity.
 const claudeItemIdField = (context: ClaudeSessionContext, itemId: string) =>
   runtimeItemIdField({
     logKey: "claude.event.item_id_dropped",
@@ -2755,9 +2758,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           threadId: context.session.threadId,
           turnId: context.turnState.turnId,
           ...(assistantBlockEntry?.block
-            ? {
-                ...(yield* claudeItemIdField(context, assistantBlockEntry.block.itemId)),
-              }
+            ? yield* claudeItemIdField(context, assistantBlockEntry.block.itemId)
             : {}),
           payload: {
             streamKind,
