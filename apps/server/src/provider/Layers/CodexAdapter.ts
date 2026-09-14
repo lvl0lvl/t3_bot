@@ -15,6 +15,7 @@ import {
   ProviderDriverKind,
   type ProviderEvent,
   ProviderInstanceId,
+  type ProviderItemId,
   type ProviderRuntimeEvent,
   type ProviderRequestKind,
   type ThreadTokenUsageSnapshot,
@@ -37,6 +38,7 @@ import * as Crypto from "effect/Crypto";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -58,6 +60,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
+import { decodeRuntimeItemId } from "../runtimeItemId.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
@@ -945,8 +948,23 @@ function contentStreamKindFromMethod(
   }
 }
 
-function asRuntimeItemId(itemId: ProviderEvent["itemId"] & string): RuntimeItemId {
-  return RuntimeItemId.make(itemId);
+// `event.itemId` passed the session runtime's decoder gate (`readRouteFields`
+// via `refusedIds`) and was branded raw, so `providerRefs.providerItemId`
+// below still echoes the app-server's own string. The runtime event's `itemId`
+// keys a timeline row that ingestion persists and the store decodes on append
+// and on read, so it carries the DECODED value (`../runtimeItemId.ts`): at
+// base a padded " msg_1 " keyed ingestion's in-memory caches by whitespace
+// while every persisted identity was trimmed. A value the gate
+// admitted is never refused here; the empty branch is the Option's shape, not
+// a second gate. The gate decodes `ProviderItemId`, this fold `RuntimeItemId`;
+// both are `makeEntityId` (`baseSchemas.ts`), so the empty branch is
+// unreachable only while the two refinements stay the same — if either brand
+// tightens (`makeOpaqueEntityId`), this branch must log.
+function decodedItemIdField(itemId: ProviderItemId): {
+  readonly itemId?: RuntimeItemId;
+} {
+  const decoded = decodeRuntimeItemId(itemId);
+  return Option.isSome(decoded) ? { itemId: decoded.value } : {};
 }
 
 function asRuntimeRequestId(requestId: string): RuntimeRequestId {
@@ -979,7 +997,7 @@ function runtimeEventBase(
     threadId: canonicalThreadId,
     createdAt: event.createdAt,
     ...(event.turnId ? { turnId: event.turnId } : {}),
-    ...(event.itemId ? { itemId: asRuntimeItemId(event.itemId) } : {}),
+    ...(event.itemId ? decodedItemIdField(event.itemId) : {}),
     ...(event.requestId ? { requestId: asRuntimeRequestId(event.requestId) } : {}),
     ...(refs ? { providerRefs: refs } : {}),
     raw: {
