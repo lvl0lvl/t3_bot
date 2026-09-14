@@ -12,8 +12,10 @@
 // reds and the comment is reworded, not listed. What is NOT seen: a cast
 // `as TurnId`, a longer identifier ending in `TurnId` (`FooTurnId.make(`), an
 // aliased or destructured `make`, a `.call`/`.apply`/`.bind` on it, a bracket
-// access, and a same-string call moved to another site (the pin sees which
-// strings, in what order, not which line).
+// access, a call with whitespace around the `.` or before the `(`
+// (`TurnId .make(`, `.make` on the next line — `vp fmt` closes those), and a
+// same-string call moved to another site (the pin sees which strings, in what
+// order, not which line).
 const COMMENT_ONLY_LINE = /^\s*(?:\/\/|(?!.*\*\/[ \t]*\S)(?:\/\*|\*)).*$/gm;
 const TURN_ID_MAKE_CALL = /\bTurnId[?!]?\.make\([^)]*\)/g;
 
