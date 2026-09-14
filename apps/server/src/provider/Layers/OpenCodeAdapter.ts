@@ -546,7 +546,7 @@ type EventBaseInput = {
   readonly threadId: ThreadId;
   readonly turnId?: TurnId | undefined;
   readonly itemId?: unknown;
-  readonly requestId?: string | undefined;
+  readonly requestId?: unknown;
   readonly createdAt?: string | undefined;
   readonly raw?: unknown;
 };
@@ -1095,7 +1095,12 @@ export function makeOpenCodeAdapter(
           // Carried raw by decision: the provider must get its own string
           // back (#49), so a padded request id stays padded here and in the
           // reply; `.make` admitting whitespace is accepted (`t3_bot-1n6`).
-          ...(input.requestId ? { requestId: RuntimeRequestId.make(input.requestId) } : {}),
+          // `.make` cannot throw on a non-empty string; a null or a number
+          // from a broken server would throw inside it, so it is not
+          // narrowed in and the request opens without an id.
+          ...(typeof input.requestId === "string" && input.requestId.length > 0
+            ? { requestId: RuntimeRequestId.make(input.requestId) }
+            : {}),
           ...(input.raw !== undefined
             ? {
                 raw: {
