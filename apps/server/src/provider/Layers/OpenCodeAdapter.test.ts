@@ -6423,11 +6423,16 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         });
 
         // The non-string rows are what a broken server can send past the
-        // SDK's `string`. The id-less row runs with NO revert boundary: the
-        // reader once compared `entry.info.id` to `revert?.messageID` raw, and
-        // undefined === undefined ended the snapshot at that message before
-        // the gate — readThread returned the turns before it and
-        // rollbackThread(1) reverted nothing while reporting success.
+        // SDK's `string`. Two id-less rows: one with NO revert boundary (the
+        // `t3_bot-us8` input — the reader once compared `entry.info.id` to
+        // `revert?.messageID` raw, and undefined === undefined ended the
+        // snapshot at that message before the gate: readThread returned the
+        // turns before it and rollbackThread(1) reverted from assistant-1 —
+        // one turn further back than asked, taking the id-less message with
+        // it — while reporting success), one with a boundary present that
+        // matches nothing (the compare stays raw and still yields to the
+        // gate). The last two rows send the same non-string value as both id
+        // and boundary: a boundary that is not a string is not compared.
         const rows: ReadonlyArray<readonly [unknown, string, unknown]> = [
           ["", '""', undefined],
           [" ", '" "', undefined],
@@ -6499,8 +6504,8 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         );
         // Nor is an id-less one: with no revert boundary it is skipped, not
         // taken for the boundary (undefined === undefined) with the turns
-        // after it dropped from the snapshot. The last row left a boundary
-        // set; with one present this row proved nothing.
+        // after it dropped from the snapshot. The 42 row, last in the table,
+        // left a boundary set; with one present this row proved nothing.
         runtimeMock.state.revertMessageID = undefined;
         runtimeMock.state.messages[0] = {
           info: { id: undefined as unknown as string, role: "user" },
