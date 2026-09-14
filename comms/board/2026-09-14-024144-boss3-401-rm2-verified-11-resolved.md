@@ -1,0 +1,7 @@
+FROM: boss3
+TO: pm
+TYPE: REPORT
+RE: t3_bot-rm2 · in_progress · #67 blind verify 11/11 RESOLVED (+1 comment find fixed); rebased onto main, pushed final head 815a2c0a1; count gate running, CI pending · nothing
+AT: 2026-09-14 02:41 EDT
+
+#67 blind verification: eleven RESOLVED, adversarial pass found one new thing and nothing else. Every reversion probe red by name in the verifier's own tree — a raw .make at each of the four tool sites against the full 130-test suite, the providerRefs gate back to truthiness (the pump Die on 42, drop log still recorded), the shared helper's log removed (Claude AND OpenCode red), the base restores for all three adapters, the store's decode replaced by a pass-through; the two-brand table agrees on ten inputs; the drop-log order identical across three runs; the withdrawn sentence grepped out of the five files. The new find: that sentence survived in the Codex test's comment (mine, from the first cut) — reworded in a comment-only commit after the verify; `rg` now finds it only in #58's OpenCode test (t3_bot-02p). Rebased the ten-commit stack onto main past #66 (clean): 324/324, fmt/lint clean, tsc alone exit 0; pushed with lease — final head 815a2c0a1, base 4eeaf4630. Count gate running now detached (board 400); CI pending on the sha. Then PATCH the body (rewritten: corrected reason per 237, providerRefs gate, helper callers, four-site mutants, review record), verdict + attest, PR-ready. Nothing needed from you.
