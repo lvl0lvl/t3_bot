@@ -2020,6 +2020,76 @@ describe("CheckpointReactor", () => {
     }),
   );
 
+  effectIt.effect("says only what failed when nothing was rolled back", () =>
+    Effect.gen(function* () {
+      // A same-turn revert rolls nothing back; the restore still fails
+      // (`.git/index.lock` held). The activity carries the git failure and
+      // no rolled-back clause.
+      const harness = yield* Effect.promise(() => createHarness());
+      const threadId = ThreadId.make("thread-1");
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-same-turn"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "opencode",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      });
+      for (const turnCount of [1, 2]) {
+        yield* harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-same-turn-diff-${turnCount}`),
+          threadId,
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        });
+      }
+      NodeFS.writeFileSync(NodePath.join(harness.cwd, ".git", "index.lock"), "");
+
+      yield* harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-same-turn-revert"),
+        threadId,
+        turnCount: 2,
+        createdAt,
+      });
+      yield* Effect.promise(() =>
+        waitForThread(harness.readModel, (entry) =>
+          entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+        ),
+      );
+      yield* Effect.promise(() => harness.drain());
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
+
+      expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+      const events = Array.from(yield* Stream.runCollect(harness.engine.readEvents(0)));
+      expect(events.some((event) => event.type === "thread.reverted")).toBe(false);
+      const failures = thread.activities.filter(
+        (activity) => activity.kind === "checkpoint.revert.failed",
+      );
+      expect(failures).toHaveLength(1);
+      const detail = (failures[0]!.payload as { detail: string }).detail;
+      expect(detail).toMatch(/^VCS process failed in GitVcsDriver.checkpoints.restoreCheckpoint: /);
+      expect(detail).not.toContain("rolled back");
+      expect(detail.endsWith(".")).toBe(true);
+    }),
+  );
+
   it("executes provider revert and emits thread.reverted for claude sessions", async () => {
     const harness = await createHarness({ providerName: ProviderDriverKind.make("claudeAgent") });
     const createdAt = "2026-01-01T00:00:00.000Z";
