@@ -736,36 +736,30 @@ const capture = Effect.fn("guardSweep.capture")(function* (
 /**
  * Why a tracked `file` cannot be mutated in place, or undefined when it can.
  *
- * Two tests, both about where a write LANDS. `git ls-files -s` prints the index
- * mode, and `120000` is a symlink: `readFileString`/`writeFileString` follow the
- * link, so the mutation lands in the TARGET, and `git checkout -- <file>` returns
- * the LINK to HEAD — unchanged — leaving every later row measured on the mutated
- * target. Executed on the two-row fixture in `guard-sweep.symlink.test.ts`: both
- * rows killed, exit 0, the second credited "the guard is present" for a red the
- * first row's leftover mutation caused — a confirmed false kill at the exit that
- * gates a merge. And `realPath` compared with the root's: a link (or a path
- * through a linked directory) whose target lies outside the tree would put the
- * write in a file this tool never created and never restores, which refusal 3
- * in the header promises cannot happen. `path.resolve` in the containment check
- * above cannot see either — it resolves `..`, not links.
+ * One test, about where a write LANDS. `git ls-files -s` prints the index mode,
+ * and `120000` is a symlink: `readFileString`/`writeFileString` follow the link,
+ * so the mutation lands in the TARGET, and `git checkout -- <file>` returns the
+ * LINK to HEAD — unchanged — leaving every later row measured on the mutated
+ * target. Executed with the unfixed tool on the two-row fixture in
+ * `guard-sweep.symlink.test.ts` (`src/link.ts -> thing.ts`, then `src/thing.ts`):
+ * the link row was credited `killed by 1` for a mutation that landed in
+ * `thing.ts`, and the target row went `NOT RUN — anchor not found` because that
+ * mutation was still there when it was read — exit 3, a false kill beside an
+ * unmeasured row. With an absolute-target link the write landed in a file
+ * OUTSIDE the tree, which refusal 3 in the header promises cannot happen. The
+ * tracked and contained gates before this one cannot see either: git tracks the
+ * link, and `path.resolve` resolves `..`, not links. A path THROUGH a linked
+ * directory never reaches this gate, because git does not index such a path
+ * (`git add` refuses it as "beyond a symbolic link") — the tracked gate refuses
+ * it first, measured.
  */
 const linkRefusal = Effect.fn("guardSweep.linkRefusal")(function* (root: string, file: string) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const entry = yield* capture(["git", "ls-files", "-s", "--", file], root);
   if (entry.stdout.startsWith("120000 ")) {
     return (
       `${file} is a symlink in the index — a write would land in its target, and ` +
       "`git checkout --` would restore only the link"
     );
-  }
-  const real = yield* fs.realPath(path.join(root, file)).pipe(Effect.result);
-  if (real._tag === "Failure") {
-    return undefined;
-  }
-  const inside = yield* fs.realPath(root);
-  if (real.success !== inside && !real.success.startsWith(inside + path.sep)) {
-    return `${file} resolves to ${real.success}, outside the swept tree`;
   }
   return undefined;
 });
