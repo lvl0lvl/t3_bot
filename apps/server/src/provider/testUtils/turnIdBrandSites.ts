@@ -17,6 +17,11 @@
 const COMMENT_ONLY_LINE = /^\s*(?:\/\/|(?!.*\*\/[ \t]*\S)(?:\/\*|\*)).*$/gm;
 const TURN_ID_MAKE_CALL = /\bTurnId[?!]?\.make\([^)]*\)/g;
 
-/** The literal `TurnId.make(…)` (or `TurnId?.make`, `TurnId!.make`) calls in `source`, in order, comment-only lines removed. */
+/**
+ * The literal `TurnId.make(…)` (or `TurnId?.make`, `TurnId!.make`) calls in `source`, in order,
+ * comment-only lines removed; each element runs from `TurnId` to the first `)`, so a call whose
+ * argument nests parentheses is counted but listed as that prefix (`TurnId.make(String(x))` →
+ * `TurnId.make(String(x)`).
+ */
 export const turnIdBrandSites = (source: string): ReadonlyArray<string> =>
   source.replace(COMMENT_ONLY_LINE, "").match(TURN_ID_MAKE_CALL) ?? [];

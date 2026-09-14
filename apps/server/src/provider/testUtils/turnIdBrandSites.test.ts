@@ -89,6 +89,11 @@ describe("turnIdBrandSites", () => {
       "const g = (turn: { id: string }) =>\n  TurnId.make(\n    turn.id,\n  );\n",
       ["TurnId.make(\n    turn.id,\n  )"],
     ],
+    [
+      "a call whose argument nests parentheses",
+      "const g = (turn: { id: string }) => TurnId.make(String(turn.id));\n",
+      ["TurnId.make(String(turn.id)"],
+    ],
   ];
 
   for (const [name, inserted, extra] of rows) {
