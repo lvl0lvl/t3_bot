@@ -30,11 +30,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
-import * as Scope from "effect/Scope";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { describe, expect, it } from "vite-plus/test";
+import { assert, it } from "@effect/vitest";
+import { describe } from "vite-plus/test";
 
 import { makeSqlitePersistenceLive } from "../../persistence/Layers/Sqlite.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -49,6 +49,7 @@ import {
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
+import * as ProjectionSnapshotQuery from "../Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
@@ -57,30 +58,6 @@ import { MentionWakeBudgetRepositoryLive } from "../../persistence/Layers/Mentio
 import { MentionWakeReactor, MENTION_WAKE_CURSOR } from "../Services/MentionWakeReactor.ts";
 import { MentionWakeReactorLive } from "./MentionWakeReactor.ts";
 import * as HierarchySeeder from "../HierarchySeeder.ts";
-
-const scratchRuntime = ManagedRuntime.make(NodeServices.layer);
-
-const makeScratch = () =>
-  scratchRuntime.runPromise(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const directory = yield* fs.makeTempDirectory({ prefix: "t3-mention-wake-seed-" });
-      return {
-        directory,
-        databasePath: path.join(directory, "state.sqlite"),
-        workspaceRoot: path.join(directory, "repo"),
-      };
-    }),
-  );
-
-const removeDirectory = (directory: string) =>
-  scratchRuntime.runPromise(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      yield* fs.remove(directory, { recursive: true });
-    }).pipe(Effect.ignore),
-  );
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const SHIPPED_BAD = "claude";
@@ -145,33 +122,48 @@ const makeLayer = (
     Layer.provideMerge(NodeServices.layer),
   );
 
-const makeSystem = async (databasePath: string) => {
-  const recorder = recordingEngine();
-  const runtime = ManagedRuntime.make(makeLayer(databasePath, recorder.layer));
-  const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
-  const reactor = await runtime.runPromise(Effect.service(MentionWakeReactor));
-  const cursors = await runtime.runPromise(Effect.service(ProjectionStateRepository));
-  const events = await runtime.runPromise(Effect.service(OrchestrationEventStore));
-  const scope = await runtime.runPromise(Scope.make());
-  return {
-    engine,
-    reactor,
-    cursors,
-    events,
-    wakes: recorder.wakes,
-    run: runtime.runPromise,
-    startReactor: () =>
-      runtime.runPromise(Scope.provide(reactor.start(), scope) as Effect.Effect<void>),
-    drain: () =>
-      runtime.runPromise(engine.latestSequence.pipe(Effect.flatMap(reactor.drainThrough))),
-    dispose: async () => {
-      await runtime.runPromise(Scope.close(scope, Effect.void as never));
-      await runtime.dispose();
-    },
-  };
-};
+/**
+ * One boot: the system layer built over `databasePath`, the body run inside it, and the
+ * layer's scope — the reactor's worker fiber and the sqlite handle — closed when the body
+ * returns. Three of these over one database is the restart the test is about, and each is
+ * a plain scoped `Effect.provide`, so the file needs no runtime of its own.
+ */
+const boot = <A, E>(
+  databasePath: string,
+  body: (system: System) => Effect.Effect<A, E, Scope.Scope | SeederNeeds>,
+) =>
+  Effect.gen(function* () {
+    const recorder = recordingEngine();
+    return yield* Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const reactor = yield* MentionWakeReactor;
+      const cursors = yield* ProjectionStateRepository;
+      const events = yield* OrchestrationEventStore;
+      const system: System = {
+        engine,
+        reactor,
+        cursors,
+        events,
+        wakes: recorder.wakes,
+        startReactor: reactor.start(),
+        drain: engine.latestSequence.pipe(Effect.flatMap(reactor.drainThrough)),
+      };
+      return yield* body(system);
+    }).pipe(Effect.provide(makeLayer(databasePath, recorder.layer)), Effect.scoped);
+  });
 
-type System = Awaited<ReturnType<typeof makeSystem>>;
+/** The seeder reads the projection and dispatches through the engine; the layer supplies both. */
+type SeederNeeds = OrchestrationEngineService | ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+
+interface System {
+  readonly engine: OrchestrationEngineShape;
+  readonly reactor: MentionWakeReactor["Service"];
+  readonly cursors: ProjectionStateRepository["Service"];
+  readonly events: OrchestrationEventStore["Service"];
+  readonly wakes: Array<{ readonly threadId: string; readonly instanceIdAtDispatch: string }>;
+  readonly startReactor: Effect.Effect<void, never, Scope.Scope>;
+  readonly drain: Effect.Effect<void>;
+}
 
 /**
  * BOOT ONE, ON THE OLD SEEDER: the seeder's own command ids and the instance it
@@ -179,140 +171,154 @@ type System = Awaited<ReturnType<typeof makeSystem>>;
  * repair does anything. Mirrors `OrchestrationEngine.test.ts`'s repair fixture, plus
  * the #project channel the old seeder also created, so the post has somewhere to land.
  */
-const oldSeederFixture = async (system: System, workspaceRoot: string) => {
-  const dispatch = (command: OrchestrationCommand) =>
-    system.run(system.engine.dispatch(command, { issuer: SEED_ISSUER }));
-  await dispatch({
-    type: "project.create",
-    commandId: CommandId.make("seed-project"),
-    projectId: SEED_PROJECT_ID,
-    title: "t3_bot",
-    workspaceRoot,
-    createdAt: NOW,
-  } as never);
-  for (const thread of SEEDED_THREADS) {
-    await dispatch({
-      type: "thread.create",
-      commandId: CommandId.make(`seed-thread-${thread.handle}`),
-      threadId: thread.id,
+const oldSeederFixture = (system: System, workspaceRoot: string) =>
+  Effect.gen(function* () {
+    const dispatch = (command: OrchestrationCommand) =>
+      system.engine.dispatch(command, { issuer: SEED_ISSUER });
+    yield* dispatch({
+      type: "project.create",
+      commandId: CommandId.make("seed-project"),
       projectId: SEED_PROJECT_ID,
-      title: thread.title,
-      modelSelection: { instanceId: ProviderInstanceId.make(SHIPPED_BAD), model: "claude-opus-5" },
-      runtimeMode: "auto",
-      interactionMode: "default",
-      branch: null,
-      worktreePath: null,
+      title: "t3_bot",
+      workspaceRoot,
       createdAt: NOW,
     } as never);
-  }
-  await dispatch({
-    type: "channel.create",
-    commandId: CommandId.make("seed-channel-project"),
-    channelId: PROJECT_CHANNEL,
-    name: "project",
-    members: [
-      {
-        handle: ChannelMemberHandle.make("walt"),
-        memberKind: "human",
-        memberId: HUMAN_OPERATOR_MEMBER_ID,
-      },
-      { handle: ChannelMemberHandle.make("pm"), memberKind: "thread", memberId: PM.id },
-    ],
-    createdAt: NOW,
-  } as never);
-};
+    for (const thread of SEEDED_THREADS) {
+      yield* dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`seed-thread-${thread.handle}`),
+        threadId: thread.id,
+        projectId: SEED_PROJECT_ID,
+        title: thread.title,
+        modelSelection: {
+          instanceId: ProviderInstanceId.make(SHIPPED_BAD),
+          model: "claude-opus-5",
+        },
+        runtimeMode: "auto",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt: NOW,
+      } as never);
+    }
+    yield* dispatch({
+      type: "channel.create",
+      commandId: CommandId.make("seed-channel-project"),
+      channelId: PROJECT_CHANNEL,
+      name: "project",
+      members: [
+        {
+          handle: ChannelMemberHandle.make("walt"),
+          memberKind: "human",
+          memberId: HUMAN_OPERATOR_MEMBER_ID,
+        },
+        { handle: ChannelMemberHandle.make("pm"), memberKind: "thread", memberId: PM.id },
+      ],
+      createdAt: NOW,
+    } as never);
+  });
 
 /** The un-consumed post: a human mentions @pm while no reactor is listening. */
 const postMentioningPm = (system: System) =>
-  system.run(
-    system.engine.dispatch(
-      {
-        type: "channel.post.create",
-        commandId: CommandId.make("cmd-post-1"),
-        channelId: PROJECT_CHANNEL,
-        postId: ChannelPostId.make("post-1"),
-        body: "what is 2+2",
-        mentions: [ChannelMemberHandle.make("pm")],
-        parentPostId: null,
-        createdAt: NOW,
-      },
-      { issuer: WALT },
-    ),
+  system.engine.dispatch(
+    {
+      type: "channel.post.create",
+      commandId: CommandId.make("cmd-post-1"),
+      channelId: PROJECT_CHANNEL,
+      postId: ChannelPostId.make("post-1"),
+      body: "what is 2+2",
+      mentions: [ChannelMemberHandle.make("pm")],
+      parentPostId: null,
+      createdAt: NOW,
+    },
+    { issuer: WALT },
   );
 
-const seed = (system: System, workspaceRoot: string) =>
-  system.run(HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: NOW }).pipe(Effect.orDie));
+const seed = (workspaceRoot: string) =>
+  HierarchySeeder.seedHierarchy({ workspaceRoot, createdAt: NOW }).pipe(Effect.orDie);
 
-const sequences = async (system: System) => {
-  const all = await system.run(
-    system.events
+const sequences = (system: System) =>
+  Effect.gen(function* () {
+    const all = yield* system.events
       .readFromSequence(0, Number.MAX_SAFE_INTEGER)
-      .pipe(Stream.runCollect, Effect.orDie),
-  );
-  const seqOf = (predicate: (event: (typeof all)[number]) => boolean) => {
-    const found = [...all].find(predicate);
-    return found?.sequence ?? -1;
-  };
-  return {
-    turnStartRequested: seqOf(
-      (e) =>
-        e.type === "thread.turn-start-requested" && String(e.payload.threadId) === String(PM.id),
-    ),
-    metaUpdated: seqOf(
-      (e) => e.type === "thread.meta-updated" && String(e.payload.threadId) === String(PM.id),
-    ),
-    postCreated: seqOf((e) => e.type === "channel.post-created"),
-  };
-};
+      .pipe(Stream.runCollect, Effect.orDie);
+    const seqOf = (predicate: (event: (typeof all)[number]) => boolean) => {
+      const found = [...all].find(predicate);
+      return found?.sequence ?? -1;
+    };
+    return {
+      turnStartRequested: seqOf(
+        (e) =>
+          e.type === "thread.turn-start-requested" && String(e.payload.threadId) === String(PM.id),
+      ),
+      metaUpdated: seqOf(
+        (e) => e.type === "thread.meta-updated" && String(e.payload.threadId) === String(PM.id),
+      ),
+      postCreated: seqOf((e) => e.type === "channel.post-created"),
+    };
+  });
 
-const cursor = async (system: System) => {
-  const row = await system.run(system.cursors.getByProjector({ projector: MENTION_WAKE_CURSOR }));
-  return Option.isSome(row) ? row.value.lastAppliedSequence : -1;
-};
+const cursor = (system: System) =>
+  Effect.map(system.cursors.getByProjector({ projector: MENTION_WAKE_CURSOR }), (row) =>
+    Option.isSome(row) ? row.value.lastAppliedSequence : -1,
+  );
 
 /**
  * BOOT ONE writes the cursor (a first start seeds it at the head, so a post older
  * than any cursor is not backlog). THE POST lands with no reactor draining. BOOT TWO
  * replays it, in the order the test chooses.
  */
-const primedDatabase = async (databasePath: string, workspaceRoot: string) => {
-  const boot1 = await makeSystem(databasePath);
-  await oldSeederFixture(boot1, workspaceRoot);
-  await boot1.startReactor();
-  await boot1.drain();
-  const cursorAfterBoot1 = await cursor(boot1);
-  await boot1.dispose();
-  const down = await makeSystem(databasePath);
-  await postMentioningPm(down);
-  const postSeq = (await sequences(down)).postCreated;
-  await down.dispose();
-  expect(postSeq).toBeGreaterThan(cursorAfterBoot1);
-  return { cursorAfterBoot1, postSeq };
-};
+const primedDatabase = (databasePath: string, workspaceRoot: string) =>
+  Effect.gen(function* () {
+    const cursorAfterBoot1 = yield* boot(databasePath, (boot1) =>
+      Effect.gen(function* () {
+        yield* oldSeederFixture(boot1, workspaceRoot);
+        yield* boot1.startReactor;
+        yield* boot1.drain;
+        return yield* cursor(boot1);
+      }),
+    );
+    const postSeq = yield* boot(databasePath, (down) =>
+      Effect.gen(function* () {
+        yield* postMentioningPm(down);
+        return (yield* sequences(down)).postCreated;
+      }),
+    );
+    assert.isAbove(postSeq, cursorAfterBoot1);
+    return { cursorAfterBoot1, postSeq };
+  });
 
 describe("MentionWakeReactor after the hierarchy seed", () => {
-  it("a reactor started after the seed wakes a seeded thread against the repaired row", async () => {
-    const { directory, databasePath, workspaceRoot } = await makeScratch();
-    let system: System | null = null;
-    try {
-      const primed = await primedDatabase(databasePath, workspaceRoot);
-      system = await makeSystem(databasePath);
+  it.effect(
+    "a reactor started after the seed wakes a seeded thread against the repaired row",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mention-wake-seed-" });
+        const databasePath = path.join(directory, "state.sqlite");
+        const workspaceRoot = path.join(directory, "repo");
+        const primed = yield* primedDatabase(databasePath, workspaceRoot);
 
-      // THE INPUT THAT BREAKS THIS: start the reactor before the seed. The backlog replay
-      // then wakes @pm against the unrepaired row and `instanceIdAtDispatch` reads
-      // `"claude"` — the named mutant, run red once and recorded in the commit.
-      await seed(system, workspaceRoot);
-      await system.startReactor();
-      await system.drain();
+        yield* boot(databasePath, (system) =>
+          Effect.gen(function* () {
+            // THE INPUT THAT BREAKS THIS: start the reactor before the seed. The backlog
+            // replay then wakes @pm against the unrepaired row and `instanceIdAtDispatch`
+            // reads `"claude"` — the named mutant, run red once and recorded in the commit.
+            yield* seed(workspaceRoot);
+            yield* system.startReactor;
+            yield* system.drain;
 
-      expect(system.wakes).toEqual([{ threadId: String(PM.id), instanceIdAtDispatch: REPAIRED }]);
-      const s = await sequences(system);
-      expect(s.metaUpdated).toBeGreaterThan(primed.postSeq);
-      expect(s.turnStartRequested).toBeGreaterThan(s.metaUpdated);
-      expect(await cursor(system)).toBeGreaterThanOrEqual(primed.postSeq);
-    } finally {
-      await system?.dispose();
-      await removeDirectory(directory);
-    }
-  }, 30_000);
+            assert.deepStrictEqual(system.wakes, [
+              { threadId: String(PM.id), instanceIdAtDispatch: REPAIRED },
+            ]);
+            const s = yield* sequences(system);
+            assert.isAbove(s.metaUpdated, primed.postSeq);
+            assert.isAbove(s.turnStartRequested, s.metaUpdated);
+            assert.isAtLeast(yield* cursor(system), primed.postSeq);
+          }),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    30_000,
+  );
 });
