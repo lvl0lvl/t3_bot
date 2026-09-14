@@ -82,6 +82,7 @@ describe("turnIdBrandSites", () => {
       [],
     ],
     ["a bracket access", 'const g = (turn: { id: string }) => TurnId["make"](turn.id);\n', []],
+    ["a longer identifier ending in TurnId", "const g = (x: string) => FooTurnId.make(x);\n", []],
     // Arguments across lines are captured whole.
     [
       "arguments across lines",
