@@ -6496,7 +6496,9 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         );
         // Nor is an id-less one: with no revert boundary it is skipped, not
         // taken for the boundary (undefined === undefined) with the turns
-        // after it dropped from the snapshot.
+        // after it dropped from the snapshot. The last row left a boundary
+        // set; with one present this row proved nothing.
+        runtimeMock.state.revertMessageID = undefined;
         runtimeMock.state.messages[0] = {
           info: { id: undefined as unknown as string, role: "user" },
           parts: [],
