@@ -249,8 +249,14 @@ interface ToolInFlight {
  */
 type InFlightToolKey = `${string}:${number}`;
 
-const inFlightToolKey = (message: SDKMessage, index: number): InFlightToolKey =>
-  `${(message as { parent_tool_use_id?: string | null }).parent_tool_use_id ?? ""}:${index}`;
+// Narrowed to the stream_event member, not the SDKMessage union with a cast:
+// an all-optional cast target overlaps anything, so an SDK rename of
+// `parent_tool_use_id` would still compile, read undefined → "", and key every
+// subagent tool as ":N" again with no type error and no test red.
+const inFlightToolKey = (
+  message: Extract<SDKMessage, { type: "stream_event" }>,
+  index: number,
+): InFlightToolKey => `${message.parent_tool_use_id ?? ""}:${index}`;
 
 interface ClaudeTaskState {
   readonly id: string;
