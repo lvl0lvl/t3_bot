@@ -6600,6 +6600,12 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       { partId: " prt_1 ", text: "padded", itemId: "prt_1", dropped: [] },
       { partId: null, text: "null", itemId: undefined, dropped: ["null"] },
       { partId: 42, text: "number", itemId: undefined, dropped: ["42"] },
+      {
+        partId: " ".repeat(100),
+        text: "long",
+        itemId: undefined,
+        dropped: [`"${" ".repeat(64)}"… (100 chars)`],
+      },
     ] as const;
     return Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
