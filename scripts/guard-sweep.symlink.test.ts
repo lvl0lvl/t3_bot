@@ -266,6 +266,33 @@ describe("a mutation file that is a symlink is not written through", () => {
     }
   });
 
+  it("names a dangling link a symlink, not an unreadable file", () => {
+    const { root, elsewhere, config } = scaffold([
+      rowOn("through-the-dangle", "src/dangle.ts"),
+      rowOn("on-thing", "src/thing.ts"),
+    ]);
+    try {
+      // THE INPUT: a committed link to a name that does not exist. `stat` follows the link and
+      // fails, so with the link count asked before the index mode this row falls to the read
+      // gate as "could not read" — a reason that hides which gate should have caught it.
+      NodeFS.symlinkSync("nowhere.ts", NodePath.join(root, "src/dangle.ts"));
+      git(root, "add", "-A");
+      git(root, "commit", "--quiet", "-m", "dangle");
+      expect(git(root, "ls-files", "-s", "--", "src/dangle.ts").startsWith("120000 ")).toBe(true);
+      expect(git(root, "status", "--porcelain")).toBe("");
+
+      const done = runSweep(root, config, "--in-place");
+
+      expect(done.stdout).toContain("through-the-dangle: NOT RUN");
+      expect(done.stdout).toContain("src/dangle.ts is a symlink in the index");
+      expect(done.stdout).not.toContain("could not read src/dangle.ts");
+      expect(done.stdout).toContain("on-thing: killed by 1");
+      expect(done.status).toBe(3);
+    } finally {
+      remove(root, elsewhere);
+    }
+  });
+
   it("hands a tracked file its stat cannot see to the read gate, and measures the next row", () => {
     const { root, elsewhere, config } = scaffold([
       rowOn("under-locked-dir", "sub/deep.ts"),

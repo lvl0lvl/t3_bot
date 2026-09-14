@@ -788,6 +788,11 @@ const capture = Effect.fn("guardSweep.capture")(function* (
  * other name. A fresh worktree has every file at one link; a `setupCommand`
  * that runs `ln`, or `--in-place` on a `cp -al` / `rsync --link-dest` checkout,
  * does not. A stat that fails is left to the read gate, which names it.
+ *
+ * The index mode is asked FIRST. `fs.stat` follows a link (Effect has no
+ * lstat), so with the order swapped a tracked DANGLING link fails the stat and
+ * falls to the read gate as "could not read" — the wrong reason — and a link
+ * whose target has another name is refused for the target's count.
  */
 const linkRefusal = Effect.fn("guardSweep.linkRefusal")(function* (root: string, file: string) {
   const listed = yield* capture(["git", "ls-files", "-s", "-z", "--", file], root);
