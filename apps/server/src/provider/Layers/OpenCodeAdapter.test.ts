@@ -6673,7 +6673,19 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           type: "session.status",
           properties: { sessionID: "http://127.0.0.1:9999/session", status: { type: "idle" } },
         });
-        const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("2 seconds")));
+        // Under it.effect's TestClock a plain `Effect.timeout` never fires; a
+        // row whose id dies in the pump would hang to vitest's 60 s with no
+        // row named.
+        const events = Array.from(
+          yield* TestClock.withLive(
+            Fiber.join(eventsFiber).pipe(
+              Effect.timeoutOrElse({
+                duration: "2 seconds",
+                orElse: () => Effect.die(new Error(`${row.text}: the turn never completed`)),
+              }),
+            ),
+          ),
+        );
         const delta = events.find((event) => event.type === "content.delta");
         NodeAssert.ok(delta !== undefined, `${row.text}: the delta was emitted`);
         NodeAssert.equal(delta.itemId, row.itemId, `${row.text}: the item id carried`);
