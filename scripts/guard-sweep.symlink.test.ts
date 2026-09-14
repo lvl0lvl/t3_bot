@@ -82,7 +82,13 @@ const scaffold = (mutations: ReadonlyArray<unknown>) => {
     config,
     JSON.stringify({ testCommand: [NodePath.join(root, "suite.sh")], mutations }),
   );
-  return { root, config, outside };
+  return { root, elsewhere, config, outside };
+};
+
+const remove = (...dirs: ReadonlyArray<string>) => {
+  for (const dir of dirs) {
+    NodeFS.rmSync(dir, { recursive: true, force: true });
+  }
 };
 
 const runSweep = (root: string, config: string, ...flags: ReadonlyArray<string>) =>
@@ -101,61 +107,76 @@ const runSweep = (root: string, config: string, ...flags: ReadonlyArray<string>)
 
 describe("a mutation file that is a symlink is not written through", () => {
   it("reports the link row NOT RUN and measures the row after it on an untouched target", () => {
-    const { root, config } = scaffold([
+    const { root, elsewhere, config } = scaffold([
       rowOn("through-the-link", "src/link.ts"),
       rowOn("on-the-target", "src/thing.ts"),
     ]);
-    expect(git(root, "ls-files", "-s", "--", "src/link.ts").startsWith("120000 ")).toBe(true);
+    try {
+      expect(git(root, "ls-files", "-s", "--", "src/link.ts").startsWith("120000 ")).toBe(true);
 
-    // IN PLACE, so the bytes below are the tree the sweep wrote. Without `--in-place` the sweep
-    // writes a worktree it removes, and `root/src/thing.ts` is byte-identical to HEAD with the
-    // link gate deleted — the assertion on it pinned nothing.
-    const done = runSweep(root, config, "--in-place");
+      // IN PLACE, so the bytes below are the tree the sweep wrote. Without `--in-place` the
+      // sweep writes a worktree it removes, and `root/src/thing.ts` is byte-identical to HEAD
+      // with the link gate deleted — the assertion on it pinned nothing.
+      const done = runSweep(root, config, "--in-place");
 
-    // THE FALSE KILL: before this refusal the first row's mutation landed in thing.ts and its
-    // restore returned the link, so the link row was credited `killed by 1` for a red the
-    // TARGET's mutation caused, and the second row was NOT RUN — anchor not found — because
-    // that mutation was still in thing.ts when it was read: exit 3, a false kill beside an
-    // unmeasured row. (The bead's run, with a `setupCommand`, went further: both rows killed,
-    // exit 0.) Now the link row is NOT RUN, the target is byte-identical to HEAD when the
-    // second row is measured, and only that row's own mutation reds the suite.
-    expect(done.stdout).toContain("through-the-link: NOT RUN");
-    expect(done.stdout).toContain("is a symlink in the index");
-    expect(done.stdout).toContain("on-the-target: killed by 1");
-    // With the link gate deleted this file holds `if (false) {` after the run.
-    expect(NodeFS.readFileSync(NodePath.join(root, "src/thing.ts"), "utf8")).toBe(
-      "a\nif (guard) {\nb\n",
-    );
-    expect(git(root, "status", "--porcelain")).toBe("");
-    // NOT RUN outranks a kill at the exit: 3, not the 0 a dropped verdict gives nor the 1 a
-    // crash after the report gives.
-    expect(done.status).toBe(3);
+      // THE FALSE KILL: before this refusal the first row's mutation landed in thing.ts and its
+      // restore returned the link, so the link row was credited `killed by 1` for a red the
+      // TARGET's mutation caused, and the second row was NOT RUN — anchor not found — because
+      // that mutation was still in thing.ts when it was read: exit 3, a false kill beside an
+      // unmeasured row. (The bead's run, with a `setupCommand`, went further: both rows killed,
+      // exit 0.) Now the link row is NOT RUN, the target is byte-identical to HEAD when the
+      // second row is measured, and only that row's own mutation reds the suite.
+      expect(done.stdout).toContain("through-the-link: NOT RUN");
+      expect(done.stdout).toContain("is a symlink in the index");
+      expect(done.stdout).toContain("on-the-target: killed by 1");
+      // With the link gate deleted this file holds `if (false) {` after the run.
+      expect(NodeFS.readFileSync(NodePath.join(root, "src/thing.ts"), "utf8")).toBe(
+        "a\nif (guard) {\nb\n",
+      );
+      expect(git(root, "status", "--porcelain")).toBe("");
+      // NOT RUN outranks a kill at the exit: 3, not the 0 a dropped verdict gives nor the 1 a
+      // crash after the report gives.
+      expect(done.status).toBe(3);
+    } finally {
+      remove(root, elsewhere);
+    }
   });
 
   it("names the link, not the anchor, when the link's target lacks the anchor", () => {
-    const { root, config } = scaffold([rowOn("through-the-plainlink", "src/plainlink.ts")]);
+    const { root, elsewhere, config } = scaffold([
+      rowOn("through-the-plainlink", "src/plainlink.ts"),
+    ]);
+    try {
+      const done = runSweep(root, config);
 
-    const done = runSweep(root, config);
-
-    // THE PRE-FLIGHT reads every row's source to refuse a stale anchor before the baseline. Read
-    // through this link it would find no anchor in plain.ts and refuse the WHOLE config, exit 1,
-    // blaming the anchor — for a row whose defect is that its path is a link. The pre-flight
-    // skips a link the way it skips an untracked or outside path, and the row loop names it.
-    expect(done.stdout).not.toContain("could not be applied");
-    expect(done.stdout).toContain("through-the-plainlink: NOT RUN");
-    expect(done.stdout).toContain("is a symlink in the index");
-    expect(done.status).toBe(3);
+      // THE PRE-FLIGHT reads every row's source to refuse a stale anchor before the baseline.
+      // Read through this link it would find no anchor in plain.ts and refuse the WHOLE config,
+      // exit 1, blaming the anchor — for a row whose defect is that its path is a link. The
+      // pre-flight skips a link the way it skips an untracked or outside path, and the row loop
+      // names it.
+      expect(done.stdout).not.toContain("could not be applied");
+      expect(done.stdout).toContain("through-the-plainlink: NOT RUN");
+      expect(done.stdout).toContain("is a symlink in the index");
+      expect(done.status).toBe(3);
+    } finally {
+      remove(root, elsewhere);
+    }
   });
 
   it("never writes to a file outside the tree that a link points at", () => {
-    const { root, config, outside } = scaffold([rowOn("through-the-outlink", "src/outlink.ts")]);
+    const { root, elsewhere, config, outside } = scaffold([
+      rowOn("through-the-outlink", "src/outlink.ts"),
+    ]);
+    try {
+      const done = runSweep(root, config);
 
-    const done = runSweep(root, config);
-
-    expect(done.stdout).toContain("through-the-outlink: NOT RUN");
-    // The bytes the sweep must never have touched: an absolute-target link used to leave the
-    // mutation in this file after the run, outside anything the tool created or restores.
-    expect(NodeFS.readFileSync(outside, "utf8")).toBe("a\nif (guard) {\nb\n");
-    expect(done.status).toBe(3);
+      expect(done.stdout).toContain("through-the-outlink: NOT RUN");
+      // The bytes the sweep must never have touched: an absolute-target link used to leave the
+      // mutation in this file after the run, outside anything the tool created or restores.
+      expect(NodeFS.readFileSync(outside, "utf8")).toBe("a\nif (guard) {\nb\n");
+      expect(done.status).toBe(3);
+    } finally {
+      remove(root, elsewhere);
+    }
   });
 });
