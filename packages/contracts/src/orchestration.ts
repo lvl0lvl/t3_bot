@@ -2912,7 +2912,7 @@ export class OrchestrationGetSnapshotError extends Schema.TaggedError<Orchestrat
  * must not read the prose to find out.
  *
  * The decider's `detail` reaches the caller on both doors as `message`. It
- * names the channel by its internal id, and the one caller that needed to
+ * names the channel by its internal id, and the first caller that needed to
  * classify a refusal (the comms toolkit's gateway) could either match that
  * English or forward it - and forwarding it handed an agent "Author is not a
  * member of channel 'channel-seniors-t'", an id the tool surface never
@@ -2921,25 +2921,29 @@ export class OrchestrationGetSnapshotError extends Schema.TaggedError<Orchestrat
  *
  * Only refusals a caller acts on differently have a member; every other
  * invariant is "this command can never apply" and one shape serves them. A
- * member carries what the caller has to SAY and nothing about the channel:
- * the unresolved handles are the caller's own input, echoed back.
+ * member carries what the caller has to SAY and nothing about the aggregate's
+ * internals (no channel id, no thread id): the unresolved handles are the
+ * caller's own input, echoed back; the pull-request members carry nothing
+ * because the caller already holds the target.
  *
  * It lives here rather than beside the decider because both dispatch doors
  * put it on the wire (`t3_bot-nqf`): the socket in
  * `OrchestrationDispatchCommandError.refusal`, HTTP in
  * `EnvironmentCommandRefusedError.refusal`. A client handed a tag it does not
  * know fails to decode the whole error, and `RpcClient` turns that into a
- * defect in place of the refusal (`orDie`) — so adding a member is a
- * client-breaking change for any DEPLOYED client that decodes this field. The
- * clients are web and mobile from this repo, shipped with the server, which is
- * why the two pull-request members could be added (`t3_bot-9dp`) without a
- * staged rollout; a client shipped separately would need the tag first.
+ * defect in place of the refusal (`orDie`) — so adding a member breaks a
+ * client OLDER than the server that decodes this field. The two pull-request
+ * members were added (`t3_bot-9dp`) without staging because the only client
+ * that dispatches those commands is the web app, and a web bundle older than
+ * its server dispatching a duplicate link or unlink sees a decode defect in
+ * place of the refusal's prose (the command was refused either way). A client
+ * shipped on its own cadence — the store-built mobile app, app.t3.codes
+ * against an older server — gets a new member only after it knows the tag.
  *
- * The pull-request members exist because the MCP pull-request tools act on
- * them: "already linked" and "not linked" are the outcomes the agent asked
- * for (`alreadyLinked`, `wasLinked: false`), and every OTHER refusal of those
- * commands is a failure the agent must see — the catch that told them apart
- * by "any invariant error" reported a missing thread or a bad host as success.
+ * The pull-request members' caller is the MCP pull-request tools
+ * (`pullRequests/handlers.ts`, `refusedAs`), which answer `alreadyLinked` /
+ * `wasLinked: false` from these two tags; every other refusal of those
+ * commands is a failure.
  */
 export const CommandInvariantRefusal = Schema.Union([
   Schema.TaggedStruct("channel-archived", {}),
