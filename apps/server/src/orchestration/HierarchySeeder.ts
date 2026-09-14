@@ -204,9 +204,9 @@ export const seedHierarchy = Effect.fn("seedHierarchy")(function* (input: {
   // phase, and no reactor writes `modelSelection`. Add a writer outside that gate and this read
   // needs re-arguing.
   //
-  // Two accepted costs, both recorded: the whole read model for three values, when two earlier
-  // startup phases already load it (`t3_bot-ofl`), and a loop that runs on every boot forever
-  // where a migration would retire itself by number (`t3_bot-0fx`).
+  // Two accepted costs, both recorded: the whole read model for three values, which
+  // `provider-sessions.reconcile` loads again on the same boot (`t3_bot-ofl`), and a loop that
+  // runs on every boot forever where a migration would retire itself by number (`t3_bot-0fx`).
   const readModel = yield* projections.getCommandReadModel();
   for (const thread of SEEDED_THREADS) {
     const existing = readModel.threads.find((row) => row.id === thread.id);
