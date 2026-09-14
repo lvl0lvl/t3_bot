@@ -91,8 +91,8 @@ function createProviderServiceHarness(
 ) {
   const now = "2026-01-01T00:00:00.000Z";
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
-  const rollbackConversation = vi.fn(
-    (_input: { readonly threadId: ThreadId; readonly numTurns: number }) => Effect.void,
+  const rollbackConversation = vi.fn<ProviderServiceShape["rollbackConversation"]>(
+    () => Effect.void,
   );
   const assertConversationRollbackSupported = vi.fn<
     ProviderServiceShape["assertConversationRollbackSupported"]
@@ -1777,15 +1777,14 @@ describe("CheckpointReactor", () => {
       const harness = yield* Effect.promise(() => createHarness());
       const threadId = ThreadId.make("thread-1");
       const createdAt = "2026-01-01T00:00:00.000Z";
-      harness.provider.rollbackConversation.mockImplementation(
-        () =>
-          Effect.fail(
-            new ProviderAdapterRequestError({
-              provider: "opencode",
-              method: "session.messages",
-              detail: "OpenCode returned an assistant message whose id undefined is not a turn id.",
-            }),
-          ) as unknown as Effect.Effect<void, never>,
+      harness.provider.rollbackConversation.mockImplementation(() =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "opencode",
+            method: "session.messages",
+            detail: "OpenCode returned an assistant message whose id undefined is not a turn id.",
+          }),
+        ),
       );
       yield* harness.engine.dispatch({
         type: "thread.session.set",
