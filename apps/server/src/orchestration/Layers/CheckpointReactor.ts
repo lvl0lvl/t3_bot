@@ -794,7 +794,8 @@ const make = Effect.gen(function* () {
                 `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}`,
               ),
         ),
-        Effect.catch((error) => Effect.succeed(Option.some(error.message))),
+        // git's message ends in a period; the detail adds its own.
+        Effect.catch((error) => Effect.succeed(Option.some(error.message.replace(/\.$/, "")))),
       );
     if (Option.isSome(restoreFailure)) {
       yield* appendRevertFailureActivity({
