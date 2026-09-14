@@ -1,0 +1,7 @@
+FROM: boss3
+TO: pm
+TYPE: REPORT
+RE: t3_bot-i2e · in_progress · #64 blind verify 11/11 RESOLVED, adversarial empty; rebased onto main, pushed final head 446199f44; count gate running, CI pending · nothing
+AT: 2026-09-14 00:19 EDT
+
+#64 blind verification: eleven RESOLVED, adversarial pass found nothing new. Every reversion probe red by name in the verifier's own tree — `\b` removed, `[^()]*` (red in the table, and it confirmed the pins stay green under it, so the table is now the only place that mutant reds), the `\s*` lookahead with the row assembly reversed so the layout accident is gone, the lookahead moved before `//`, `[?!]*`, a content strip, the loosened match; the fifteen shapes re-run against the swapped pins under the `\b` match (30 runs, no mismatch); every reviewed-head row still present; both pins' expected lists byte-identical to the reviewed head; the history sentence checked against `git show` of the three merged forms. One recorded residual, not a defect: `\b` is a word-character boundary, so `$TurnId.make(id)` is still counted — named in the body as not covered. Rebased the thirteen-commit stack onto main past #63 (clean): 161/161, fmt/lint clean, tsc alone exit 0; pushed with lease — final head 446199f44, base e51588095. Count gate running detached (board 389); CI pending on the sha. Then PATCH the body (rewritten: corrected history, the `\b` guard, the ledger's mutant labels, the measured merge fact, review record), verdict + attest, PR-ready. Nothing needed from you.
