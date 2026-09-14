@@ -246,6 +246,46 @@ describe("a mutation file that is a symlink is not written through", () => {
     }
   });
 
+  it("refuses both tracked names of one inode and hands the tree back clean", () => {
+    const { root, elsewhere, config } = scaffold([
+      rowOn("on-a", "src/a.ts"),
+      rowOn("on-b", "src/b.ts"),
+      rowOn("on-thing", "src/thing.ts"),
+    ]);
+    try {
+      // THE INPUT: two tracked names for one inode, both committed. Unlike a twin outside the
+      // tree, git SEES the second name: without the refusal the a-row's write goes through the
+      // inode, `git checkout -- src/a.ts` recreates only `a.ts`, so `b.ts` keeps the mutation —
+      // the b-row is NOT RUN on an anchor the leftover replaced, and porcelain prints
+      // ` M src/b.ts` after an `--in-place` run: the operator's tree handed back dirty, which
+      // is refusal 4's premise, and the next run refused at exit 1.
+      NodeFS.writeFileSync(NodePath.join(root, "src/a.ts"), "a\nif (guard) {\nb\n");
+      NodeFS.linkSync(NodePath.join(root, "src/a.ts"), NodePath.join(root, "src/b.ts"));
+      git(root, "add", "-A");
+      git(root, "commit", "--quiet", "-m", "twins");
+      expect(NodeFS.statSync(NodePath.join(root, "src/b.ts")).nlink).toBe(2);
+      expect(git(root, "status", "--porcelain")).toBe("");
+
+      const done = runSweep(root, config, "--in-place");
+
+      // THE TREE FIRST: the porcelain line is the observable an outside twin can never produce,
+      // because git never lists the outside name. Then the report.
+      expect(git(root, "status", "--porcelain")).toBe("");
+      expect(NodeFS.readFileSync(NodePath.join(root, "src/a.ts"), "utf8")).toBe(
+        "a\nif (guard) {\nb\n",
+      );
+      expect(NodeFS.readFileSync(NodePath.join(root, "src/b.ts"), "utf8")).toBe(
+        "a\nif (guard) {\nb\n",
+      );
+      expect(done.stdout).toContain("on-a: NOT RUN — src/a.ts has 2 links");
+      expect(done.stdout).toContain("on-b: NOT RUN — src/b.ts has 2 links");
+      expect(done.stdout).toContain("on-thing: killed by 1");
+      expect(done.status).toBe(3);
+    } finally {
+      remove(root, elsewhere);
+    }
+  });
+
   it("judges a directory row by its own index entry, not by the link that sorts first under it", () => {
     const { root, elsewhere, config } = scaffold([rowOn("on-the-directory", "src")]);
     try {

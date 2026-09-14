@@ -75,10 +75,13 @@
  *    mutation after the run, which is what 3 promises cannot happen. Through a
  *    hard link the index says `100644` and porcelain is clean, the write
  *    truncates the shared inode, and the restore recreates only this name —
- *    measured, `killed by 1` at exit 0 with the other name left mutated. Unlike
- *    1 and 6 this is per ROW (NOT RUN, exit 3), the way an untracked or moved
- *    file is: it is answered by one more `ls-files` and a `stat` beside the
- *    tracked gate's, and the other rows are still measurable.
+ *    measured, `killed by 1` at exit 0 with the other name left mutated. When
+ *    the other name is TRACKED it keeps the mutation and porcelain shows it
+ *    ` M`, so the tree the operator gets back is dirty — refusal 4's premise —
+ *    and the next run is refused at exit 1. Unlike 1 and 6 this is per ROW
+ *    (NOT RUN, exit 3), the way an untracked or moved file is: it is answered
+ *    by one more `ls-files` and a `stat` beside the tracked gate's, and the
+ *    other rows are still measurable.
  *
  * ITS EXIT CODE IS A VERDICT: 0 all killed, 2 a survivor, 3 something NOT RUN,
  * 1 the tool or config failed. Every outcome used to be 0 and only a crash was
