@@ -6580,10 +6580,13 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
   it.effect("keys a timeline row only by a part id the brand's decoder admits", () => {
     // A part id keys the assistant row ingestion builds from the delta. ""
     // was dropped by the truthiness guard the gate replaced; "  " went
-    // through `.make` as a row keyed by whitespace. Both are refused now and
-    // the delta goes out with no item, logged once with a bounded preview;
-    // an admitted id is carried RAW, so " prt_1 " keeps its padding (the
-    // decoder would trim it, and OpenCode gets it back in tool replies).
+    // through `.make` as a row keyed by whitespace; null and 42 from a
+    // broken server read `.slice` off themselves in the drop log and died
+    // in the event pump. All are refused now and the delta goes out with no
+    // item, logged once with a bounded preview. An admitted id is carried
+    // DECODED, so " prt_1 " arrives as "prt_1": the event store decodes
+    // persisted events on read, and a raw padded key would name one row
+    // live and another after replay.
     const dropLogs: Array<Record<string, unknown>> = [];
     const logger = Logger.make(({ message }) => {
       if (Array.isArray(message) && message[0] === "opencode.event.item_id_dropped") {
@@ -6591,15 +6594,12 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       }
     });
     const rows = [
-      { partId: "", text: "empty", itemId: undefined, dropped: { itemId: "", itemIdLength: 0 } },
-      {
-        partId: "  ",
-        text: "blank",
-        itemId: undefined,
-        dropped: { itemId: "  ", itemIdLength: 2 },
-      },
-      { partId: "prt_1", text: "plain", itemId: "prt_1", dropped: undefined },
-      { partId: " prt_1 ", text: "padded", itemId: " prt_1 ", dropped: undefined },
+      { partId: "", text: "empty", itemId: undefined, dropped: ['""'] },
+      { partId: "  ", text: "blank", itemId: undefined, dropped: ['"  "'] },
+      { partId: "prt_1", text: "plain", itemId: "prt_1", dropped: [] },
+      { partId: " prt_1 ", text: "padded", itemId: "prt_1", dropped: [] },
+      { partId: null, text: "null", itemId: undefined, dropped: ["null"] },
+      { partId: 42, text: "number", itemId: undefined, dropped: ["42"] },
     ] as const;
     return Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
@@ -6678,8 +6678,8 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         NodeAssert.ok(delta !== undefined, `${row.text}: the delta was emitted`);
         NodeAssert.equal(delta.itemId, row.itemId, `${row.text}: the item id carried`);
         NodeAssert.deepEqual(
-          dropLogs.map((entry) => ({ itemId: entry.itemId, itemIdLength: entry.itemIdLength })),
-          row.dropped === undefined ? [] : [row.dropped],
+          dropLogs.map((entry) => entry.itemId),
+          row.dropped,
           `${row.text}: the drop log`,
         );
         yield* adapter.stopSession(threadId);

@@ -503,6 +503,16 @@ const previewRefusedId = (id: unknown) => {
     ? text
     : `${text.slice(0, REFUSED_ID_PREVIEW_LENGTH)}… (${text.length} chars)`;
 };
+const admitMessageTurnId = (id: string) =>
+  Option.isNone(decodeMessageTurnId(id))
+    ? Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "session.messages",
+          detail: `OpenCode returned an assistant message whose id ${previewRefusedId(id)} is not a turn id.`,
+        }),
+      )
+    : Effect.succeed(TurnId.make(id));
 // A part id from the SDK (`part.id`, `partID`, `part.callID`) is outside
 // input that becomes a RuntimeItemId, the key of a timeline row. The
 // truthiness guard `buildEventBase` used to carry dropped "" before `.make`
@@ -517,16 +527,6 @@ const previewRefusedId = (id: unknown) => {
 // whitespace is accepted there rather than answered with a refusal path
 // nothing but a test would ever exercise.
 const decodeRuntimeItemId = Schema.decodeUnknownOption(RuntimeItemId);
-const admitMessageTurnId = (id: string) =>
-  Option.isNone(decodeMessageTurnId(id))
-    ? Effect.fail(
-        new ProviderAdapterRequestError({
-          provider: PROVIDER,
-          method: "session.messages",
-          detail: `OpenCode returned an assistant message whose id ${previewRefusedId(id)} is not a turn id.`,
-        }),
-      )
-    : Effect.succeed(TurnId.make(id));
 
 /**
  * Map a `Cause.squash`-ed failure into a `ProviderAdapterProcessError`. The
@@ -545,7 +545,7 @@ const toProcessError = (threadId: ThreadId, cause: unknown): ProviderAdapterProc
 type EventBaseInput = {
   readonly threadId: ThreadId;
   readonly turnId?: TurnId | undefined;
-  readonly itemId?: string | undefined;
+  readonly itemId?: unknown;
   readonly requestId?: string | undefined;
   readonly createdAt?: string | undefined;
   readonly raw?: unknown;
@@ -1074,13 +1074,11 @@ export function makeOpenCodeAdapter(
     });
     const buildEventBase = (input: EventBaseInput) =>
       Effect.gen(function* () {
-        const itemAdmitted =
-          input.itemId !== undefined && Option.isSome(decodeRuntimeItemId(input.itemId));
-        if (input.itemId !== undefined && !itemAdmitted) {
+        const itemId = decodeRuntimeItemId(input.itemId);
+        if (input.itemId !== undefined && Option.isNone(itemId)) {
           yield* Effect.logDebug("opencode.event.item_id_dropped", {
             threadId: input.threadId,
-            itemId: input.itemId.slice(0, REFUSED_ID_PREVIEW_LENGTH),
-            itemIdLength: input.itemId.length,
+            itemId: previewRefusedId(input.itemId),
           });
         }
         const { eventId, createdAt } = yield* Effect.all({
@@ -1093,7 +1091,7 @@ export function makeOpenCodeAdapter(
           threadId: input.threadId,
           createdAt,
           ...(input.turnId ? { turnId: input.turnId } : {}),
-          ...(itemAdmitted ? { itemId: RuntimeItemId.make(input.itemId as string) } : {}),
+          ...(Option.isSome(itemId) ? { itemId: itemId.value } : {}),
           // Carried raw by decision: the provider must get its own string
           // back (#49), so a padded request id stays padded here and in the
           // reply; `.make` admitting whitespace is accepted (`t3_bot-1n6`).
