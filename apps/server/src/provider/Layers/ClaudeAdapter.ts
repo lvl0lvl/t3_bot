@@ -234,6 +234,24 @@ interface ToolInFlight {
   readonly parentToolUseId?: string;
 }
 
+/**
+ * The key an in-flight tool lives under while its content block streams.
+ *
+ * NOT the block index alone. A block index is per MESSAGE, and a subagent's
+ * stream events carry the subagent message's own indices: its first tool_use
+ * arrives at index 0 with `parent_tool_use_id` set, while the parent's Task tool
+ * that spawned it — index 0 of the parent message — is still in flight. Keyed by
+ * index alone the subagent's block overwrote the Task entry, the Task's
+ * tool_result then found nothing to complete, and the turn-end sweep had lost it
+ * too: the Task row stayed inProgress in every client (`t3_bot-x6n`). The scope
+ * is the parent tool-use id (empty for the parent message), which is what the
+ * SDK uses to tell the two streams apart.
+ */
+type InFlightToolKey = `${string}:${number}`;
+
+const inFlightToolKey = (message: SDKMessage, index: number): InFlightToolKey =>
+  `${(message as { parent_tool_use_id?: string | null }).parent_tool_use_id ?? ""}:${index}`;
+
 interface ClaudeTaskState {
   readonly id: string;
   subject: string;
@@ -307,7 +325,7 @@ interface ClaudeSessionContext {
     id: TurnId;
     items: Array<unknown>;
   }>;
-  readonly inFlightTools: Map<number, ToolInFlight>;
+  readonly inFlightTools: Map<InFlightToolKey, ToolInFlight>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
   readonly taskAgents: Map<string, ClaudeTaskAgentState>;
   /**
@@ -2581,7 +2599,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    for (const [index, tool] of context.inFlightTools.entries()) {
+    for (const [toolKey, tool] of context.inFlightTools.entries()) {
       const toolStamp = yield* makeEventStamp();
       yield* offerRuntimeEvent({
         type: "item.completed",
@@ -2610,7 +2628,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           payload: result ?? { status },
         },
       });
-      context.inFlightTools.delete(index);
+      context.inFlightTools.delete(toolKey);
     }
     // Clear any remaining stale entries (e.g. from interrupted content blocks)
     context.inFlightTools.clear();
@@ -2775,7 +2793,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       if (event.delta.type === "input_json_delta") {
-        const tool = context.inFlightTools.get(event.index);
+        const toolKey = inFlightToolKey(message, event.index);
+        const tool = context.inFlightTools.get(toolKey);
         if (!tool || typeof event.delta.partial_json !== "string") {
           return;
         }
@@ -2799,7 +2818,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           parsedInput && Object.keys(parsedInput).length > 0
             ? toolInputFingerprint(parsedInput)
             : undefined;
-        context.inFlightTools.set(event.index, nextTool);
+        context.inFlightTools.set(toolKey, nextTool);
 
         if (
           !parsedInput ||
@@ -2813,7 +2832,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...nextTool,
           lastEmittedInputFingerprint: nextFingerprint,
         };
-        context.inFlightTools.set(event.index, nextTool);
+        context.inFlightTools.set(toolKey, nextTool);
 
         const stamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
@@ -2924,7 +2943,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(owningAgentId ? { agentId: owningAgentId } : {}),
         ...(parentToolUseId ? { parentToolUseId } : {}),
       };
-      context.inFlightTools.set(index, tool);
+      context.inFlightTools.set(inFlightToolKey(message, index), tool);
 
       const stamp = yield* makeEventStamp();
       yield* offerRuntimeEvent({
@@ -2970,7 +2989,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       }
-      const tool = context.inFlightTools.get(index);
+      const tool = context.inFlightTools.get(inFlightToolKey(message, index));
       if (!tool) {
         return;
       }
@@ -2997,7 +3016,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         continue;
       }
 
-      const [index, tool] = toolEntry;
+      const [toolKey, tool] = toolEntry;
       const itemStatus = toolResult.isError ? "failed" : "completed";
       const toolUseResult = readClaudeToolUseResult(message);
       const toolData = {
@@ -3136,7 +3155,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
       }
 
-      context.inFlightTools.delete(index);
+      context.inFlightTools.delete(toolKey);
     }
   });
 
@@ -4250,7 +4269,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
       const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
-      const inFlightTools = new Map<number, ToolInFlight>();
+      const inFlightTools = new Map<InFlightToolKey, ToolInFlight>();
       const claudeTasks = new Map<string, ClaudeTaskState>();
       const taskAgents = new Map<string, ClaudeTaskAgentState>();
       const pendingTaskModels = new Map<string, string>();
