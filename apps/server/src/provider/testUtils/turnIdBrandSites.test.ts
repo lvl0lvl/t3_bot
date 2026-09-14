@@ -35,6 +35,11 @@ describe("turnIdBrandSites", () => {
       "/* TurnId.make(turn.id) */\nconst next = 1;\n",
       [],
     ],
+    [
+      "a line comment that quotes a `*/` before the call",
+      "// closes with `*/` then TurnId.make(turn.id)\n",
+      [],
+    ],
     // Code after a comment on the same line: counted.
     [
       "a doc block closed on a line that carries code",
