@@ -124,20 +124,58 @@ it.effect("decodes the pull-request refusal tags the MCP tools answer from", () 
   }),
 );
 
-it.effect("refuses a dispatch error whose refusal tag it does not know", () =>
+it.effect("decodes a refusal tag it does not know as an untagged refusal", () =>
   Effect.gen(function* () {
-    // A member of `CommandInvariantRefusal` reaching a client built before
-    // it: the whole error fails to decode, which is why adding one is a
-    // client-breaking change. A fallback member in the union greens this.
-    const exit = yield* Effect.exit(
-      decodeDispatchCommandError({
-        _tag: "OrchestrationDispatchCommandError",
-        message: "Orchestration command invariant failed (channel.post.create): unknown.",
-        refusal: { _tag: "unknown" },
-      }),
-    );
+    // A member of `CommandInvariantRefusal` reaching a client built before it
+    // (`t3_bot-1tn`): the error still decodes, `refusal` is absent and the
+    // prose is what the client shows — the shape of an untagged refusal. THE
+    // INPUT THAT BREAKS THIS: a plain `Schema.optional` on the field, which
+    // fails the whole error on the unknown tag and `RpcClient` turns into a
+    // defect (#44's closed union, the decode-defect toast of `t3_bot-9dp`).
+    // The field beside the tag is what tells "refusal absent, error intact"
+    // from "error replaced": a fallback that rebuilds the error from
+    // `message` alone passes the two assertions above it and loses this one.
+    const error = yield* decodeDispatchCommandError({
+      _tag: "OrchestrationDispatchCommandError",
+      message: "Orchestration command invariant failed (channel.post.create): unknown.",
+      bootstrapThreadDisposition: "deleted",
+      refusal: { _tag: "unknown" },
+    });
 
-    assert.isTrue(Exit.isFailure(exit));
+    assert.strictEqual(error.refusal, undefined);
+    assert.strictEqual(
+      error.message,
+      "Orchestration command invariant failed (channel.post.create): unknown.",
+    );
+    assert.strictEqual(error._tag, "OrchestrationDispatchCommandError");
+    assert.strictEqual(error.bootstrapThreadDisposition, "deleted");
+  }),
+);
+
+it.effect("decodes a known tag with a payload it cannot read as an untagged refusal", () =>
+  Effect.gen(function* () {
+    // A member's payload is frozen once it ships: the wrapper drops any value
+    // it cannot decode, not only a foreign tag, so a client that knows the tag
+    // gets the untagged shape when the payload changes under it. THE INPUT
+    // THAT BREAKS THIS: a wrapper that checks only the tag and passes a known
+    // one through, which fails the whole error on `handles: "walt"`. As above,
+    // the field beside the tag is what tells "refusal absent, error intact"
+    // from "error replaced": a fallback that rebuilds the error from `message`
+    // alone passes the two assertions on it and loses the disposition.
+    const error = yield* decodeDispatchCommandError({
+      _tag: "OrchestrationDispatchCommandError",
+      message: "Orchestration command invariant failed (channel.post.create): unresolved.",
+      bootstrapThreadDisposition: "deleted",
+      refusal: { _tag: "mentions-unresolved", handles: "walt" },
+    });
+
+    assert.strictEqual(error.refusal, undefined);
+    assert.strictEqual(
+      error.message,
+      "Orchestration command invariant failed (channel.post.create): unresolved.",
+    );
+    assert.strictEqual(error._tag, "OrchestrationDispatchCommandError");
+    assert.strictEqual(error.bootstrapThreadDisposition, "deleted");
   }),
 );
 
