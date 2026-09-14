@@ -43,7 +43,7 @@ import {
   ProviderAdapterValidationError,
 } from "../Errors.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
-import { decodeRuntimeItemId, previewRefusedId } from "../runtimeItemId.ts";
+import { previewRefusedId, runtimeItemIdField } from "../runtimeItemId.ts";
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
   buildOpenCodePermissionRules,
@@ -1063,13 +1063,11 @@ export function makeOpenCodeAdapter(
     });
     const buildEventBase = (input: EventBaseInput) =>
       Effect.gen(function* () {
-        const itemId = decodeRuntimeItemId(input.itemId);
-        if (input.itemId !== undefined && Option.isNone(itemId)) {
-          yield* Effect.logDebug("opencode.event.item_id_dropped", {
-            threadId: input.threadId,
-            itemId: previewRefusedId(input.itemId),
-          });
-        }
+        const itemIdField = yield* runtimeItemIdField({
+          logKey: "opencode.event.item_id_dropped",
+          threadId: input.threadId,
+          itemId: input.itemId,
+        });
         const { eventId, createdAt } = yield* Effect.all({
           eventId: randomUUIDv4.pipe(Effect.map(EventId.make)),
           createdAt: input.createdAt === undefined ? nowIso : Effect.succeed(input.createdAt),
@@ -1080,7 +1078,7 @@ export function makeOpenCodeAdapter(
           threadId: input.threadId,
           createdAt,
           ...(input.turnId ? { turnId: input.turnId } : {}),
-          ...(Option.isSome(itemId) ? { itemId: itemId.value } : {}),
+          ...itemIdField,
           // Carried raw by decision: the provider must get its own string
           // back (#49), so a padded request id stays padded here and in the
           // reply; `.make` admitting whitespace is accepted (`t3_bot-1n6`).
