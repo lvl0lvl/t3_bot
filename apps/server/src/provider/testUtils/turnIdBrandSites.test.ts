@@ -7,8 +7,10 @@ import { turnIdBrandSites } from "./turnIdBrandSites.ts";
 // helper counts it. The previous strip (`\/\*(?!...)` before the lookahead,
 // so a `*` line was never tested for code after its `*/`) let the
 // block-close-with-code rows through as comments; the previous match
-// (`TurnId\.make\(`) did not see `TurnId?.make(` and `TurnId!.make(`.
-// Either put back reds this table.
+// (`TurnId\.make\(`) did not see `TurnId?.make(` and `TurnId!.make(`; the
+// lookahead's `[ \t]*` as `\s*` crosses the newline and un-comments a
+// single-line block followed by code on the next line. Any of them put back
+// reds this table.
 const base = ["const a = TurnId.make(id);", "const b = TurnId.make(`opencode-turn-${x}`);"].join(
   "\n",
 );
@@ -28,6 +30,11 @@ describe("turnIdBrandSites", () => {
       [],
     ],
     ["a doc block's `*` line", "/**\n * TurnId.make(turn.id)\n */\n", []],
+    [
+      "a single-line block on the line before code",
+      "/* TurnId.make(turn.id) */\nconst next = 1;\n",
+      [],
+    ],
     // Code after a comment on the same line: counted.
     [
       "a doc block closed on a line that carries code",
