@@ -25,6 +25,7 @@ import { assert, describe } from "vite-plus/test";
 
 import wireFixture from "../testFixtures/codexMultiAgentWire.json" with { type: "json" };
 import { makeCodexSessionRuntime } from "./CodexSessionRuntime.ts";
+import { turnIdBrandSites } from "../testUtils/turnIdBrandSites.ts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 const ROOT = wireFixture.rootThreadId;
@@ -103,23 +104,17 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
     // the app-server must get its own string back. Only code counts: a
     // full-line `//`, `*`, or single `/* … */` comment naming the call is not
     // a brand site; a same-line comment after code or after another comment,
-    // and a string literal, still red the pin and are reworded, not listed.
-    // The pin sees the literal `TurnId.make(` (and `TurnId?.make(`,
-    // `TurnId!.make(`) only: a cast `as TurnId`, an aliased or destructured
-    // `make`, a `.call`/`.apply`/`.bind` on it, or a bracket access stays
-    // green, and so does a same-string `.make` moved to another site: the pin
-    // sees which strings, in what order, not which line (upstream writes none
-    // of these today; `vp fmt` normalises the whitespace forms into reach).
+    // and a string literal, still red the pin and are reworded, not listed
+    // (`turnIdBrandSites` says what is seen and what is not; upstream writes
+    // none of the unseen forms today, and `vp fmt` normalises the whitespace
+    // forms into reach).
     const source = NodeFS.readFileSync(
       NodePath.join(import.meta.dirname, "CodexSessionRuntime.ts"),
       "utf8",
     );
-    // A line is a comment only when no code follows its `*/`: `/* note */ const x`
-    // and a block closed as ` */ const x` both keep their code, so a call after
-    // either still counts. The runtime names `TurnId.make(` in no comment today;
-    // the strip's subject is the comment a sync maintainer will write.
-    const code = source.replace(/^\s*(?:\/\/|(?!.*\*\/[ \t]*\S)(?:\/\*|\*)).*$/gm, "");
-    assert.deepEqual(code.match(/TurnId[?!]?\.make\([^)]*\)/g), [
+    // The runtime names `TurnId.make(` in no comment today; what the helper
+    // counts as a site, and what it does not, is its own table.
+    assert.deepEqual(turnIdBrandSites(source), [
       // readRouteFields, over a notification refusedIds admitted
       "TurnId.make(notification.params.turn.id)",
       "TurnId.make(notification.params.turnId)",
