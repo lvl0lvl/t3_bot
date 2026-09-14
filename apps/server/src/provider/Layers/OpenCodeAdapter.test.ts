@@ -6591,19 +6591,15 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       // two sites: the raw string the gate admitted and the uuid it mints. A
       // third `TurnId.make(` is a merge landing outside the gate: route the
       // SDK value through `admitMessageTurnId`, or add a self-minted call to
-      // the list below. Only code counts: a full-line `//`, `*`, or single
-      // `/* … */` comment naming the call is not a brand site; a same-line
-      // comment after code or after another comment, and a string literal,
-      // still red the pin and are reworded, not listed (`turnIdBrandSites`
-      // says what is seen and what is not; upstream writes none of the unseen
-      // forms today, and `vp fmt` normalises the whitespace forms into reach).
+      // the list below. Only code counts; `turnIdBrandSites` says what is seen
+      // and what is not, and upstream today writes none of the unseen forms
+      // and names `TurnId.make(` in no comment (`vp fmt` normalises the
+      // whitespace forms into reach).
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const source = yield* fileSystem.readFileString(
         path.join(import.meta.dirname, "OpenCodeAdapter.ts"),
       );
-      // The adapter names `TurnId.make(` in no comment today; what the helper
-      // counts as a site, and what it does not, is its own table.
       NodeAssert.deepEqual(turnIdBrandSites(source), [
         "TurnId.make(id)",
         "TurnId.make(`opencode-turn-${yield* randomUUIDv4}`)",

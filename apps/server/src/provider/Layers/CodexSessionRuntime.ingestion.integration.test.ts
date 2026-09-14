@@ -101,19 +101,14 @@ describe("CodexSessionRuntime decodes the app-server's ids at ingestion", () => 
     // pattern `refusedIds` already uses, and that site is added to the list
     // below. A response's turn id is never `.make`d without that check: the
     // decoder trims a padded " turn-1 " and `.make` carries it as sent, and
-    // the app-server must get its own string back. Only code counts: a
-    // full-line `//`, `*`, or single `/* … */` comment naming the call is not
-    // a brand site; a same-line comment after code or after another comment,
-    // and a string literal, still red the pin and are reworded, not listed
-    // (`turnIdBrandSites` says what is seen and what is not; upstream writes
-    // none of the unseen forms today, and `vp fmt` normalises the whitespace
-    // forms into reach).
+    // the app-server must get its own string back. Only code counts;
+    // `turnIdBrandSites` says what is seen and what is not, and upstream today
+    // writes none of the unseen forms and names `TurnId.make(` in no comment
+    // (`vp fmt` normalises the whitespace forms into reach).
     const source = NodeFS.readFileSync(
       NodePath.join(import.meta.dirname, "CodexSessionRuntime.ts"),
       "utf8",
     );
-    // The runtime names `TurnId.make(` in no comment today; what the helper
-    // counts as a site, and what it does not, is its own table.
     assert.deepEqual(turnIdBrandSites(source), [
       // readRouteFields, over a notification refusedIds admitted
       "TurnId.make(notification.params.turn.id)",
