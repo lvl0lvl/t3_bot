@@ -14,6 +14,12 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import {
+  assertFakeClaudeExitsOnStdinEnd,
+  assertNoFakeClaudeChildren,
+  FAKE_CLAUDE_EXIT_ON_STDIN_END,
+} from "../../testUtils/fakeClaudeProcess.ts";
+
+import {
   buildClaudeCapabilitiesProbeQueryOptions,
   CLAUDE_CAPABILITIES_PROBE_SETTING_SOURCES,
   probeClaudeCapabilities,
@@ -129,7 +135,9 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
           "    });",
           "  }",
           "});",
-          "setInterval(() => {}, 1_000);",
+          // THE INPUT THAT LEAKED: a keepalive (`setInterval`) in place of this line —
+          // 243 copies of this fake were found running on one machine (`t3_bot-4ra`).
+          FAKE_CLAUDE_EXIT_ON_STDIN_END,
           "",
         ].join("\n"),
       );
@@ -185,6 +193,20 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
         readonly disableAllHooks?: boolean;
       };
       assert.equal(flagSettings.disableAllHooks, true);
+
+      // The probe aborted the SDK, which ended the fake's stdin; nothing else ever
+      // signals the child. It must be gone from this process's children.
+      yield* assertNoFakeClaudeChildren(tempDir);
+
+      // And the fixture's own contract, without the SDK in between: stdin closes, the
+      // fake exits. THE INPUT THAT BREAKS THIS: the `setInterval` keepalive back in
+      // place of `FAKE_CLAUDE_EXIT_ON_STDIN_END`.
+      assert.equal(
+        yield* assertFakeClaudeExitsOnStdinEnd(executablePath, {
+          env: { ...process.env, T3_PROBE_INVOCATION_PATH: invocationPath },
+        }),
+        0,
+      );
     }).pipe(Effect.scoped),
   );
 });

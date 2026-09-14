@@ -56,6 +56,11 @@ import { GrokDriver } from "../Drivers/GrokDriver.ts";
 import { OpenCodeDriver } from "../Drivers/OpenCodeDriver.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
+import {
+  assertFakeClaudeExitsOnStdinEnd,
+  assertNoFakeClaudeChildren,
+  FAKE_CLAUDE_EXIT_ON_STDIN_END,
+} from "../../testUtils/fakeClaudeProcess.ts";
 import * as CodexResetCredit from "./codexResetCredit.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
@@ -200,7 +205,10 @@ const makeTildeProviderFixtures = Effect.fn(
       "    },",
       '  }) + "\\n");',
       "});",
-      "setInterval(() => {}, 1_000);",
+      // THE INPUT THAT LEAKED: a keepalive (`setInterval`) in place of this line. The
+      // probe ends the child's stdin and awaits nothing; a fake that keeps running
+      // outlived every test that spawned it (`t3_bot-4ra`).
+      FAKE_CLAUDE_EXIT_ON_STDIN_END,
       "",
     ].join("\n"),
   );
@@ -209,6 +217,8 @@ const makeTildeProviderFixtures = Effect.fn(
 
   const asTildePath = (filePath: string) => `~/${path.relative(homePath, filePath)}`;
   return {
+    fixtureDir,
+    claudePath,
     codexBinaryPath: asTildePath(codexPath),
     claudeBinaryPath: asTildePath(claudePath),
     claudeHomePath,
@@ -389,6 +399,22 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         installed: true,
         version: "2.1.219",
       });
+      // The probe has aborted the SDK, which ended the fake's stdin. The fake must be
+      // gone from this process's children — the SDK gives out no handle, so the
+      // process table is the only place its exit can be read.
+      yield* assertNoFakeClaudeChildren(fixtures.fixtureDir);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.live("the fake claude exits when its stdin closes, as the real binary does", () =>
+    Effect.gen(function* () {
+      if (yield* isHostWindows) return;
+      const fixtures = yield* makeTildeProviderFixtures();
+      // THE INPUT THAT BREAKS THIS: the fixture's `setInterval` keepalive back in place
+      // of `FAKE_CLAUDE_EXIT_ON_STDIN_END` — the child then survives the end of its
+      // stdin and this rejects at the deadline naming its pid.
+      const exitCode = yield* assertFakeClaudeExitsOnStdinEnd(fixtures.claudePath);
+      expect(exitCode).toBe(0);
     }).pipe(Effect.provide(testLayer)),
   );
 
