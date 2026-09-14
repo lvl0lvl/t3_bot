@@ -5,13 +5,23 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import { ClaudeSettings } from "@t3tools/contracts";
+import { isHostWindows } from "@t3tools/shared/hostProcess";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+
+import {
+  assertFakeClaudeExitsOnStdinEnd,
+  assertNoFakeClaudeChildren,
+  FAKE_CLAUDE_EXIT_ON_STDIN_END,
+} from "../../testUtils/fakeClaudeProcess.ts";
 
 import {
   buildClaudeCapabilitiesProbeQueryOptions,
@@ -129,7 +139,8 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
           "    });",
           "  }",
           "});",
-          "setInterval(() => {}, 1_000);",
+          // THE INPUT THAT LEAKED: a `setInterval` keepalive here; `fakeClaudeProcess.ts` says why.
+          FAKE_CLAUDE_EXIT_ON_STDIN_END,
           "",
         ].join("\n"),
       );
@@ -185,6 +196,85 @@ it.layer(NodeServices.layer)("Claude capability probe SDK boundary", (it) => {
         readonly disableAllHooks?: boolean;
       };
       assert.equal(flagSettings.disableAllHooks, true);
+
+      // The probe aborted the SDK and awaits nothing; the fake must already be gone.
+      yield* assertNoFakeClaudeChildren(executablePath);
+
+      // The fixture's own contract without the SDK in between: stdin closes, the fake exits.
+      yield* assertFakeClaudeExitsOnStdinEnd(executablePath, {
+        env: { ...process.env, T3_PROBE_INVOCATION_PATH: invocationPath },
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("the survivor check reports a child the SDK's SIGTERM would have reaped", () =>
+    Effect.gen(function* () {
+      // `ps` is not there; the check returns without measuring.
+      if (yield* isHostWindows) return;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-probe-survivor-" });
+      const executablePath = path.join(tempDir, "fake-claude.mjs");
+      // A child of this process whose argv names the fake's path and which
+      // quits by itself when the SDK's 2 s SIGTERM would land. THE INPUT THAT
+      // BREAKS THIS: `SURVIVOR_WINDOW_MS` widened past 2 s — the check then
+      // outwaits the child and returns clean.
+      const child = NodeChildProcess.spawn(
+        process.execPath,
+        ["-e", "setTimeout(() => process.exit(0), 2_000)", executablePath],
+        { stdio: "ignore" },
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          child.kill("SIGKILL");
+        }),
+      );
+
+      const exit = yield* Effect.exit(assertNoFakeClaudeChildren(executablePath));
+
+      assert.isTrue(Exit.isFailure(exit));
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause);
+        assert.instanceOf(error, Error);
+        assert.include(
+          error.message,
+          `1 fake claude child(ren) of pid ${process.pid} outlived the probe: ${child.pid} `,
+        );
+        assert.include(error.message, executablePath);
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("the exit check names the signal when the fake dies by one", () =>
+    Effect.gen(function* () {
+      // Windows has no signals; a self-kill there reports an exit code.
+      if (yield* isHostWindows) return;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-probe-signal-" });
+      const executablePath = path.join(tempDir, "fake-claude.mjs");
+      // A fake that answers the end of its stdin with SIGTERM to itself: Node
+      // hands the parent `(null, "SIGTERM")`. THE INPUT THAT BREAKS THIS: the
+      // message built from the code alone, which reads "exited null".
+      yield* fs.writeFileString(
+        executablePath,
+        [
+          'import { createInterface } from "node:readline";',
+          "const lines = createInterface({ input: process.stdin });",
+          'lines.on("close", () => process.kill(process.pid, "SIGTERM"));',
+          "",
+        ].join("\n"),
+      );
+
+      const exit = yield* Effect.exit(assertFakeClaudeExitsOnStdinEnd(executablePath));
+
+      assert.isTrue(Exit.isFailure(exit));
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause);
+        assert.instanceOf(error, Error);
+        assert.include(error.message, `fake claude ${executablePath} (pid `);
+        assert.include(error.message, ") died by SIGTERM on its stdin closing");
+      }
     }).pipe(Effect.scoped),
   );
 });

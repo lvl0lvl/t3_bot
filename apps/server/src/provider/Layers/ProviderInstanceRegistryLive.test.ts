@@ -56,6 +56,11 @@ import { GrokDriver } from "../Drivers/GrokDriver.ts";
 import { OpenCodeDriver } from "../Drivers/OpenCodeDriver.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
+import {
+  assertFakeClaudeExitsOnStdinEnd,
+  assertNoFakeClaudeChildren,
+  FAKE_CLAUDE_EXIT_ON_STDIN_END,
+} from "../../testUtils/fakeClaudeProcess.ts";
 import * as CodexResetCredit from "./codexResetCredit.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
@@ -200,7 +205,8 @@ const makeTildeProviderFixtures = Effect.fn(
       "    },",
       '  }) + "\\n");',
       "});",
-      "setInterval(() => {}, 1_000);",
+      // THE INPUT THAT LEAKED: a `setInterval` keepalive here; `fakeClaudeProcess.ts` says why.
+      FAKE_CLAUDE_EXIT_ON_STDIN_END,
       "",
     ].join("\n"),
   );
@@ -209,6 +215,8 @@ const makeTildeProviderFixtures = Effect.fn(
 
   const asTildePath = (filePath: string) => `~/${path.relative(homePath, filePath)}`;
   return {
+    fixtureDir,
+    claudePath,
     codexBinaryPath: asTildePath(codexPath),
     claudeBinaryPath: asTildePath(claudePath),
     claudeHomePath,
@@ -389,6 +397,17 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
         installed: true,
         version: "2.1.219",
       });
+      // The probe aborted the SDK and awaits nothing; the fake must already be gone.
+      yield* assertNoFakeClaudeChildren(fixtures.claudePath);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.live("the fake claude exits when its stdin closes, as the real binary does", () =>
+    Effect.gen(function* () {
+      if (yield* isHostWindows) return;
+      const fixtures = yield* makeTildeProviderFixtures();
+      // The fixture's own contract without the SDK in between: stdin closes, the fake exits.
+      yield* assertFakeClaudeExitsOnStdinEnd(fixtures.claudePath);
     }).pipe(Effect.provide(testLayer)),
   );
 
