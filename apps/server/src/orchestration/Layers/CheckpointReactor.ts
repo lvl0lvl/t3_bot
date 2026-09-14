@@ -758,6 +758,21 @@ const make = Effect.gen(function* () {
     // Failing here leaves the tree untouched; the failure activity below
     // names it.
     const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
+    if (
+      event.payload.turnCount > 0 &&
+      !(yield* checkpointStore.hasCheckpointRef({
+        cwd: sessionRuntime.value.cwd,
+        checkpointRef: targetCheckpointRef,
+      }))
+    ) {
+      yield* appendRevertFailureActivity({
+        threadId: event.payload.threadId,
+        turnCount: event.payload.turnCount,
+        detail: `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
+        createdAt: now,
+      }).pipe(Effect.catch(() => Effect.void));
+      return;
+    }
     if (rolledBackTurns > 0) {
       yield* providerService.rollbackConversation({
         threadId: sessionRuntime.value.threadId,
@@ -765,21 +780,46 @@ const make = Effect.gen(function* () {
       });
     }
 
-    const restored = yield* checkpointStore.restoreCheckpoint({
-      cwd: sessionRuntime.value.cwd,
-      checkpointRef: targetCheckpointRef,
-      fallbackToHead: event.payload.turnCount === 0,
-    });
-    if (!restored) {
+    const restoreFailure = yield* checkpointStore
+      .restoreCheckpoint({
+        cwd: sessionRuntime.value.cwd,
+        checkpointRef: targetCheckpointRef,
+        fallbackToHead: event.payload.turnCount === 0,
+      })
+      .pipe(
+        Effect.map((restored) =>
+          restored
+            ? Option.none<string>()
+            : Option.some(
+                `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}`,
+              ),
+        ),
+        Effect.catch((error) => Effect.succeed(Option.some(error.message))),
+      );
+    if (Option.isSome(restoreFailure)) {
       yield* appendRevertFailureActivity({
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,
         detail:
           rolledBackTurns > 0
-            ? `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}; the provider conversation was rolled back ${rolledBackTurns} turn(s) and the files were not.`
-            : `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
+            ? `${restoreFailure.value}; the provider conversation was rolled back ${rolledBackTurns} turn${rolledBackTurns === 1 ? "" : "s"}; the filesystem checkpoint for turn ${event.payload.turnCount} was not restored.`
+            : `${restoreFailure.value}.`,
         createdAt: now,
       }).pipe(Effect.catch(() => Effect.void));
+      if (rolledBackTurns > 0) {
+        // A retry of this revert recomputes the rollback count from the read
+        // model's checkpoints; left at the current turn, it would roll the
+        // provider back a second time. The read model follows the conversation.
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.revert.complete",
+            commandId: yield* serverCommandId("checkpoint-revert-complete"),
+            threadId: event.payload.threadId,
+            turnCount: event.payload.turnCount,
+            createdAt: now,
+          })
+          .pipe(Effect.catch(() => Effect.void));
+      }
       return;
     }
 
