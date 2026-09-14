@@ -65,6 +65,17 @@
  *    whitespace anywhere in the name, because `-z` prints it as written where
  *    the line form quoted it.
  *
+ * 7. It refuses a `file` that is a symlink in the index. The write lands in the
+ *    link's target and `git checkout -- <link>` restores the link, so the target
+ *    stays mutated: inside the tree, every later row is measured on a mutated
+ *    file — measured, a kill credited to the link row and the next row NOT RUN
+ *    on an anchor the leftover mutation had already replaced; outside it, a file
+ *    the tool never created holds the mutation after the run, which is what 3
+ *    promises cannot happen. Unlike 1 and 6 this is per ROW (NOT RUN, exit 3),
+ *    the way an untracked or moved file is: it is answered by one more
+ *    `ls-files` beside the tracked gate's, and the other rows are still
+ *    measurable.
+ *
  * ITS EXIT CODE IS A VERDICT: 0 all killed, 2 a survivor, 3 something NOT RUN,
  * 1 the tool or config failed. Every outcome used to be 0 and only a crash was
  * non-zero, which made the code an anti-signal — 0 for the healthy state and 0
@@ -141,7 +152,10 @@ export const Mutation = Schema.Struct({
    * is a mutation id; `requireCommandIssuer` is a guard.
    */
   guard: Schema.String,
-  /** Repo-relative path of the file to mutate. */
+  /**
+   * Repo-relative path of the file to mutate — spelled as git prints it (refusal 6),
+   * a tracked regular file, not a symlink (refusal 7).
+   */
   file: Schema.String,
   /** Text to replace. It MUST occur exactly once in the file. */
   find: Schema.String,
@@ -734,6 +748,46 @@ const capture = Effect.fn("guardSweep.capture")(function* (
 }, Effect.scoped);
 
 /**
+ * Why a tracked `file` cannot be mutated in place, or undefined when it can.
+ *
+ * One test, about where a write LANDS. `git ls-files -s` prints the index mode,
+ * and `120000` is a symlink: `readFileString`/`writeFileString` follow the link,
+ * so the mutation lands in the TARGET, and `git checkout -- <file>` returns the
+ * LINK to HEAD — unchanged — leaving every later row measured on the mutated
+ * target. Executed with the unfixed tool on the two-row fixture in
+ * `guard-sweep.symlink.test.ts` (`src/link.ts -> thing.ts`, then `src/thing.ts`):
+ * the link row was credited `killed by 1` for a mutation that landed in
+ * `thing.ts`, and the target row went `NOT RUN — anchor not found` because that
+ * mutation was still there when it was read — exit 3, a false kill beside an
+ * unmeasured row. With an absolute-target link the write landed in a file
+ * OUTSIDE the tree, which refusal 3 in the header promises cannot happen. The
+ * tracked and contained gates before this one cannot see either: git tracks the
+ * link, and `path.resolve` resolves `..`, not links. A path THROUGH a linked
+ * directory never reaches this gate, because git does not index such a path
+ * (`git add` refuses it as "beyond a symbolic link") — the tracked gate refuses
+ * it first, measured.
+ *
+ * `ls-files` takes a PATHSPEC, so a row named `src` lists every entry under it,
+ * and judging the first line called `src` "a symlink" whenever `src/alink.ts`
+ * sorted first and "could not read" otherwise. Only the entry whose path IS
+ * `file` decides; a directory, a glob or a prefix has none and the read gate
+ * names it. `-z` prints the path as written, so the equality is byte-exact.
+ */
+const linkRefusal = Effect.fn("guardSweep.linkRefusal")(function* (root: string, file: string) {
+  const listed = yield* capture(["git", "ls-files", "-s", "-z", "--", file], root);
+  const own = listed.stdout
+    .split("\0")
+    .find((entry) => entry.slice(entry.indexOf("\t") + 1) === file);
+  if (own?.startsWith("120000 ")) {
+    return (
+      `${file} is a symlink in the index — a write would land in its target, and ` +
+      "`git checkout --` would restore only the link"
+    );
+  }
+  return undefined;
+});
+
+/**
  * For a command whose failure means there is no measurement to report.
  *
  * `git status` deciding whether the tree is dirty, `git checkout` putting a
@@ -877,6 +931,15 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
     if (tracked.exitCode !== 0) {
       continue;
     }
+    // AND NOT A LINK, the row loop's fourth gate. The breaking input is a link whose TARGET
+    // lacks the anchor (`src/plainlink.ts -> plain.ts`): read through here the pre-flight finds
+    // no anchor and refuses the WHOLE config with `GuardSweepConfigError`, exit 1, blaming the
+    // anchor, where the row loop gives exit 3 naming the link. A link whose target HAS it passes
+    // here and pays the baseline for a row the loop then refuses. Skipped, not refused, so the
+    // row loop keeps the accurate reason.
+    if ((yield* linkRefusal(root, mutation.file)) !== undefined) {
+      continue;
+    }
     const read = yield* fs.readFileString(target).pipe(Effect.result);
     if (read._tag === "Success") {
       sources.set(mutation.file, read.success);
@@ -967,6 +1030,15 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
         `${mutation.id}: NOT RUN — git does not track ${mutation.file} — the path may be ` +
           "misspelled, or the file may be gitignored — so it could not be restored",
       );
+      continue;
+    }
+    // WHERE THE WRITE WOULD LAND, before anything is read through the path. A tracked
+    // symlink passes every gate above — porcelain is clean, git tracks the link — and
+    // the write goes to its target while the restore returns the link (`linkRefusal`).
+    const link = yield* linkRefusal(root, mutation.file);
+    if (link !== undefined) {
+      swept.push({ mutation, verdict: { _tag: "not-run", reason: link } });
+      yield* Console.log(`${mutation.id}: NOT RUN — ${link}`);
       continue;
     }
     // A STALE PATH IS THE SAME CLASS AS A STALE ANCHOR, so it gets the same
@@ -1099,9 +1171,9 @@ export const sweep = Effect.fn("guardSweep.sweep")(function* (
  * does not resolve exactly once now refuses the config with exit 1 before the
  * baseline. The rule stands on what is left — a `setupCommand` that wrote a
  * mutation target, a path outside the swept tree, an untracked or unreadable
- * file, a mutant that does not compile, an unconfirmed kill — each of which is a
- * row the run could not measure while measuring others, which is exactly the
- * state that must not hide behind a survivor.
+ * file, a symlinked file, a mutant that does not compile, an unconfirmed kill —
+ * each of which is a row the run could not measure while measuring others,
+ * which is exactly the state that must not hide behind a survivor.
  *
  * 1 is not produced here. It is what the runtime already exits with when the
  * tool or its config failed, which is a third thing again: nothing was measured
