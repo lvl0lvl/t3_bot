@@ -92,8 +92,9 @@ describe("turnIdBrandSites", () => {
       "const g = (turn: { id: string }) => TurnId!?.make(turn.id);\n",
       [],
     ],
-    // Not seen by design (a match loosened to `TurnId\W*make\W*\(` would see the
-    // bracket access; this row is what reds it).
+    // Not seen by design. A match loosened to `TurnId\W*make\W*\(` would see
+    // the bracket access; the bracket-access row is what reds it (`.call`
+    // stays green under it either way).
     [
       "a `.call` on make",
       "const g = (turn: { id: string }) => TurnId.make.call(TurnId, turn.id);\n",
