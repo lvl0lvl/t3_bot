@@ -822,9 +822,24 @@ const linkRefusal = Effect.fn("guardSweep.linkRefusal")(function* (root: string,
   if (info._tag === "Failure") {
     return undefined;
   }
-  // A directory's link count is its entry count, so only a regular file is judged
-  // by it; a directory row falls through to the read gate, which names it.
-  const links = info.success.type === "File" ? Option.getOrElse(info.success.nlink, () => 1) : 1;
+  // A directory's link count is above 1 with no inode shared — `.` and every
+  // subdirectory's `..` are names for it, and what else counts varies by filesystem
+  // — so it says nothing about where a write lands and is not judged; a directory
+  // row falls through to the read gate, which names it.
+  if (info.success.type !== "File") {
+    return undefined;
+  }
+  // A layer that cannot count links cannot say where a write lands, so it is
+  // refused, not passed: NOT RUN is louder than a false kill. Node's layer fills
+  // `nlink` on every platform it supports, so no input reaches this; the posture
+  // is the pin.
+  if (Option.isNone(info.success.nlink)) {
+    return (
+      `${file} has no link count from the filesystem — the other names of its inode ` +
+      "cannot be known"
+    );
+  }
+  const links = info.success.nlink.value;
   if (links > 1) {
     return (
       `${file} has ${links} links — a write lands in every name of its inode, and ` +
