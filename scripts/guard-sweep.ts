@@ -90,7 +90,14 @@
  *    and the next run is refused at exit 1. Unlike 1 and 6 this is per ROW
  *    (NOT RUN, exit 3), the way an untracked or moved file is: it is answered
  *    by one more `ls-files` and a `stat`, beside the tracked gate, and the
- *    other rows are still measurable.
+ *    other rows are still measurable. THE REACH IS WIDER THAN IT LOOKS and a
+ *    fresh worktree is not exempt: measured in this repo, `pnpm install
+ *    --frozen-lockfile` alone leaves 143 tracked source files at two links (the
+ *    `file:`-protocol packages under `apps/mobile/modules`, hard-linked into
+ *    `node_modules`), so a row on any of them is refused in BOTH modes today.
+ *    No checked-in config points at one — all 19 paths across the six configs
+ *    are `apps/server/src/**` at one link, measured — so nothing we sweep is
+ *    affected, and the first config aimed at a mobile module will be.
  *
  * ITS EXIT CODE IS A VERDICT: 0 all killed, 2 a survivor, 3 something NOT RUN,
  * 1 the tool or config failed. Every outcome used to be 0 and only a crash was
@@ -792,9 +799,16 @@ const capture = Effect.fn("guardSweep.capture")(function* (
  * mutation, and `git checkout -- <file>` unlinks and recreates only this name.
  * Measured (`t3_bot-43k`): a `--in-place` sweep of a file with a second name
  * outside the tree was `killed by 1` at exit 0 and left `if (false) {` in the
- * other name. A fresh worktree has every file at one link; a `setupCommand`
- * that runs `ln`, or `--in-place` on a `cp -al` / `rsync --link-dest` checkout,
- * does not. A stat that fails is left to the read gate, which names it.
+ * other name. DO NOT READ A FRESH WORKTREE AS SAFE: the install a fresh worktree
+ * must run is itself a route. Measured in this repo, after nothing but
+ * `pnpm install --frozen-lockfile`, 143 TRACKED source files sit at two links —
+ * everything under the three `file:`-protocol packages in `apps/mobile/modules`,
+ * because pnpm materializes a `file:` dependency by hard-linking each file into
+ * `node_modules`. So both modes reach this, and a row under those packages is
+ * refused today. Other routes: a `setupCommand` that runs `ln`, and `--in-place`
+ * on a `cp -al` / `rsync --link-dest` checkout. The list is not closed — the
+ * count is what decides, not the provenance.
+ * A stat that fails is left to the read gate, which names it.
  *
  * The index mode is asked FIRST. `fs.stat` follows a link (Effect has no
  * lstat), so with the order swapped a tracked DANGLING link fails the stat and
@@ -860,7 +874,8 @@ const linkRefusal = Effect.fn("guardSweep.linkRefusal")(function* (root: string,
   if (links > 1) {
     return (
       `${file} has ${links} links — a write lands in every name of its inode, and ` +
-      "`git checkout --` recreates only this one"
+      "`git checkout --` recreates only this one. Find the others with `find . -inum " +
+      "<inode>`; in a workspace `node_modules` is where to look first"
     );
   }
   return undefined;

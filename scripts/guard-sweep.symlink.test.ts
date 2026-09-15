@@ -28,9 +28,13 @@
  * A HARD LINK is the same defect without the index knowing (`t3_bot-43k`, found by #66's
  * review): mode `100644`, porcelain clean, realpath inside — and `writeFileString` truncates
  * the shared inode, so every other name holds the mutation while the restore unlinks and
- * recreates only the tree's own name. Reached by `--in-place` on a `cp -al` / `rsync
- * --link-dest` checkout, or by a `setupCommand` that runs `ln`; a fresh worktree without one
- * has every file at one link.
+ * recreates only the tree's own name. Reached by the INSTALL a fresh worktree has to run —
+ * measured in this repo, `pnpm install --frozen-lockfile` alone leaves 143 tracked source
+ * files at two links, every one under the three `file:`-protocol packages in
+ * `apps/mobile/modules`, which pnpm materializes by hard-linking into `node_modules` — and
+ * also by `--in-place` on a `cp -al` / `rsync --link-dest` checkout, or a `setupCommand` that
+ * runs `ln`. A fresh worktree is not the safe case; there is no safe case, which is why the
+ * fixtures below build the link explicitly rather than relying on a mode to be immune.
  */
 import { describe, expect, it } from "vite-plus/test";
 
