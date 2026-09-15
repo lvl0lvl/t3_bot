@@ -2,6 +2,16 @@
  * ONE channel roster in which a THREAD member and a HUMAN member share a
  * `memberId`, built once and imported by every test that compares memberships.
  *
+ * THE OTHER ROSTER COLLISION IS `./duplicateRef.ts`, and the two are not
+ * interchangeable. Here the two rows differ in `memberKind`, so they are two
+ * different refs and the guard under test is the KIND CLAUSE. There, both rows
+ * carry one ref under two handles, the kind clause is irrelevant, and ROW ORDER
+ * decides the answer. A test written against this fixture cannot see an
+ * order-dependent lookup at all, because only one of these rows matches an
+ * author predicate — so a `find` -> `findLast` mutant returns the same row and
+ * survives. If what you need is the kind clause, it is here; if it is which of
+ * two identical refs a lookup returns, it is there.
+ *
  * Three independent guards lost their `memberKind` clause in one day and every
  * suite stayed green (`t3_bot-46h`): the reactor's wake filter, the shell
  * stream's membership test, the decider's author lookup. Not three careless

@@ -18,6 +18,7 @@ import {
   COLLIDING_THREAD_ISSUER,
   collidingReadModel,
 } from "./testing/collidingRoster.ts";
+import { DUPLICATE_ISSUER, duplicateRefReadModel } from "./testing/duplicateRef.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const CHANNEL = ChannelId.make("channel-1");
@@ -1003,5 +1004,107 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
             ?.authorHandle,
         ).toBe(BOSS1);
       }),
+  );
+
+  it.effect(
+    "stores a post under the FIRST of two handles holding one ref, which is the row `find` returns",
+    () =>
+      Effect.gen(function* () {
+        // A DIFFERENT COLLISION FROM THE TWO ABOVE. Those seat a human and a thread sharing a
+        // `memberId` — two rows whose KINDS differ, so only one matches the author predicate and
+        // `find` and `findLast` return the same row. This roster seats ONE member under two
+        // handles (`./testing/duplicateRef.ts`): both rows match, so the lookup at
+        // `commandInvariants.ts:513` returns the FIRST and `findLast` would return the SECOND,
+        // and what changes is the handle the post is stored under.
+        //
+        // The invariant that refuses this state says so itself, which is why this test cites it
+        // rather than arguing it (`commandInvariants.ts:491-494`): "a post's author is resolved
+        // by that pair and stored under whichever handle is found first, so a second handle for
+        // it decides authorship by row order."
+        //
+        // REACHABLE BY REPLAY ONLY. All three commands that seat members refuse it — `adding` is
+        // compared against itself and against `seated` — but `seated` is never re-validated
+        // against itself, deliberately, so a database written before `t3_bot-1ez` still holds it.
+        const roster = duplicateRefReadModel({
+          now: NOW,
+          channelId: CHANNEL,
+          channelName: "seniors",
+          canonicalHandle: OWNER,
+          legacyHandle: BOSS1,
+          first: "canonical",
+        });
+
+        // THE ORDER IS THE MEASUREMENT, so it is asserted rather than trusted. Both rows match
+        // the predicate; the test's power comes entirely from knowing which one is first. Assert
+        // the SECOND row's handle instead and the test passes under `find` and `findLast` alike.
+        expect(roster.channels[0]?.members[0]).toMatchObject({
+          handle: OWNER,
+          memberKind: "human",
+        });
+        expect(roster.channels[0]?.members[1]).toMatchObject({
+          handle: BOSS1,
+          memberKind: "human",
+        });
+
+        const decided = yield* decideOrchestrationCommand({
+          command: channelProbe("channel.post.create") as never,
+          readModel: roster,
+          issuer: DUPLICATE_ISSUER,
+        });
+        const events = Array.isArray(decided) ? decided : [decided];
+        const event = events[0];
+        expect(event?.type).toBe("channel.post-created");
+
+        // THE HANDLE IS THE CONSEQUENCE. `authorHandle` is taken from the row the lookup
+        // returned, so `findLast` attributes the post to the legacy handle instead — the same
+        // person, under a name the channel's readers may not recognise as theirs.
+        expect(
+          (event as { readonly payload?: { readonly authorHandle?: string } })?.payload
+            ?.authorHandle,
+        ).toBe(OWNER);
+      }),
+  );
+
+  it.effect("refuses renaming one duplicate handle, naming the row that still holds the ref", () =>
+    Effect.gen(function* () {
+      // THE RENAME CASE'S COMMENT CLAIMS THIS AND NOTHING TESTED IT (`decider.ts:2308-2315`):
+      // on a roster replayed from before `t3_bot-1ez`, the REF clause fires on a rename because
+      // the renamed row is lifted out of `seated` while the OTHER row still holds the ref.
+      // Measured here rather than believed.
+      //
+      // It is also the repair path's precondition: the comment says `member.remove` of one
+      // duplicate is the fix, and it says so because rename is refused. If this ever measures
+      // false, the comment is what is wrong.
+      const roster = duplicateRefReadModel({
+        now: NOW,
+        channelId: CHANNEL,
+        channelName: "seniors",
+        canonicalHandle: OWNER,
+        legacyHandle: BOSS1,
+        first: "canonical",
+      });
+
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "channel.member.rename",
+          commandId: CommandId.make("cmd-duplicate-rename"),
+          channelId: CHANNEL,
+          from: OWNER,
+          to: ChannelMemberHandle.make("owner-renamed"),
+        } as never,
+        readModel: roster,
+        issuer: HUMAN,
+      }).pipe(Effect.flip);
+
+      // THE TYPED REFUSAL, not merely something going wrong: `Effect.flip` is what distinguishes
+      // a refusal from a defect here, exactly as in the issuer tests above.
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+      if (error._tag === "OrchestrationCommandInvariantError") {
+        expect(error.detail).toContain("are the same member");
+        // NAMES THE OTHER HANDLE. An operator reading this has to know which row to remove, and
+        // the one they typed is not it.
+        expect(error.detail).toContain(BOSS1);
+      }
+    }),
   );
 });

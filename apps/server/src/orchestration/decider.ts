@@ -2309,7 +2309,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // built the only refusal left is the HANDLE clause — a rename onto a handle
       // another member holds — with the same text an add would give. On a roster
       // replayed from before `t3_bot-1ez` (one ref under two handles,
-      // `testing/collidingRoster.ts`) the REF clause fires too: the other row
+      // `testing/duplicateRef.ts`) the REF clause fires too: the other row
       // still holds the ref, so renaming EITHER handle is refused naming the
       // other. That is the delta rule doing its job — a rename answers for the
       // row it seats — and `member.remove` of one duplicate is the repair.
