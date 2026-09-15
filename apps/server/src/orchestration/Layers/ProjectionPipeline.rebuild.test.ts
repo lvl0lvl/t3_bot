@@ -7,6 +7,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -16,6 +17,7 @@ import { ServerConfig } from "../../config.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { ChannelPostWakeRepository } from "../../persistence/Services/ChannelPostWakes.ts";
 import { ProjectionDecoderRepository } from "../../persistence/Services/ProjectionDecoder.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
@@ -222,11 +224,24 @@ layer("OrchestrationProjectionPipeline decoder hole", (it) => {
         endedAt: later.sequence,
       });
       yield* plantMarkerProject;
+      // A capture row a projector writes with a plain INSERT: a rebuild that
+      // kept it would collide with the replay's own insert, so it must go too.
+      yield* (yield* ChannelPostWakeRepository).link({
+        channelId: "channel-marker",
+        postId: "post-marker",
+        threadId: laterThread,
+        turnId: TurnId.make("turn-marker"),
+        linkedAt: now,
+      });
 
       yield* pipeline.bootstrap;
 
       assert.deepEqual(yield* projectedThreadIds(sql), [laterThread, skippedThread]);
       assert.isFalse(yield* markerProjectStands(sql));
+      const wakeRows = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS "count" FROM channel_post_wake
+      `.pipe(Effect.map((rows) => rows[0]!.count));
+      assert.equal(wakeRows, 0);
       assert.isTrue((yield* projectorWatermarks).every((sequence) => sequence === later.sequence));
       // The older epochs are gone and this build's epoch covers the whole log.
       const epochs = yield* decoder.listEpochs();
