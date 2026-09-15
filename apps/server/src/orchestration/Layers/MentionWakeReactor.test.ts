@@ -1215,8 +1215,19 @@ describe("MentionWakeReactor", () => {
         appendCollidingRoster({ events: system.events, projectId: PROJECT_ID, now: NOW }),
       );
       await system.dispose();
+
+      // THE REACTOR RUNS ONCE FIRST so it owns a cursor, then goes down. A raw
+      // append does not move `latestSequence` — that reads the engine's
+      // in-memory read model, which only `dispatch` advances — so an event
+      // appended beside a live reactor is never drained through. Landing it
+      // while the reactor is DOWN and restarting is the shape the first test in
+      // this file uses, and it is the only way a hand-written event reaches the
+      // reactor at all.
       system = await makeSystem(databasePath);
       await system.startReactor();
+      await system.dispose();
+
+      system = await makeSystem(databasePath);
 
       // THE LEGACY SHAPE, appended as an EVENT because the decider cannot
       // produce it any more: since `mentionRefs` landed, every post it writes
@@ -1259,6 +1270,10 @@ describe("MentionWakeReactor", () => {
           },
         }),
       );
+      await system.dispose();
+
+      system = await makeSystem(databasePath);
+      await system.startReactor();
       await system.run(
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
