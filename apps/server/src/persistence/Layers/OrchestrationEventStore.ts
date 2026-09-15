@@ -427,11 +427,16 @@ const makeEventStore = Effect.gen(function* () {
     }
     return Stream.paginate(
       { cursor: input.fromSequenceExclusive, remaining: limit },
-      ({ cursor, remaining }) =>
-        readAggregateEventRows({
+      ({ cursor, remaining }) => {
+        // One binding for the SQL limit and the stop test below, which compare
+        // against each other: a short page means the aggregate has no more
+        // rows in range, and a stop test reading READ_PAGE_SIZE while the
+        // query asked for `remaining` ends a full last page one read early.
+        const pageLimit = Math.min(remaining, READ_PAGE_SIZE);
+        return readAggregateEventRows({
           ...input,
           fromSequenceExclusive: cursor,
-          limit: Math.min(remaining, READ_PAGE_SIZE),
+          limit: pageLimit,
         }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
@@ -445,15 +450,16 @@ const makeEventStore = Effect.gen(function* () {
               "OrchestrationEventStore.readAggregateRange:rowToEvent",
             ).pipe(
               Effect.map((events) => {
-                // A page whose rows were all skipped yields no events and must
-                // still advance: the input is a page filled by unknown rows
-                // with a known row after them.
+                // The stop test counts ROWS READ, not events decoded. A page
+                // whose rows were all skipped yields no events and must still
+                // advance: the input is a page filled by unknown rows with a
+                // known row after them.
                 const lastRow = rows.at(-1);
                 const nextRemaining = remaining - events.length;
                 return [
                   events,
                   lastRow === undefined ||
-                  rows.length < Math.min(remaining, READ_PAGE_SIZE) ||
+                  rows.length < pageLimit ||
                   nextRemaining <= 0 ||
                   lastRow.sequence >= input.toSequenceInclusive
                     ? Option.none()
@@ -462,7 +468,8 @@ const makeEventStore = Effect.gen(function* () {
               }),
             ),
           ),
-        ),
+        );
+      },
     );
   };
 
