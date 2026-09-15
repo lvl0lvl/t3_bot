@@ -96,11 +96,10 @@ const decodeRowsSkippingUnknownTypes = (
   operation: string,
 ) =>
   Effect.forEach(rows, (row) => {
-    const { type, aggregateKind, ...rest } = row;
-    const unknown = !isKnownAggregateKind(aggregateKind)
-      ? { what: "aggregate kind", value: aggregateKind }
-      : !isKnownEventType(type)
-        ? { what: "type", value: type }
+    const unknown = !isKnownAggregateKind(row.aggregateKind)
+      ? { what: "aggregate kind", value: row.aggregateKind }
+      : !isKnownEventType(row.type)
+        ? { what: "type", value: row.type }
         : undefined;
     if (unknown !== undefined) {
       // The value is a column a newer build wrote, so the warning bounds and
@@ -112,15 +111,17 @@ const decodeRowsSkippingUnknownTypes = (
       ).pipe(
         Effect.annotateLogs({
           sequence: row.sequence,
-          type,
-          aggregateKind,
+          type: row.type,
+          aggregateKind: row.aggregateKind,
           aggregateId: row.aggregateId,
           occurredAt: row.occurredAt,
         }),
         Effect.as(Option.none<OrchestrationEvent>()),
       );
     }
-    return decodeEvent({ ...rest, aggregateKind, type }).pipe(
+    // The guarded row goes to the union decode whole. decodeEvent takes
+    // unknown, and the union brands the kind and the id itself.
+    return decodeEvent(row).pipe(
       Effect.mapError(toPersistenceDecodeError(operation)),
       Effect.map(Option.some),
     );
