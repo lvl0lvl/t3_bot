@@ -451,7 +451,7 @@ layer("OrchestrationProjectionPipeline downgrade then upgrade", (it) => {
       const lateEvent = yield* eventStore.append(threadCreated(projectId, late, "evt-down-late"));
       yield* decoder.appendEpoch({
         eventTypes: OrchestrationEventType.literals.filter((type) => type !== "thread.created"),
-        aggregateKinds: ["project", "thread", "channel"],
+        aggregateKinds: OrchestrationAggregateKind.literals,
         startedAtSequence: earlyEvent.sequence,
         endedAtSequence: lateEvent.sequence,
       });
@@ -508,7 +508,7 @@ layer("OrchestrationProjectionPipeline earlier epoch applied", (it) => {
       );
       yield* decoder.appendEpoch({
         eventTypes: OrchestrationEventType.literals.filter((type) => type !== "thread.created"),
-        aggregateKinds: ["project", "thread", "channel"],
+        aggregateKinds: OrchestrationAggregateKind.literals,
         startedAtSequence: applied.sequence,
         endedAtSequence: known.sequence,
       });

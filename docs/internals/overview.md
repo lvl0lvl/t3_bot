@@ -76,7 +76,10 @@ a build whose lists are larger scans each earlier epoch's range for a row of a t
 epoch lacked. A hit empties every projection table and replays from 0, the same path a fresh
 database takes. The downgrade direction is what makes this work: an older build on a newer ledger
 has nothing to scan and opens an epoch with its own smaller lists, which the next newer build then
-scans. Holes older than the ledger, and the mention-wake reactor's own cursor, are not covered
+scans. What the ledger does NOT cover: holes older than the ledger itself, the mention-wake
+reactor's own cursor, and the engine's post-dispatch reconcile
+([`reconcileReadModelAfterDispatchFailure`](../../apps/server/src/orchestration/Layers/OrchestrationEngine.ts)),
+which reads forward from a dispatch sequence with no cursor of its own onto an in-memory read model
 (bead `t3_bot-lt7y`).
 
 The environment descriptor's capabilities do not help here, and reaching for them is the tempting
