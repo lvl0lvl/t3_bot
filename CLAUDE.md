@@ -131,15 +131,24 @@ blank is informative — it marks a rule that has only ever been obeyed.
   the mutant that typechecked and the test that named it. Silence, an idle review lane, a compile crash
   counted as a kill, and a "measured" over a NOT RUN row are the same failure: success reported by the
   ABSENCE of a failure signal, which is what a crashed, silent or skipped run also produces.
-  A fifth costume, and the one that bites while you are VERIFYING something: a shell flag that errors
-  or silently matches nothing in the command you are checking WITH. `grep -c` exits 0 when it FINDS
-  matches, so a verdict piped through it is gone; `\s` is not POSIX ERE, so that pattern matches
-  nothing and returns 0 for every revision; `-E` in ripgrep is `--encoding`, so the command errors and
-  prints nothing. Three of those in one night, in three different people's verification commands, each
-  returning the same thing — nothing, which is indistinguishable from a correct negative result. The
-  defence that caught all three is one extra command: run a pattern that MUST match something.
-  _(Fired four times in one night on four instruments, plus three times in the verification commands
-  used to check the other four. None of the seven was caught by being careful.)_
+  A fifth costume, and the one that bites while you are VERIFYING something: THE THING THAT REPORTS A
+  VERDICT IS NOT THE THING THAT PRODUCED IT. Three forms, each observed at least twice.
+  (a) A flag that errors or matches nothing in the command you are checking WITH: `grep -c` exits 0
+  when it FINDS matches, so a verdict piped through it is gone; `\s` is not POSIX ERE, so the pattern
+  matches nothing and returns 0 for every revision; `-E` in ripgrep is `--encoding`, so the command
+  errors and prints nothing; ugrep refuses an over-complex pattern with an error that reads like no
+  matches. (b) A WRAPPER'S status standing in for the tool's: guard-sweep exited 1 on a missing
+  `--config` and the harness reported "completed (exit code 0)" — and three days earlier another
+  session read exit 0 on the same tool from its own PIPESTATUS. No flag is wrong in either; the layer
+  that answers is not the layer that ran. Hence: a CI step must assert the tool's own exit status.
+  (c) A value you CONSTRUCTED rather than read: a short SHA padded to full length, refused at the door
+  by GitHub, twice in one night by two people.
+  All three return the same thing — nothing, or a green — which is indistinguishable from a correct
+  result. The defence that caught every instance is one extra command: run something that MUST produce
+  a known answer, and read the answer rather than the exit.
+  _(Fired four times in one night on four instruments, plus eight more times in the commands and
+  layers used to check them. None was caught by being careful. Form (b) is visible as a class only
+  because a withdrawn claim was left in the record rather than deleted.)_
 - **A gating check must gate on a status that ENCODES ITS VERDICT.** Sequencing with `;` gates nothing,
   and a pipeline through `grep -c`, `wc -l` or `tee` replaces the verdict with "the pipeline ran":
   `grep -c` exits 0 when it FINDS matches, so `tsc | grep -cE ': error' | xargs echo && git push`
