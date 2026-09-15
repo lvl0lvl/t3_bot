@@ -84,7 +84,9 @@ export const COLLIDING_CHANNEL_NAME = "collide";
 /** The thread that shares the operator's id. */
 export const COLLIDING_THREAD_ID = ThreadId.make(COLLIDING_MEMBER_ID);
 
-const COLLIDING_HUMAN_HANDLE = ChannelMemberHandle.make("walt");
+/** The human half's handle. Exported so a fixture can mention it by name
+ * rather than by a literal that would not move if the roster did. */
+export const COLLIDING_HUMAN_HANDLE = ChannelMemberHandle.make("walt");
 export const COLLIDING_THREAD_HANDLE = ChannelMemberHandle.make("twin");
 
 /**

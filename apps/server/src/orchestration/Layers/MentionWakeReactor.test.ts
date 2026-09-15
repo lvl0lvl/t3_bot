@@ -68,6 +68,7 @@ import { MentionWakeBudgetRepositoryLive } from "../../persistence/Layers/Mentio
 import {
   COLLIDING_CHANNEL_ID,
   COLLIDING_CHANNEL_NAME,
+  COLLIDING_HUMAN_HANDLE,
   COLLIDING_HUMAN_ISSUER,
   COLLIDING_THREAD_HANDLE,
   COLLIDING_THREAD_ID,
@@ -1199,6 +1200,74 @@ describe("MentionWakeReactor", () => {
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
       expect(await wakeMessages(system, COLLIDING_THREAD_ID)).toHaveLength(1);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("does not wake a HUMAN member whose handle a legacy post mentions", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    let system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.run(
+        appendCollidingRoster({ events: system.events, projectId: PROJECT_ID, now: NOW }),
+      );
+      await system.dispose();
+      system = await makeSystem(databasePath);
+      await system.startReactor();
+
+      // THE LEGACY SHAPE, appended as an EVENT because the decider cannot
+      // produce it any more: since `mentionRefs` landed, every post it writes
+      // carries refs, and the refs branch of `mentioned` compares memberKind
+      // ITSELF. So on a post with refs the `memberKind === "thread"` guard is
+      // redundant, and a sweep found it deletable with the whole suite green.
+      //
+      // The guard is still load-bearing on the OTHER branch. An event written
+      // before the field existed carries no refs and is matched by HANDLE
+      // alone — the contract says those replay forever and the reactor keeps
+      // the branch for them — and there the kind test is the only thing between
+      // a human member and a wake.
+      //
+      // THE AUTHOR IS THE HUMAN, and that is not incidental. If the twin THREAD
+      // posted, the author exclusion (`!(author is thread && author.memberId ===
+      // member.memberId)`) would drop the human member for the author's sake on
+      // this roster, where both halves share one id — and the test would pass
+      // with the guard inert, for a reason that has nothing to do with kind.
+      await system.run(
+        system.events.append({
+          eventId: EventId.make("event-legacy-mention"),
+          aggregateKind: "channel",
+          aggregateId: COLLIDING_CHANNEL_ID,
+          occurredAt: NOW,
+          commandId: CommandId.make("cmd-legacy-mention"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-legacy-mention"),
+          metadata: {},
+          type: "channel.post-created",
+          payload: {
+            channelId: COLLIDING_CHANNEL_ID,
+            postId: ChannelPostId.make("post-legacy-mention"),
+            authorRef: COLLIDING_HUMAN_ISSUER,
+            authorHandle: COLLIDING_HUMAN_HANDLE,
+            body: "walt, look at this",
+            mentions: [COLLIDING_HUMAN_HANDLE],
+            // No `mentionRefs`. That absence IS the fixture.
+            parentPostId: null,
+            createdAt: NOW,
+          },
+        }),
+      );
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      // NOT WOKEN, and the thread it would be woken as EXISTS — the colliding
+      // roster seats a real thread under the human's id. So an empty result
+      // here is the guard refusing, not the id failing to resolve; asserted
+      // against a thread that is absent, this would pass either way.
+      expect(await wakeMessages(system, COLLIDING_THREAD_ID)).toHaveLength(0);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
