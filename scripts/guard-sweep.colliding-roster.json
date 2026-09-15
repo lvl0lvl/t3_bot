@@ -78,6 +78,14 @@
       "replace": "      member.memberKind !== input.authorRef.memberKind &&\n      member.memberId === input.authorRef.memberId,"
     },
     {
+      "id": "author-lookup-takes-the-last-row",
+      "guard": "commandInvariants/requireChannelAuthorIsMember",
+      "axis": "wider",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "  const author = input.channel.members.find(",
+      "replace": "  const author = input.channel.members.findLast("
+    },
+    {
       "id": "gateway-member-by-id-alone",
       "guard": "channelGatewayLive/getChannelForMember",
       "axis": "inert",

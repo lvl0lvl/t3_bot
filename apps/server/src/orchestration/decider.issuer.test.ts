@@ -18,6 +18,7 @@ import {
   COLLIDING_THREAD_ISSUER,
   collidingReadModel,
 } from "./testing/collidingRoster.ts";
+import { DUPLICATE_ISSUER, duplicateRefReadModel } from "./testing/duplicateRef.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const CHANNEL = ChannelId.make("channel-1");
@@ -994,6 +995,113 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
           readModel: colliding,
           // The THREAD, whose id the human member shares.
           issuer: COLLIDING_THREAD_ISSUER,
+        });
+        const events = Array.isArray(decided) ? decided : [decided];
+        const event = events[0];
+        expect(event?.type).toBe("channel.post-created");
+        expect(
+          (event as { readonly payload?: { readonly authorHandle?: string } })?.payload
+            ?.authorHandle,
+        ).toBe(BOSS1);
+      }),
+  );
+
+  it.effect(
+    "stores a post under the FIRST of two handles holding one ref, which is the row `find` returns",
+    () =>
+      Effect.gen(function* () {
+        // A DIFFERENT COLLISION FROM THE TWO ABOVE. Those seat a human and a thread sharing a
+        // `memberId` — two rows whose KINDS differ, so only one matches the author predicate and
+        // `find` and `findLast` return the same row. This roster seats ONE member under two
+        // handles (`./testing/duplicateRef.ts`): both rows match, so the lookup at
+        // `commandInvariants.ts:513` returns the FIRST and `findLast` would return the SECOND,
+        // and what changes is the handle the post is stored under.
+        //
+        // The invariant that refuses this state says so itself, which is why this test cites it
+        // rather than arguing it (`commandInvariants.ts:491-494`): "a post's author is resolved
+        // by that pair and stored under whichever handle is found first, so a second handle for
+        // it decides authorship by row order."
+        //
+        // REACHABLE BY REPLAY ONLY. All three commands that seat members refuse it — `adding` is
+        // compared against itself and against `seated` — but `seated` is never re-validated
+        // against itself, deliberately, so a database written before `t3_bot-1ez` still holds it.
+        const roster = duplicateRefReadModel({
+          now: NOW,
+          channelId: CHANNEL,
+          channelName: "seniors",
+          canonicalHandle: OWNER,
+          legacyHandle: BOSS1,
+          first: "canonical",
+        });
+
+        // THE ORDER IS THE MEASUREMENT, so it is asserted rather than trusted. Both rows match
+        // the predicate; the test's power comes entirely from knowing which one is first. Assert
+        // the SECOND row's handle instead and the test passes under `find` and `findLast` alike.
+        expect(roster.channels[0]?.members[0]).toMatchObject({
+          handle: OWNER,
+          memberKind: "human",
+        });
+        expect(roster.channels[0]?.members[1]).toMatchObject({
+          handle: BOSS1,
+          memberKind: "human",
+        });
+
+        const decided = yield* decideOrchestrationCommand({
+          command: channelProbe("channel.post.create") as never,
+          readModel: roster,
+          issuer: DUPLICATE_ISSUER,
+        });
+        const events = Array.isArray(decided) ? decided : [decided];
+        const event = events[0];
+        expect(event?.type).toBe("channel.post-created");
+
+        // THE HANDLE IS THE CONSEQUENCE. `authorHandle` is taken from the row the lookup
+        // returned, so `findLast` attributes the post to the legacy handle instead — the same
+        // person, under a name the channel's readers may not recognise as theirs.
+        expect(
+          (event as { readonly payload?: { readonly authorHandle?: string } })?.payload
+            ?.authorHandle,
+        ).toBe(OWNER);
+      }),
+  );
+
+  it.effect(
+    "stores the same post under the OTHER handle when the roster is in the order a reboot produces",
+    () =>
+      Effect.gen(function* () {
+        // THE SAME DATABASE, THE OTHER ANSWER. The test above seats the canonical handle first,
+        // which is INSERTION order — what the projector builds in memory as `channel.member-added`
+        // arrives. A restarted engine loads the roster through `listChannelMemberRows`, which is
+        // `ORDER BY handle ASC` (`Layers/ProjectionSnapshotQuery.ts:561`), and "boss1" sorts
+        // before "owner" — so on this roster a reboot puts the LEGACY row first and `find`
+        // returns it.
+        //
+        // This is the case worth having: it is the one a real deployment reaches after any
+        // restart, and it is where the attribution a reader sees changes with nobody editing
+        // anything. The pair is also the fixture's own inversion proof — same rows, opposite
+        // order, opposite handle — so neither test can pass under a lookup that ignores order.
+        const roster = duplicateRefReadModel({
+          now: NOW,
+          channelId: CHANNEL,
+          channelName: "seniors",
+          canonicalHandle: OWNER,
+          legacyHandle: BOSS1,
+          first: "legacy",
+        });
+
+        expect(roster.channels[0]?.members[0]).toMatchObject({
+          handle: BOSS1,
+          memberKind: "human",
+        });
+        expect(roster.channels[0]?.members[1]).toMatchObject({
+          handle: OWNER,
+          memberKind: "human",
+        });
+
+        const decided = yield* decideOrchestrationCommand({
+          command: channelProbe("channel.post.create") as never,
+          readModel: roster,
+          issuer: DUPLICATE_ISSUER,
         });
         const events = Array.isArray(decided) ? decided : [decided];
         const event = events[0];

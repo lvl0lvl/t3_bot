@@ -2124,7 +2124,9 @@ export const ChannelMemberAddedPayload = Schema.Struct({
  * (`projector.ts`), so a roster REPLAYED from events written before `t3_bot-1ez`
  * can still carry a same-kind duplicate even though no command can create one now.
  * That population is what `t3_bot-z7u` is about, and it is why reading a duplicate
- * as legacy data rather than as live behaviour is the correct reading.
+ * as legacy data rather than as live behaviour is the correct reading. It is
+ * modelled by `apps/server/src/orchestration/testing/duplicateRef.ts`, the
+ * same-kind counterpart to the cross-kind fixture named above.
  *
  * A pre-invariant event replayed through the projector gets there too. Re-keying
  * the projector on the ref would be a regression dressed as a cleanup. The
