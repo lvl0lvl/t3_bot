@@ -647,7 +647,7 @@ layer("ProjectionChannelRepository", (it) => {
         ),
       );
 
-      const countStatements = <A>(effect: Effect.Effect<A, unknown, never>) =>
+      const countStatements = <A, E>(effect: Effect.Effect<A, E, never>) =>
         Effect.gen(function* () {
           const seen: Array<Statement.Statement<unknown>> = [];
           yield* effect.pipe(
