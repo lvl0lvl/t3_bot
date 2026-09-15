@@ -1,5 +1,5 @@
 /**
- * SIX CLAIMS ABOUT THE CI JOB THAT RUNS THE SWEEP AND THE WORKFLOW AROUND IT, all of which
+ * SEVEN CLAIMS ABOUT THE CI JOB THAT RUNS THE SWEEP AND THE WORKFLOW AROUND IT, all of which
  * fail SILENTLY when broken.
  *
  * The bead (`t3_bot-2ij`, opened 2026-09-12 from qa29's F7 on PR #29) is about the sweep not
@@ -29,20 +29,27 @@
  * outside the `run:` line: `continue-on-error: true` (sweep exits 2, step failed, JOB GREEN),
  * `if: false`, and `strategy.matrix.exclude:` (the list still names all six, fewer jobs expand).
  *
- * CLAIM 5 — MAIN'S MERGES DO NOT QUEUE BEHIND EACH OTHER. The group must fall through to
- * `github.sha` on a push; keyed on `github.ref` instead, every merge shares one group and the
- * second waits out the first for as long as the sweep takes. `cancel-in-progress` is asserted
- * alongside it, and what it does is worth stating exactly: on the PR arm it is what makes a newer
- * push supersede an older one, and on the PUSH arm IT IS UNREACHED — with a group per sha no two
- * main runs ever share one, so nothing can cancel across them whatever that expression says. It
- * stays to match upstream's file and for the PR arm, and it becomes load-bearing again the moment
- * the group reverts. Both are one-token edits to lines nobody re-reads.
+ * CLAIM 5 — TWO MERGES DO NOT SHARE A CONCURRENCY GROUP. The group must fall through to
+ * `github.sha` on a push; keyed on `github.ref` instead, every merge shares one group. Two merges
+ * in a sweep window then meant the second WAITED, and three meant the second's run was cancelled
+ * while pending and produced no verdict at all, because `queue` defaults to `single`.
+ * `cancel-in-progress` is asserted with it, and what that one does is narrower than it looks: it
+ * governs an already-RUNNING run only, never a pending one. Its push arm IS reached — two push
+ * runs at one sha share a group, measured, `t3_bot-bfhh` — and false is the value there that
+ * never kills a verdict mid-computation. Both are one-token edits to lines nobody re-reads, and
+ * reverting either alone breaks the pair, so one test names both.
  *
- * CLAIM 6 — THE PUSH TRIGGER STAYS RESTRICTED TO MAIN. It is the precondition CLAIM 5 rests on:
- * the sha arm is only ever reached by a push, and a push only ever happens on `main`. Widen the
- * trigger and every branch push gets its own group with cancellation off, so branch runs neither
- * supersede nor queue — the sweep fans out unbounded instead of running on main in parallel.
- * Asserted from the parsed trigger list, because the prose saying so is not a guard.
+ * CLAIM 6 — THE PUSH TRIGGER REACHES THE SHA ARM ONLY FROM `main`. It is the precondition CLAIM 5
+ * rests on. Widen it and every push gets its own group with cancellation off: the sweep fans out
+ * unbounded instead of running on main in parallel. The KEYS of `push:` are pinned, not just the
+ * value of `branches:` — adding `tags:` leaves `branches: [main]` untouched and still reaches the
+ * sha arm from a ref that is not a branch, which is the "admits every other constant" shape.
+ *
+ * CLAIM 7 — NO JOB DECLARES ITS OWN `concurrency:`. The workflow-level block above is not the only
+ * place this can be undone. Three lines under any job — `concurrency: {group: fork-ci-sweep}` —
+ * put every merge's sweep back in one group and restore exactly the serialization CLAIM 5 removes,
+ * one level down, where nothing else here is looking. It is not hypothetical in this repo:
+ * `pr-vouch.yml` and `thread-transfer-report.yml` both use job-level concurrency today.
  *
  * CLAIM 2 — THE MATRIX COVERS EVERY CHECKED-IN CONFIG. A seventh config added to `scripts/` and not
  * added to the matrix is never swept, and nothing anywhere goes red — which is #68's failure
@@ -177,7 +184,7 @@ const matrixConfigs = (text: string): ReadonlyArray<string> => {
   return out.sort();
 };
 
-describe("the CI step that runs the guard sweep", () => {
+describe("the CI job that runs the guard sweep, and the workflow around it", () => {
   it("finds the sweep invocation at all, so the assertions over it are about something", () => {
     // The control for `sweepRunLines` ONLY. It does not cover the config assertion below, which
     // never calls `sweepRunLines` — that test's own two filters are guarded inside it. Saying
@@ -211,7 +218,7 @@ describe("the CI step that runs the guard sweep", () => {
     expect(job).not.toContain("exclude:");
   });
 
-  it("keeps main's merges from queueing behind each other", () => {
+  it("gives each merge its own concurrency group, and pins the cancel guard beside it", () => {
     // READ FROM THE PARSED DOCUMENT, not the file's text, and that is the whole point. A text
     // match is satisfied by a COMMENT quoting the expression — this file is mostly prose, and
     // `# was \`group: ...\` before X` is an ordinary thing to write while changing the line under
@@ -219,22 +226,51 @@ describe("the CI step that runs the guard sweep", () => {
     // on a reformat that changes nothing, with a message that would be untrue. The parsed value
     // has neither failure: a comment is not a value, and a reformat that preserves the value
     // cannot move it.
+    //
+    // BOTH VALUES IN ONE TEST because neither is safe alone: the group decides whether two runs
+    // meet, and the guard decides what happens to the running one when they do.
     const doc = concurrency();
     expect(doc.group).toBe("fork-ci-${{ github.event.pull_request.number || github.sha }}");
     expect(doc["cancel-in-progress"]).toBe("${{ github.event_name == 'pull_request' }}");
   });
 
   it("restricts the push trigger to main, so the per-sha group cannot fan out over branches", () => {
-    // CLAIM 5's precondition. The sha arm of that expression is reached only by a push, and a push
-    // happens only on main — so widening this trigger turns "main's merges run in parallel" into
-    // "every push on every branch runs, unbounded and uncancelled", six sweeps at a time. The
-    // comment above the group says this; a comment is not a guard.
+    // CLAIM 5's precondition. The sha arm of that expression is reached by any push, so widening
+    // this trigger turns "main's merges run in parallel" into "every push runs, unbounded and
+    // uncancelled", six sweeps at a time. The comment above the group says this; a comment is not
+    // a guard.
+    //
+    // THE KEYS, NOT ONLY THE VALUE. Asserting `branches` alone admits a sibling filter that
+    // reaches the same arm from a ref that is not a branch: `tags: ["v*"]` leaves
+    // `branches: [main]` exactly as it is, and a tag pushed at a sha already on main lands in
+    // that sha's group — the merge run's own group — where the guard is false, so they queue.
+    // Pinning `Object.keys(on.push)` is what refuses the sibling.
     const on = parsedWorkflow().on as {
-      push?: { branches?: Array<string> };
+      push?: Record<string, unknown> & { branches?: Array<string> };
       pull_request?: unknown;
     };
     expect(Object.keys(on).sort()).toEqual(["pull_request", "push"]);
+    expect(Object.keys(on.push ?? {})).toEqual(["branches"]);
     expect(on.push?.branches).toEqual(["main"]);
+  });
+
+  it("lets no job declare its own concurrency, which would re-serialize the sweep one level down", () => {
+    // CLAIM 5 pins the WORKFLOW-level block, and a job-level block is invisible to it. Three lines
+    // under `sweep:` — `concurrency: {group: fork-ci-sweep}` — put every merge's sweep back in one
+    // group: the exact defect this file's CLAIM 5 exists to refuse, restored somewhere CLAIM 5 does
+    // not look and CLAIM 4's text scan does not name. Measured: with those three lines added, all
+    // six other claims stay green.
+    //
+    // Asserted over EVERY job rather than the sweep job alone, because the sweep is not the only
+    // job whose serialization would cost a verdict, and a guard wired at one site tests one site.
+    // `pr-vouch.yml:70` and `thread-transfer-report.yml:18` show job-level concurrency is ordinary
+    // in this repo, so this is a thing someone will reach for, not a hypothetical.
+    const jobs = parsedWorkflow()["jobs"] as Record<string, Record<string, unknown>>;
+    expect(Object.keys(jobs).length).toBeGreaterThan(0);
+    const declaring = Object.entries(jobs)
+      .filter(([, job]) => job !== null && typeof job === "object" && "concurrency" in job)
+      .map(([name]) => name);
+    expect(declaring).toEqual([]);
   });
 
   it("sweeps every checked-in config, so a new config cannot be added without being swept", () => {
