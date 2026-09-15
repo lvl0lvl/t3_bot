@@ -316,6 +316,114 @@ layer("OrchestrationEventStore", (it) => {
     }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
   });
 
+  it.effect("skips a row whose aggregate kind this build does not know", () => {
+    const messages: string[] = [];
+    const logger = Logger.make<unknown, void>(({ message }) => {
+      messages.push(String(message));
+    });
+
+    return Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const projectId = ProjectId.make("project-unknown-kind");
+      const projectCreated = (
+        eventId: string,
+        commandId: string,
+      ): Omit<OrchestrationEvent, "sequence"> => ({
+        type: "project.created",
+        eventId: EventId.make(eventId),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        occurredAt: now,
+        commandId: CommandId.make(commandId),
+        causationEventId: null,
+        correlationId: CommandId.make(commandId),
+        metadata: {},
+        payload: {
+          projectId,
+          title: "Unknown Kind Project",
+          workspaceRoot: "/tmp/project-unknown-kind",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      const first = yield* eventStore.append(
+        projectCreated("evt-unknown-kind-first", "cmd-unknown-kind-first"),
+      );
+      // 8660c7933c is the input: a new aggregate kind and its event types
+      // arrive in one change, so a newer build's row carries both. A read-row
+      // schema holding the closed kind union refuses this row before any row
+      // is judged, and the whole page fails at decodeRows.
+      const unknownRows = yield* sql<{ readonly sequence: number }>`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          actor_kind, payload_json, metadata_json
+        ) VALUES (
+          ${EventId.make("evt-unknown-kind")}, ${"workspace"}, ${"workspace-1"}, ${0},
+          ${"workspace.created"}, ${now}, ${"server"}, ${'{"workspace":true}'}, ${"{}"}
+        )
+        RETURNING sequence
+      `;
+      const unknownSequence = unknownRows[0]!.sequence;
+      // An unknown kind carrying a type this build DOES know. The type check
+      // alone passes this row to the union decode, which refuses the kind and
+      // fails the read the skip exists to keep alive.
+      const knownTypeRows = yield* sql<{ readonly sequence: number }>`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          actor_kind, payload_json, metadata_json
+        ) VALUES (
+          ${EventId.make("evt-unknown-kind-known-type")}, ${"workspace"}, ${"workspace-1"}, ${1},
+          ${"project.created"}, ${now}, ${"server"},
+          ${
+            '{"projectId":"workspace-1","title":"Workspace One",' +
+            '"workspaceRoot":"/tmp/workspace-1","defaultModelSelection":null,"scripts":[],' +
+            `"createdAt":"${now}","updatedAt":"${now}"}`
+          },
+          ${"{}"}
+        )
+        RETURNING sequence
+      `;
+      const knownTypeSequence = knownTypeRows[0]!.sequence;
+      const last = yield* eventStore.append(
+        projectCreated("evt-unknown-kind-last", "cmd-unknown-kind-last"),
+      );
+
+      const replayed = yield* Stream.runCollect(
+        eventStore.readFromSequence(first.sequence - 1, 10),
+      ).pipe(Effect.map((chunk) => Array.from(chunk, (event) => event.eventId)));
+      assert.deepEqual(replayed, [first.eventId, last.eventId]);
+
+      const ranged = yield* eventStore
+        .readAggregateRange({
+          aggregateKind: "project",
+          aggregateId: projectId,
+          fromSequenceExclusive: first.sequence - 1,
+          toSequenceInclusive: last.sequence,
+          limit: 10,
+        })
+        .pipe(
+          Stream.runCollect,
+          Effect.map((chunk) => Array.from(chunk, (event) => event.eventId)),
+        );
+      assert.deepEqual(ranged, [first.eventId, last.eventId]);
+
+      // One warning per skipped row per read crossing it: the global read
+      // crossed both rows, the aggregate read is scoped to "project" and
+      // crossed neither. A skip that logs nothing is a silent loss of history.
+      const kindWarnings = messages.filter((message) => message.includes("unknown aggregate kind"));
+      assert.equal(kindWarnings.length, 2);
+      assert.ok(kindWarnings.every((warning) => warning.includes("workspace")));
+      assert.ok(kindWarnings.some((warning) => warning.includes(`at sequence ${unknownSequence}`)));
+      assert.ok(
+        kindWarnings.some((warning) => warning.includes(`at sequence ${knownTypeSequence}`)),
+      );
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  });
+
   it.effect("keeps failing when a known type carries a payload its schema refuses", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;

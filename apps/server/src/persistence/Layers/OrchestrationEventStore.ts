@@ -63,12 +63,15 @@ const OrchestrationEventPersistedRowSchema = Schema.Struct({
 const OrchestrationEventReadRowSchema = Schema.Struct({
   sequence: NonNegativeInt,
   eventId: EventId,
-  // A plain string, not the closed union: a row written by a newer build
-  // carries a type this build does not know, and the read decides per row
-  // whether to skip it (unknown type) or fail (known type, refused payload).
+  // Plain strings, not the closed unions: a row written by a newer build
+  // carries a type, an aggregate kind and an id shape this build does not
+  // know, and the read decides per row whether to skip it (unknown type or
+  // kind) or fail (known type and kind, refused payload). 8660c7933c is the
+  // input: a new aggregate kind and its event types arrive in one change, so a
+  // closed kind union here refuses the whole page before any row is judged.
   type: Schema.String,
-  aggregateKind: OrchestrationAggregateKind,
-  aggregateId: OrchestrationAggregateId,
+  aggregateKind: Schema.String,
+  aggregateId: Schema.String,
   occurredAt: IsoDateTime,
   commandId: Schema.NullOr(CommandId),
   causationEventId: Schema.NullOr(EventId),
@@ -78,6 +81,7 @@ const OrchestrationEventReadRowSchema = Schema.Struct({
 });
 
 const isKnownEventType = Schema.is(OrchestrationEventType);
+const isKnownAggregateKind = Schema.is(OrchestrationAggregateKind);
 
 // A row whose type is outside this build's union was written by a newer build.
 // The read skips it and logs one warning per row per read, and keeps failing
@@ -93,22 +97,27 @@ const decodeRowsSkippingUnknownTypes = (
   operation: string,
 ) =>
   Effect.forEach(rows, (row) => {
-    const { type, ...rest } = row;
-    if (!isKnownEventType(type)) {
+    const { type, aggregateKind, ...rest } = row;
+    const unknown = !isKnownAggregateKind(aggregateKind)
+      ? { what: "aggregate kind", value: aggregateKind }
+      : !isKnownEventType(type)
+        ? { what: "type", value: type }
+        : undefined;
+    if (unknown !== undefined) {
       return Effect.logWarning(
-        `orchestration event skipped: unknown type ${type} at sequence ${row.sequence}`,
+        `orchestration event skipped: unknown ${unknown.what} ${unknown.value} at sequence ${row.sequence}`,
       ).pipe(
         Effect.annotateLogs({
           sequence: row.sequence,
           type,
-          aggregateKind: row.aggregateKind,
+          aggregateKind,
           aggregateId: row.aggregateId,
           occurredAt: row.occurredAt,
         }),
         Effect.as(Option.none<OrchestrationEvent>()),
       );
     }
-    return decodeEvent({ ...rest, type }).pipe(
+    return decodeEvent({ ...rest, aggregateKind, type }).pipe(
       Effect.mapError(toPersistenceDecodeError(operation)),
       Effect.map(Option.some),
     );
