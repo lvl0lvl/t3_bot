@@ -47,6 +47,12 @@ export interface DeleteCheckpointRefsInput {
   readonly checkpointRefs: ReadonlyArray<CheckpointRef>;
 }
 
+export interface RenameCheckpointRefInput {
+  readonly cwd: string;
+  readonly fromCheckpointRef: CheckpointRef;
+  readonly toCheckpointRef: CheckpointRef;
+}
+
 /** Service tag for checkpoint persistence and restore operations. */
 export class CheckpointStore extends Context.Service<
   CheckpointStore,
@@ -94,6 +100,11 @@ export class CheckpointStore extends Context.Service<
      */
     readonly deleteCheckpointRefs: (
       input: DeleteCheckpointRefsInput,
+    ) => Effect.Effect<void, CheckpointStoreError>;
+
+    /** Move a checkpoint ref to another name. Fails when the source ref is missing. */
+    readonly renameCheckpointRef: (
+      input: RenameCheckpointRefInput,
     ) => Effect.Effect<void, CheckpointStoreError>;
   }
 >()("t3/checkpointing/CheckpointStore") {}
@@ -160,6 +171,13 @@ export const make = Effect.gen(function* () {
     return yield* checkpoints.deleteCheckpointRefs(input);
   });
 
+  const renameCheckpointRef: CheckpointStore["Service"]["renameCheckpointRef"] = Effect.fn(
+    "renameCheckpointRef",
+  )(function* (input) {
+    const checkpoints = yield* resolveCheckpoints("CheckpointStore.renameCheckpointRef", input.cwd);
+    return yield* checkpoints.renameCheckpointRef(input);
+  });
+
   return CheckpointStore.of({
     isGitRepository,
     captureCheckpoint,
@@ -167,6 +185,7 @@ export const make = Effect.gen(function* () {
     restoreCheckpoint,
     diffCheckpoints,
     deleteCheckpointRefs,
+    renameCheckpointRef,
   });
 });
 

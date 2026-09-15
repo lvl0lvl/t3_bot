@@ -1059,6 +1059,32 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         );
       },
     ),
+
+    renameCheckpointRef: Effect.fn("GitVcsDriver.checkpoints.renameCheckpointRef")(
+      function* (input) {
+        const operation = "GitVcsDriver.checkpoints.renameCheckpointRef";
+        const commitOid = yield* resolveCheckpointCommit(input.cwd, input.fromCheckpointRef);
+        if (!commitOid) {
+          return yield* new VcsProcessExitError({
+            operation,
+            command: "git rev-parse",
+            cwd: input.cwd,
+            exitCode: 1,
+            detail: `Checkpoint ref '${input.fromCheckpointRef}' does not exist.`,
+          });
+        }
+        yield* execute({
+          operation,
+          cwd: input.cwd,
+          args: ["update-ref", input.toCheckpointRef, commitOid],
+        });
+        yield* execute({
+          operation,
+          cwd: input.cwd,
+          args: ["update-ref", "-d", input.fromCheckpointRef],
+        });
+      },
+    ),
   };
 
   return {

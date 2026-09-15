@@ -60,7 +60,11 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
-import { checkpointRefForThreadTurn } from "../../checkpointing/Utils.ts";
+import {
+  checkpointRefForThreadTurn,
+  pendingTurnStartCheckpointRef,
+  turnStartCheckpointRefForThreadTurn,
+} from "../../checkpointing/Utils.ts";
 import { ProviderAdapterRequestError, ProviderValidationError } from "../../provider/Errors.ts";
 import { ServerConfig } from "../../config.ts";
 import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
@@ -1236,6 +1240,406 @@ describe("CheckpointReactor", () => {
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1)),
     ).toBe(true);
   });
+
+  effectIt.effect("lists only what the turn wrote when the tree changed between turns", () =>
+    Effect.gen(function* () {
+      // Three seeded threads share one checkout, and main merges between their
+      // wakes: a turn's diff is against the tree it started from, not the tree
+      // the previous turn left.
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          seedFilesystemCheckpoints: false,
+          providerName: ProviderDriverKind.make("claudeAgent"),
+        }),
+      );
+      const threadId = ThreadId.make("thread-1");
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-drift"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "claudeAgent",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      });
+      const checkpointStore = yield* Effect.promise(() =>
+        runtime!.runPromise(Effect.service(CheckpointStore.CheckpointStore)),
+      );
+      const runTurn = (turnCount: number, write: () => void) =>
+        Effect.gen(function* () {
+          const turnId = asTurnId(`turn-drift-${turnCount}`);
+          const messageId = MessageId.make(`message-drift-${turnCount}`);
+          // The start request tells the reactor which message starts the turn;
+          // ProviderCommandReactor then takes the start snapshot before the
+          // provider runs. This harness has no provider reactor, so the test
+          // takes it.
+          yield* harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(`cmd-drift-start-${turnCount}`),
+            threadId,
+            message: { messageId, role: "user", text: `turn ${turnCount}`, attachments: [] },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            createdAt,
+          });
+          yield* Effect.promise(() => harness.drain());
+          yield* checkpointStore.captureCheckpoint({
+            cwd: harness.cwd,
+            checkpointRef: pendingTurnStartCheckpointRef(threadId, messageId),
+          });
+          harness.provider.emit({
+            type: "turn.started",
+            eventId: EventId.make(`evt-drift-started-${turnCount}`),
+            provider: ProviderDriverKind.make("claudeAgent"),
+            createdAt,
+            threadId,
+            turnId,
+          });
+          write();
+          harness.provider.emit({
+            type: "turn.completed",
+            eventId: EventId.make(`evt-drift-completed-${turnCount}`),
+            provider: ProviderDriverKind.make("claudeAgent"),
+            createdAt,
+            threadId,
+            turnId,
+            payload: { state: "completed" },
+          });
+          yield* Effect.promise(() =>
+            waitForThread(harness.readModel, (entry) =>
+              entry.checkpoints.some((checkpoint) => checkpoint.checkpointTurnCount === turnCount),
+            ),
+          );
+          yield* Effect.promise(() => harness.drain());
+          // Settled: the snapshot now lives under the turn's count, and the
+          // message-keyed ref it waited under is gone.
+          expect(
+            gitRefExists(harness.cwd, turnStartCheckpointRefForThreadTurn(threadId, turnCount)),
+          ).toBe(true);
+          expect(
+            gitRefExists(harness.cwd, pendingTurnStartCheckpointRef(threadId, messageId)),
+          ).toBe(false);
+        });
+
+      yield* runTurn(1, () =>
+        NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "v2\n", "utf8"),
+      );
+      // Someone else writes to the checkout between the turns.
+      NodeFS.writeFileSync(NodePath.join(harness.cwd, "MERGED.md"), "from main\n", "utf8");
+      yield* runTurn(2, () =>
+        NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "v3\n", "utf8"),
+      );
+
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
+      const filesByTurn = thread.checkpoints.map((checkpoint) => [
+        checkpoint.checkpointTurnCount,
+        checkpoint.files.map((file) => file.path),
+      ]);
+      expect(filesByTurn).toEqual([
+        [1, ["README.md"]],
+        [2, ["README.md"]],
+      ]);
+    }),
+  );
+
+  effectIt.effect("a revert drops the start snapshots of the turns above the target", () =>
+    Effect.gen(function* () {
+      // The next turn starts from the restored tree and takes its own snapshot;
+      // a surviving `start/2` would be the tree the reverted turn found.
+      const harness = yield* Effect.promise(() => createHarness());
+      const threadId = ThreadId.make("thread-1");
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-revert-pre"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "opencode",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      });
+      for (const turnCount of [1, 2]) {
+        yield* harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.make(`cmd-revert-pre-diff-${turnCount}`),
+          threadId,
+          turnId: asTurnId(`turn-${turnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+          status: "ready",
+          files: [],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        });
+      }
+      for (const turnCount of [1, 2, 3]) {
+        runGit(harness.cwd, [
+          "update-ref",
+          turnStartCheckpointRefForThreadTurn(threadId, turnCount),
+          checkpointRefForThreadTurn(threadId, turnCount - 1),
+        ]);
+      }
+
+      yield* harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-revert-pre"),
+        threadId,
+        turnCount: 1,
+        createdAt,
+      });
+      yield* Effect.promise(() =>
+        waitForThread(harness.readModel, (entry) => entry.checkpoints.length === 1),
+      );
+      yield* Effect.promise(() => harness.drain());
+
+      expect(gitRefExists(harness.cwd, turnStartCheckpointRefForThreadTurn(threadId, 1))).toBe(
+        true,
+      );
+      expect(gitRefExists(harness.cwd, turnStartCheckpointRefForThreadTurn(threadId, 2))).toBe(
+        false,
+      );
+      expect(gitRefExists(harness.cwd, turnStartCheckpointRefForThreadTurn(threadId, 3))).toBe(
+        false,
+      );
+      expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 1))).toBe(true);
+    }),
+  );
+
+  let readySessionCount = 0;
+  const setReadySession = (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    threadId: ThreadId,
+  ) =>
+    harness.engine.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make(`cmd-session-set-${threadId}-${++readySessionCount}`),
+      threadId,
+      session: {
+        threadId,
+        status: "ready",
+        providerName: "claudeAgent",
+        runtimeMode: "approval-required",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+  const requestTurnStart = (
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    threadId: ThreadId,
+    messageId: MessageId,
+  ) =>
+    harness.engine
+      .dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`cmd-start-${messageId}`),
+        threadId,
+        message: { messageId, role: "user", text: String(messageId), attachments: [] },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      })
+      .pipe(Effect.andThen(Effect.promise(() => harness.drain())));
+
+  effectIt.effect(
+    "a start request superseding one the runtime never reported drops its snapshot",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({ seedFilesystemCheckpoints: false }),
+        );
+        const checkpointStore = yield* Effect.promise(() =>
+          runtime!.runPromise(Effect.service(CheckpointStore.CheckpointStore)),
+        );
+        const threadId = ThreadId.make("thread-1");
+        const first = MessageId.make("message-superseded");
+        const second = MessageId.make("message-superseding");
+        yield* setReadySession(harness, threadId);
+
+        yield* requestTurnStart(harness, threadId, first);
+        yield* checkpointStore.captureCheckpoint({
+          cwd: harness.cwd,
+          checkpointRef: pendingTurnStartCheckpointRef(threadId, first),
+        });
+        // The provider never reports the first turn; the next request replaces it.
+        yield* requestTurnStart(harness, threadId, second);
+
+        expect(gitRefExists(harness.cwd, pendingTurnStartCheckpointRef(threadId, first))).toBe(
+          false,
+        );
+      }),
+  );
+
+  effectIt.effect(
+    "a turn killed between its snapshot and its completion leaves the next turn diffing from its own",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            seedFilesystemCheckpoints: false,
+            providerName: ProviderDriverKind.make("claudeAgent"),
+          }),
+        );
+        const checkpointStore = yield* Effect.promise(() =>
+          runtime!.runPromise(Effect.service(CheckpointStore.CheckpointStore)),
+        );
+        const threadId = ThreadId.make("thread-1");
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const killed = MessageId.make("message-killed");
+        const queued = MessageId.make("message-queued-behind-the-kill");
+        const next = MessageId.make("message-next");
+        yield* setReadySession(harness, threadId);
+
+        // A turn starts and its snapshot lands; the runtime reports it running.
+        yield* requestTurnStart(harness, threadId, killed);
+        yield* checkpointStore.captureCheckpoint({
+          cwd: harness.cwd,
+          checkpointRef: pendingTurnStartCheckpointRef(threadId, killed),
+        });
+        harness.provider.emit({
+          type: "turn.started",
+          eventId: EventId.make("evt-killed-started"),
+          provider: ProviderDriverKind.make("claudeAgent"),
+          createdAt,
+          threadId,
+          turnId: asTurnId("turn-killed"),
+        });
+        yield* Effect.promise(() => harness.drain());
+        // A second start is requested behind it and snapshotted, never reported.
+        yield* requestTurnStart(harness, threadId, queued);
+        yield* checkpointStore.captureCheckpoint({
+          cwd: harness.cwd,
+          checkpointRef: pendingTurnStartCheckpointRef(threadId, queued),
+        });
+        // The provider dies with both in flight.
+        harness.provider.emit({
+          type: "session.exited",
+          eventId: EventId.make("evt-killed-exited"),
+          provider: ProviderDriverKind.make("claudeAgent"),
+          createdAt,
+          threadId,
+        });
+        yield* Effect.promise(() => harness.drain());
+        expect(gitRefExists(harness.cwd, pendingTurnStartCheckpointRef(threadId, killed))).toBe(
+          false,
+        );
+        expect(gitRefExists(harness.cwd, pendingTurnStartCheckpointRef(threadId, queued))).toBe(
+          false,
+        );
+
+        // Someone else writes to the checkout, then the next turn runs to completion.
+        NodeFS.writeFileSync(NodePath.join(harness.cwd, "MERGED.md"), "from main\n", "utf8");
+        yield* setReadySession(harness, threadId);
+        yield* requestTurnStart(harness, threadId, next);
+        yield* checkpointStore.captureCheckpoint({
+          cwd: harness.cwd,
+          checkpointRef: pendingTurnStartCheckpointRef(threadId, next),
+        });
+        harness.provider.emit({
+          type: "turn.started",
+          eventId: EventId.make("evt-next-started"),
+          provider: ProviderDriverKind.make("claudeAgent"),
+          createdAt,
+          threadId,
+          turnId: asTurnId("turn-next"),
+        });
+        NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "v2\n", "utf8");
+        harness.provider.emit({
+          type: "turn.completed",
+          eventId: EventId.make("evt-next-completed"),
+          provider: ProviderDriverKind.make("claudeAgent"),
+          createdAt,
+          threadId,
+          turnId: asTurnId("turn-next"),
+          payload: { state: "completed" },
+        });
+        yield* Effect.promise(() =>
+          waitForThread(harness.readModel, (entry) =>
+            entry.checkpoints.some((checkpoint) => checkpoint.checkpointTurnCount === 1),
+          ),
+        );
+        yield* Effect.promise(() => harness.drain());
+
+        const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+          (entry) => entry.id === threadId,
+        )!;
+        expect(
+          thread.checkpoints.map((checkpoint) => checkpoint.files.map((file) => file.path)),
+        ).toEqual([["README.md"]]);
+        expect(gitRefExists(harness.cwd, turnStartCheckpointRefForThreadTurn(threadId, 1))).toBe(
+          true,
+        );
+      }),
+  );
+
+  effectIt.effect("diffs from the previous checkpoint when the turn has no start snapshot", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          seedFilesystemCheckpoints: false,
+          providerName: ProviderDriverKind.make("claudeAgent"),
+        }),
+      );
+      const threadId = ThreadId.make("thread-1");
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const messageId = MessageId.make("message-without-snapshot");
+      yield* setReadySession(harness, threadId);
+
+      // The capture before sendTurn failed or found no git: no pending ref.
+      yield* requestTurnStart(harness, threadId, messageId);
+      harness.provider.emit({
+        type: "turn.started",
+        eventId: EventId.make("evt-nosnap-started"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        createdAt,
+        threadId,
+        turnId: asTurnId("turn-nosnap"),
+      });
+      NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "v2\n", "utf8");
+      harness.provider.emit({
+        type: "turn.completed",
+        eventId: EventId.make("evt-nosnap-completed"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        createdAt,
+        threadId,
+        turnId: asTurnId("turn-nosnap"),
+        payload: { state: "completed" },
+      });
+      yield* Effect.promise(() =>
+        waitForThread(harness.readModel, (entry) =>
+          entry.checkpoints.some((checkpoint) => checkpoint.checkpointTurnCount === 1),
+        ),
+      );
+      yield* Effect.promise(() => harness.drain());
+
+      const checkpoint = (yield* Effect.promise(() => harness.readModel())).threads
+        .find((entry) => entry.id === threadId)!
+        .checkpoints.find((entry) => entry.checkpointTurnCount === 1)!;
+      // From `turn/0`, which the start signals captured, as before this change.
+      expect(checkpoint.status).toBe("ready");
+      expect(checkpoint.files.map((file) => file.path)).toEqual(["README.md"]);
+      expect(gitRefExists(harness.cwd, turnStartCheckpointRefForThreadTurn(threadId, 1))).toBe(
+        false,
+      );
+    }),
+  );
 
   effectIt.effect("captures a checkpoint without a summary when the baseline is missing", () =>
     Effect.gen(function* () {

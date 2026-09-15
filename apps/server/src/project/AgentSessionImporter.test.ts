@@ -35,6 +35,7 @@ import { OrchestrationEngineLive } from "../orchestration/Layers/OrchestrationEn
 import { OrchestrationProjectionPipelineLive } from "../orchestration/Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../orchestration/Layers/ProjectionSnapshotQuery.ts";
 import { ProviderCommandReactorLive } from "../orchestration/Layers/ProviderCommandReactor.ts";
+import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
 import * as ThreadBackgroundLiveness from "../orchestration/ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../orchestration/ThreadPlanProgress.ts";
@@ -931,6 +932,11 @@ it.layer(integrationLayer)("AgentSessionImporter integration", (it) => {
           Layer.provide(Layer.mock(GitWorkflowService)({})),
           Layer.provide(Layer.mock(VcsStatusBroadcaster)({})),
           Layer.provide(Layer.mock(TextGeneration)({})),
+          Layer.provide(
+            Layer.mock(CheckpointStore.CheckpointStore)({
+              isGitRepository: () => Effect.succeed(false),
+            }),
+          ),
           Layer.provide(ServerSettingsService.layerTest()),
         );
 
