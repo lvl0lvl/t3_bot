@@ -2011,10 +2011,13 @@ const makeWsRpcLayer = (
                   );
                 }
                 const catchUpStream = coalesceShellStream(
-                  // Replay only through the head captured above. Newer events
-                  // are already covered by the live subscription, so this bound
-                  // cannot chase a moving event-store head or grow the live
-                  // buffer indefinitely while waiting for an empty page.
+                  // The bound is an EVENT budget, not a sequence ceiling: a
+                  // skipped row consumes a sequence but no budget, so this read
+                  // can pass the head captured above by up to one event per
+                  // skipped row in the range. Those events also arrive on the
+                  // live subscription, so the overshoot repeats a refetch
+                  // signal rather than chasing a moving head, and the shell
+                  // coalescer folds repeats per aggregate within its window.
                   orchestrationEngine.readEvents(afterSequence, replayGap),
                 ).pipe(
                   Stream.mapError(
