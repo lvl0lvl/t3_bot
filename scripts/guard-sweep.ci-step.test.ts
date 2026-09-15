@@ -58,8 +58,14 @@ const workflowText = () => NodeFS.readFileSync(WORKFLOW, "utf8");
 const sweepJob = (text: string): string => {
   const start = text.indexOf("\n  sweep:\n");
   expect(start).toBeGreaterThan(-1);
-  const end = text.indexOf("\n  test_server:\n", start);
-  return text.slice(start, end === -1 ? undefined : end);
+  // The NEXT top-level job key, whichever it is — not `test_server:` by name. Naming it meant any
+  // job legally inserted between the two was swallowed into this slice, and an ordinary job-level
+  // `if:` on that neighbour reddened the sweep's own assertions. A red that says "the sweep is
+  // disarmed" when it is not teaches the next author to weaken the assertion.
+  const next = /\n {2}[A-Za-z_][A-Za-z0-9_-]*:\n/g;
+  next.lastIndex = start + 1;
+  const match = next.exec(text);
+  return text.slice(start, match === null ? undefined : match.index);
 };
 
 /**
@@ -75,6 +81,41 @@ const commandLines = (jobText: string): ReadonlyArray<string> =>
     .split("\n")
     .map((line) => line.replace(/\s#.*$/, "").trim())
     .filter((line) => line !== "" && !line.startsWith("#"));
+
+/**
+ * The Sweep step's `run:` value, including any block-scalar or continuation lines.
+ *
+ * Everything the step actually executes, as one string. Read this rather than filtering lines:
+ * a line filter only sees lines it recognises, and every defeat found for the old one lived on a
+ * line the filter skipped.
+ */
+const sweepRunValue = (text: string): string => {
+  const job = sweepJob(text);
+  const at = job.indexOf("      - name: Sweep\n");
+  expect(at).toBeGreaterThan(-1);
+  const lines = job.slice(at).split("\n");
+  const runAt = lines.findIndex((line) => line.startsWith("        run:"));
+  expect(runAt).toBeGreaterThan(-1);
+  const head = lines[runAt]!.replace(/^\s*run:\s*/, "");
+  const body: Array<string> = [];
+  for (const line of lines.slice(runAt + 1)) {
+    if (line.trim() === "" || line.startsWith("          ")) body.push(line.trim());
+    else break;
+  }
+  // YAML's own rule, mirrored: in a BLOCK scalar (`|`, `>`) a `#` is literal command text; in a
+  // PLAIN scalar a whitespace-preceded `#` starts a comment and everything after it is dropped
+  // before the shell ever sees it. Getting this backwards in either direction is a live defect —
+  // strip inside a block and a real `| tee` disappears; do not strip on a plain line and an
+  // ordinary trailing comment reds the test with a message that is untrue.
+  if (head.startsWith("|") || head.startsWith(">")) {
+    return body.join(" ").replace(/\s+/g, " ").trim();
+  }
+  return [head, ...body]
+    .join(" ")
+    .replace(/\s+#.*$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+};
 
 /** The sweep job's command lines that invoke the sweep. */
 const sweepRunLines = (text: string): ReadonlyArray<string> =>
@@ -109,23 +150,17 @@ describe("the CI step that runs the guard sweep", () => {
     expect(sweepRunLines(workflowText()).length).toBeGreaterThan(0);
   });
 
-  it("does not pipe the sweep's verdict into another command", () => {
-    for (const line of sweepRunLines(workflowText())) {
-      // `bash -e` without `pipefail` reports the LAST command's status, so any pipe here replaces
-      // the sweep's verdict with the status of whatever follows it.
-      expect(line).not.toContain("|");
-    }
-  });
-
-  it("runs the config the matrix names, not a literal one", () => {
-    // Hardcode a config here and every other assertion in this file stays green: the matrix list
-    // is untouched, the line still says `guard-sweep.ts`, there is still no pipe. In CI six jobs
-    // expand, all six sweep the SAME config, 80 of 98 rows never run — under six green check-runs
-    // each NAMED for a config that did not. Nothing machine-reads those names (main carries no
-    // required status checks), so a human reading them is the whole gate.
-    for (const line of sweepRunLines(workflowText())) {
-      expect(line).toContain("${{ matrix.config }}");
-    }
+  it("runs exactly the sweep command, with nothing wrapped around it", () => {
+    // ASSERTED POSITIVELY, and that is the point. Checking for an ABSENT `|` was defeated three
+    // ways, each of them a reformat a reviewer would wave through: a pipe on a backslash
+    // continuation line (the filter only reads lines naming the tool); `if ! sweep; then …; fi`
+    // (no pipe at all, exit code swallowed by the `if`); and a quoted `#` in an argument, which
+    // the comment stripper truncated along with everything after it — including a real pipe.
+    // An equality over the whole `run:` value has no such gaps: any wrapper, redirection,
+    // continuation or added argument changes the string and reds this line.
+    expect(sweepRunValue(workflowText())).toBe(
+      "node scripts/guard-sweep.ts --config scripts/guard-sweep.${{ matrix.config }}.json",
+    );
   });
 
   it("does not disarm the sweep step or shrink its matrix", () => {
