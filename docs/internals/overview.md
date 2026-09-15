@@ -69,8 +69,15 @@ still fails the whole read: that is corruption, and reading past it would hide d
 
 Skipping is not deferral. The projector watermark advances to the next applied event, so a skipped
 row sits behind it permanently: the build that later knows the type resumes from the same watermark
-and never replays it, and only a full projection rebuild repairs the hole. Detecting the hole and
-asking for that rebuild is bead `t3_bot-n33f`; nothing in this build asks for one.
+and never replays it. The repair is a full projection rebuild, and the projection pipeline asks for
+one itself: its bootstrap keeps a decoder ledger (`projection_decoder`, one epoch per build with the
+event types and aggregate kinds it could decode and the watermark range it applied them over), and
+a build whose lists are larger scans each earlier epoch's range for a row of a type or kind that
+epoch lacked. A hit empties every projection table and replays from 0, the same path a fresh
+database takes. The downgrade direction is what makes this work: an older build on a newer ledger
+has nothing to scan and opens an epoch with its own smaller lists, which the next newer build then
+scans. Holes older than the ledger, and the mention-wake reactor's own cursor, are not covered
+(bead `t3_bot-lt7y`).
 
 The environment descriptor's capabilities do not help here, and reaching for them is the tempting
 wrong move: they are what a server tells _clients_ it supports, and nothing in the replay path reads
