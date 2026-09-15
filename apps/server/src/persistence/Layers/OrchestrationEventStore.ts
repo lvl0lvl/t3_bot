@@ -83,15 +83,19 @@ const OrchestrationEventReadRowSchema = Schema.Struct({
 const isKnownEventType = Schema.is(OrchestrationEventType);
 const isKnownAggregateKind = Schema.is(OrchestrationAggregateKind);
 
-// A row whose type is outside this build's union was written by a newer build.
-// The read skips it and logs one warning per row per read, and keeps failing
-// on a KNOWN type whose payload its schema refuses: that is corruption, and
-// reading past it would hide data loss. DISCLOSED: a skipped event leaves every
-// later known event applied to a state that is missing its effect (a newer
-// build's event that a later known event depends on); that is the cost of an
-// older build reading a newer log, and the alternative was a server that
-// cannot start on it. DISCLOSED: the warning is per row and uncapped, so a
-// log with many unknown rows logs one line each on every replay.
+// A row whose type or aggregate kind is outside this build's unions was
+// written by a newer build. The read skips it and logs one warning per row per
+// read, and keeps failing on a KNOWN kind and type whose payload its schema
+// refuses: that is corruption, and reading past it would hide data loss.
+// DISCLOSED: a skipped row is crossed by the projector watermark permanently
+// on this build; upgrading to the build that knows the type does NOT replay
+// it; the repair is a full projection rebuild, and nothing in this build asks
+// for one. The input: a newer build's event at sequence N skipped here, then
+// any known event at N+1 applied.
+// DISCLOSED: the warning is per row per READER, and uncapped. Each projector's
+// bootstrap, the cleanup scan and the mention-wake catch-up each read the log
+// at start, and trailing unknown rows re-warn on every start until a known
+// event lands beyond them.
 const decodeRowsSkippingUnknownTypes = (
   rows: ReadonlyArray<typeof OrchestrationEventReadRowSchema.Type>,
   operation: string,
