@@ -47,6 +47,61 @@ function messageEvent(threadId: ThreadId, id: string): Omit<OrchestrationEvent, 
   };
 }
 
+function projectCreatedEvent(
+  projectId: ProjectId,
+  id: string,
+): Omit<OrchestrationEvent, "sequence"> {
+  const now = "2026-01-01T00:00:00.000Z";
+  return {
+    type: "project.created",
+    eventId: EventId.make(id),
+    aggregateKind: "project",
+    aggregateId: projectId,
+    occurredAt: now,
+    commandId: CommandId.make(`cmd-${id}`),
+    causationEventId: null,
+    correlationId: CommandId.make(`cmd-${id}`),
+    metadata: {},
+    payload: {
+      projectId,
+      title: projectId,
+      workspaceRoot: `/tmp/${projectId}`,
+      defaultModelSelection: null,
+      scripts: [],
+      createdAt: now,
+      updatedAt: now,
+    },
+  };
+}
+
+/**
+ * Insert a row the store's own append would refuse to write: a type or an
+ * aggregate kind outside this build's unions, or a payload its schema refuses.
+ * Returns the sequence the database assigned.
+ */
+function insertRawEventRow(
+  sql: SqlClient.SqlClient,
+  row: {
+    readonly eventId: string;
+    readonly aggregateKind: string;
+    readonly aggregateId: string;
+    readonly streamVersion: number;
+    readonly eventType: string;
+    readonly payloadJson: string;
+  },
+) {
+  return sql<{ readonly sequence: number }>`
+    INSERT INTO orchestration_events (
+      event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+      actor_kind, payload_json, metadata_json
+    ) VALUES (
+      ${row.eventId}, ${row.aggregateKind}, ${row.aggregateId}, ${row.streamVersion},
+      ${row.eventType}, ${"2026-01-01T00:00:00.000Z"}, ${"server"}, ${row.payloadJson}, ${"{}"}
+    )
+    RETURNING sequence
+  `.pipe(Effect.map((rows) => rows[0]!.sequence));
+}
+
 const layer = it.layer(
   OrchestrationEventStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
 );
@@ -369,68 +424,19 @@ layer("OrchestrationEventStore unknown event type", (it) => {
       const sql = yield* SqlClient.SqlClient;
       const now = "2026-01-01T00:00:00.000Z";
       const projectId = ProjectId.make("project-unknown-type");
-      const projectCreated = (
-        eventId: string,
-        commandId: string,
-      ): Omit<OrchestrationEvent, "sequence"> => ({
-        type: "project.created",
-        eventId: EventId.make(eventId),
-        aggregateKind: "project",
-        aggregateId: projectId,
-        occurredAt: now,
-        commandId: CommandId.make(commandId),
-        causationEventId: null,
-        correlationId: CommandId.make(commandId),
-        metadata: {},
-        payload: {
-          projectId,
-          title: "Unknown Type Project",
-          workspaceRoot: "/tmp/project-unknown-type",
-          defaultModelSelection: null,
-          scripts: [],
-          createdAt: now,
-          updatedAt: now,
-        },
-      });
-      const first = yield* eventStore.append(
-        projectCreated("evt-unknown-first", "cmd-unknown-first"),
-      );
+      const first = yield* eventStore.append(projectCreatedEvent(projectId, "evt-unknown-first"));
       // A newer build wrote this row: a type outside this build's union, with a
       // payload this build cannot decode. The read must skip it and keep going;
       // a read that stops here leaves the server unable to start on this log.
-      const unknownRows = yield* sql<{ readonly sequence: number }>`
-        INSERT INTO orchestration_events (
-          event_id,
-          aggregate_kind,
-          stream_id,
-          stream_version,
-          event_type,
-          occurred_at,
-          command_id,
-          causation_event_id,
-          correlation_id,
-          actor_kind,
-          payload_json,
-          metadata_json
-        )
-        VALUES (
-          ${EventId.make("evt-unknown-future")},
-          ${"project"},
-          ${projectId},
-          ${1},
-          ${"project.future-event"},
-          ${now},
-          ${null},
-          ${null},
-          ${null},
-          ${"server"},
-          ${'{"future":true}'},
-          ${"{}"}
-        )
-        RETURNING sequence
-      `;
-      const unknownSequence = unknownRows[0]!.sequence;
-      const last = yield* eventStore.append(projectCreated("evt-unknown-last", "cmd-unknown-last"));
+      const unknownSequence = yield* insertRawEventRow(sql, {
+        eventId: "evt-unknown-future",
+        aggregateKind: "project",
+        aggregateId: projectId,
+        streamVersion: 1,
+        eventType: "project.future-event",
+        payloadJson: '{"future":true}',
+      });
+      const last = yield* eventStore.append(projectCreatedEvent(projectId, "evt-unknown-last"));
 
       const replayed = yield* Stream.runCollect(eventStore.readFromSequence(0, 10)).pipe(
         Effect.map((chunk) => Array.from(chunk, (event) => event.eventId)),
@@ -502,69 +508,37 @@ layer("OrchestrationEventStore unknown aggregate kind", (it) => {
       const sql = yield* SqlClient.SqlClient;
       const now = "2026-01-01T00:00:00.000Z";
       const projectId = ProjectId.make("project-unknown-kind");
-      const projectCreated = (
-        eventId: string,
-        commandId: string,
-      ): Omit<OrchestrationEvent, "sequence"> => ({
-        type: "project.created",
-        eventId: EventId.make(eventId),
-        aggregateKind: "project",
-        aggregateId: projectId,
-        occurredAt: now,
-        commandId: CommandId.make(commandId),
-        causationEventId: null,
-        correlationId: CommandId.make(commandId),
-        metadata: {},
-        payload: {
-          projectId,
-          title: "Unknown Kind Project",
-          workspaceRoot: "/tmp/project-unknown-kind",
-          defaultModelSelection: null,
-          scripts: [],
-          createdAt: now,
-          updatedAt: now,
-        },
-      });
       const first = yield* eventStore.append(
-        projectCreated("evt-unknown-kind-first", "cmd-unknown-kind-first"),
+        projectCreatedEvent(projectId, "evt-unknown-kind-first"),
       );
       // 8660c7933c is the input: a new aggregate kind and its event types
       // arrive in one change, so a newer build's row carries both. A read-row
       // schema holding the closed kind union refuses this row before any row
       // is judged, and the whole page fails at decodeRows.
-      const unknownRows = yield* sql<{ readonly sequence: number }>`
-        INSERT INTO orchestration_events (
-          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
-          actor_kind, payload_json, metadata_json
-        ) VALUES (
-          ${EventId.make("evt-unknown-kind")}, ${"workspace"}, ${"workspace-1"}, ${0},
-          ${"workspace.created"}, ${now}, ${"server"}, ${'{"workspace":true}'}, ${"{}"}
-        )
-        RETURNING sequence
-      `;
-      const unknownSequence = unknownRows[0]!.sequence;
+      const unknownSequence = yield* insertRawEventRow(sql, {
+        eventId: "evt-unknown-kind",
+        aggregateKind: "workspace",
+        aggregateId: "workspace-1",
+        streamVersion: 0,
+        eventType: "workspace.created",
+        payloadJson: '{"workspace":true}',
+      });
       // An unknown kind carrying a type this build DOES know. The type check
       // alone passes this row to the union decode, which refuses the kind and
       // fails the read the skip exists to keep alive.
-      const knownTypeRows = yield* sql<{ readonly sequence: number }>`
-        INSERT INTO orchestration_events (
-          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
-          actor_kind, payload_json, metadata_json
-        ) VALUES (
-          ${EventId.make("evt-unknown-kind-known-type")}, ${"workspace"}, ${"workspace-1"}, ${1},
-          ${"project.created"}, ${now}, ${"server"},
-          ${
-            '{"projectId":"workspace-1","title":"Workspace One",' +
-            '"workspaceRoot":"/tmp/workspace-1","defaultModelSelection":null,"scripts":[],' +
-            `"createdAt":"${now}","updatedAt":"${now}"}`
-          },
-          ${"{}"}
-        )
-        RETURNING sequence
-      `;
-      const knownTypeSequence = knownTypeRows[0]!.sequence;
+      const knownTypeSequence = yield* insertRawEventRow(sql, {
+        eventId: "evt-unknown-kind-known-type",
+        aggregateKind: "workspace",
+        aggregateId: "workspace-1",
+        streamVersion: 1,
+        eventType: "project.created",
+        payloadJson:
+          '{"projectId":"workspace-1","title":"Workspace One",' +
+          '"workspaceRoot":"/tmp/workspace-1","defaultModelSelection":null,"scripts":[],' +
+          `"createdAt":"${now}","updatedAt":"${now}"}`,
+      });
       const last = yield* eventStore.append(
-        projectCreated("evt-unknown-kind-last", "cmd-unknown-kind-last"),
+        projectCreatedEvent(projectId, "evt-unknown-kind-last"),
       );
 
       const replayed = yield* Stream.runCollect(eventStore.readFromSequence(0, 10)).pipe(
@@ -610,25 +584,25 @@ layer("OrchestrationEventStore skip warning value", (it) => {
     return Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;
       const sql = yield* SqlClient.SqlClient;
-      const now = "2026-01-01T00:00:00.000Z";
       // Both rows carry a column a newer build wrote. The oversized type is
       // what fills a log line with one row; the type carrying ESC and a
       // newline is what forges log lines around itself.
-      const rows = yield* sql<{ readonly sequence: number }>`
-        INSERT INTO orchestration_events (
-          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
-          actor_kind, payload_json, metadata_json
-        ) VALUES (
-          ${EventId.make("evt-warning-bound")}, ${"project"}, ${"project-warning-value"}, ${0},
-          printf('%.*c', 200000, 'x'), ${now}, ${"server"}, ${"{}"}, ${"{}"}
-        ), (
-          ${EventId.make("evt-warning-escape")}, ${"project"}, ${"project-warning-value"}, ${1},
-          ${"project.\u001b[31mred\nline"}, ${now}, ${"server"}, ${"{}"}, ${"{}"}
-        )
-        RETURNING sequence
-      `;
-      const boundedSequence = rows[0]!.sequence;
-      const escapedSequence = rows[1]!.sequence;
+      const boundedSequence = yield* insertRawEventRow(sql, {
+        eventId: "evt-warning-bound",
+        aggregateKind: "project",
+        aggregateId: "project-warning-value",
+        streamVersion: 0,
+        eventType: "x".repeat(200_000),
+        payloadJson: "{}",
+      });
+      const escapedSequence = yield* insertRawEventRow(sql, {
+        eventId: "evt-warning-escape",
+        aggregateKind: "project",
+        aggregateId: "project-warning-value",
+        streamVersion: 1,
+        eventType: "project.\u001b[31mred\nline",
+        payloadJson: "{}",
+      });
 
       yield* Stream.runCollect(eventStore.readFromSequence(0, 10));
 
@@ -655,52 +629,30 @@ layer("OrchestrationEventStore page of skipped rows", (it) => {
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;
       const sql = yield* SqlClient.SqlClient;
-      const now = "2026-01-01T00:00:00.000Z";
       const projectId = ProjectId.make("project-empty-page");
-      const projectCreated = (
-        eventId: string,
-        commandId: string,
-      ): Omit<OrchestrationEvent, "sequence"> => ({
-        type: "project.created",
-        eventId: EventId.make(eventId),
-        aggregateKind: "project",
-        aggregateId: projectId,
-        occurredAt: now,
-        commandId: CommandId.make(commandId),
-        causationEventId: null,
-        correlationId: CommandId.make(commandId),
-        metadata: {},
-        payload: {
-          projectId,
-          title: "Empty Page Project",
-          workspaceRoot: "/tmp/project-empty-page",
-          defaultModelSelection: null,
-          scripts: [],
-          createdAt: now,
-          updatedAt: now,
-        },
-      });
       const first = yield* eventStore.append(
-        projectCreated("evt-empty-page-first", "cmd-empty-page-first"),
+        projectCreatedEvent(projectId, "evt-empty-page-first"),
       );
       // Two unknown rows wide enough to fill a page on their own. A read that
       // stops when a page yields no events never reaches the known row after
       // them, and the server starts on a log missing everything past here.
-      yield* sql`
-        INSERT INTO orchestration_events (
-          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
-          actor_kind, payload_json, metadata_json
-        ) VALUES (
-          ${EventId.make("evt-empty-page-one")}, ${"project"}, ${projectId}, ${1},
-          ${"project.future-one"}, ${now}, ${"server"}, ${'{"future":true}'}, ${"{}"}
-        ), (
-          ${EventId.make("evt-empty-page-two")}, ${"project"}, ${projectId}, ${2},
-          ${"project.future-two"}, ${now}, ${"server"}, ${'{"future":true}'}, ${"{}"}
-        )
-      `;
-      const last = yield* eventStore.append(
-        projectCreated("evt-empty-page-last", "cmd-empty-page-last"),
-      );
+      yield* insertRawEventRow(sql, {
+        eventId: "evt-empty-page-one",
+        aggregateKind: "project",
+        aggregateId: projectId,
+        streamVersion: 1,
+        eventType: "project.future-one",
+        payloadJson: '{"future":true}',
+      });
+      yield* insertRawEventRow(sql, {
+        eventId: "evt-empty-page-two",
+        aggregateKind: "project",
+        aggregateId: projectId,
+        streamVersion: 2,
+        eventType: "project.future-two",
+        payloadJson: '{"future":true}',
+      });
+      const last = yield* eventStore.append(projectCreatedEvent(projectId, "evt-empty-page-last"));
 
       const paged = yield* Stream.runCollect(eventStore.readFromSequence(first.sequence, 2)).pipe(
         Effect.map((chunk) => Array.from(chunk, (event) => event.eventId)),
@@ -729,40 +681,16 @@ layer("OrchestrationEventStore refused payload", (it) => {
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;
       const sql = yield* SqlClient.SqlClient;
-      const now = "2026-01-01T00:00:00.000Z";
       // Valid JSON, known type, wrong shape: corruption or a bug, not a newer
       // build. Reading past it would hide data loss.
-      const rows = yield* sql<{ readonly sequence: number }>`
-        INSERT INTO orchestration_events (
-          event_id,
-          aggregate_kind,
-          stream_id,
-          stream_version,
-          event_type,
-          occurred_at,
-          command_id,
-          causation_event_id,
-          correlation_id,
-          actor_kind,
-          payload_json,
-          metadata_json
-        )
-        VALUES (
-          ${EventId.make("evt-store-bad-payload")},
-          ${"project"},
-          ${ProjectId.make("project-bad-payload")},
-          ${0},
-          ${"project.created"},
-          ${now},
-          ${null},
-          ${null},
-          ${null},
-          ${"server"},
-          ${"{}"},
-          ${"{}"}
-        )
-        RETURNING sequence
-      `;
+      const badPayloadSequence = yield* insertRawEventRow(sql, {
+        eventId: "evt-store-bad-payload",
+        aggregateKind: "project",
+        aggregateId: "project-bad-payload",
+        streamVersion: 0,
+        eventType: "project.created",
+        payloadJson: "{}",
+      });
 
       const replayResult = yield* Effect.result(
         Stream.runCollect(eventStore.readFromSequence(0, 10)),
@@ -781,7 +709,7 @@ layer("OrchestrationEventStore refused payload", (it) => {
           aggregateKind: "project",
           aggregateId: "project-bad-payload",
           fromSequenceExclusive: 0,
-          toSequenceInclusive: rows[0]!.sequence,
+          toSequenceInclusive: badPayloadSequence,
         })
         .pipe(Stream.runCollect, Effect.result);
       assert.equal(rangedResult._tag, "Failure");
