@@ -134,8 +134,10 @@ const PROJECTION_TABLES = [
 const decodableEventTypes: ReadonlyArray<string> = OrchestrationEventType.literals;
 const decodableAggregateKinds: ReadonlyArray<string> = OrchestrationAggregateKind.literals;
 
-// A log value bounded and quoted for the message text: the same escape
-// Layers/OrchestrationEventStore.ts applies to the same two columns. The
+// A log value bounded and quoted for the message text. The
+// preferSchemaOverJson diagnostic refuses `JSON.stringify` here; this is the
+// encoder it names, and it produces the same bounded, quoted text the store's
+// skip warning does (Layers/OrchestrationEventStore.ts, same two columns). The
 // warning's annotations keep the raw value.
 const quoteForLog = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
