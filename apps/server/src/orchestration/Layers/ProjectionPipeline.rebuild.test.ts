@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../../config.ts";
@@ -155,6 +156,47 @@ const projectorWatermarks = Effect.gen(function* () {
     (name) => states.find((state) => state.projector === name)?.lastAppliedSequence ?? 0,
   );
 });
+
+// Every projector's cursor at `sequence`, with named exceptions. A projector
+// left behind the others is how a fast/slow spread is planted: the older build
+// cannot be run here to produce one.
+const plantWatermarks = (sequence: number, behind: Record<string, number> = {}) =>
+  Effect.gen(function* () {
+    yield* (yield* ProjectionStateRepository).upsertMany(
+      Object.values(ORCHESTRATION_PROJECTOR_NAMES).map((projector) => ({
+        projector,
+        lastAppliedSequence: behind[projector] ?? sequence,
+        updatedAt: now,
+      })),
+    );
+  });
+
+// A row of a type no build in this repo names: the store skips it, so it moves
+// no watermark and belongs to no epoch's delta. Filler that pushes sequences up.
+const insertFillerRow = (sql: SqlClient.SqlClient, id: string) =>
+  insertRawEventRow(sql, {
+    eventId: `evt-filler-${id}`,
+    aggregateKind: "project",
+    aggregateId: `project-filler-${id}`,
+    eventType: "project.future-event",
+    payloadJson: '{"future":true}',
+  });
+
+// Counts how many epochs a bootstrap actually scanned. `scanEpochForHole` is an
+// `Effect.fn`, so the tracer sees one span per call. A probe layer wrapping the
+// repository cannot measure this: OrchestrationProjectionPipelineLive builds
+// its own ProjectionDecoderRepository with `Layer.provideMerge`, so a
+// substitute supplied from the test never reaches the pipeline.
+const makeScanCounter = () => {
+  let scans = 0;
+  const tracer = Tracer.make({
+    span: (options) => {
+      if (options.name === "scanEpochForHole") scans += 1;
+      return new Tracer.NativeSpan(options);
+    },
+  });
+  return { tracer, count: () => scans };
+};
 
 // The older build's footprint: an epoch whose lists lack `missingType`, over
 // (startedAt, endedAt]. Written directly because that build cannot run here.
@@ -440,6 +482,211 @@ layer("OrchestrationProjectionPipeline earlier epoch applied", (it) => {
       const epochs = yield* decoder.listEpochs();
       assert.equal(epochs.length, 2);
       assert.isTrue(epochs[1]!.eventTypes.includes("thread.created"));
+    }),
+  );
+});
+
+layer("OrchestrationProjectionPipeline interrupted replay", (it) => {
+  it.effect("resumes under the epoch the failed replay already opened", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const decoder = yield* ProjectionDecoderRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-interrupted");
+      const threadId = ThreadId.make("thread-interrupted");
+
+      yield* eventStore.append(projectCreated(projectId, "evt-interrupted-project"));
+      // A type this build decodes carrying a payload the schema refuses. The
+      // store skips an UNKNOWN type; a known one with a bad payload fails the
+      // read, which is how the replay is killed without a test-only seam.
+      const broken = yield* insertRawEventRow(sql, {
+        eventId: "evt-interrupted-broken",
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        eventType: "thread.created",
+        payloadJson: `{"threadId":"${threadId}"}`,
+      });
+      const last = yield* eventStore.append(
+        projectCreated(ProjectId.make("project-interrupted-2"), "evt-interrupted-last"),
+      );
+
+      const interrupted = yield* Effect.result(pipeline.bootstrap);
+      assert.equal(interrupted._tag, "Failure");
+      // The epoch was opened BEFORE the replay, so the range the next boot
+      // repairs and scans exists even though no row was ever applied under it.
+      // A build that recorded the epoch after the replay leaves nothing here.
+      const opened = yield* decoder.listEpochs();
+      assert.equal(opened.length, 1);
+      assert.equal(opened[0]!.startedAtSequence, 0);
+      assert.equal(opened[0]!.endedAtSequence, 0);
+      // The whole page failed to decode, so the replay died before row 1: the
+      // property under test is that the epoch outlived the failure, not where
+      // the watermarks stopped.
+      assert.isTrue((yield* projectorWatermarks).every((sequence) => sequence === 0));
+
+      yield* sql`
+        UPDATE orchestration_events
+        SET payload_json = ${threadCreatedPayloadJson(projectId, threadId)}
+        WHERE sequence = ${broken}
+      `;
+      yield* plantMarkerProject;
+
+      yield* pipeline.bootstrap;
+
+      // The open epoch already carries this build's lists, so the second boot
+      // widens it instead of opening a second link, and nothing is emptied.
+      assert.isTrue(yield* markerProjectStands(sql));
+      assert.deepEqual(yield* projectedThreadIds(sql), [threadId]);
+      const chained = yield* decoder.listEpochs();
+      assert.equal(chained.length, 1);
+      assert.equal(chained[0]!.startedAtSequence, 0);
+      assert.equal(chained[0]!.endedAtSequence, last.sequence);
+    }),
+  );
+});
+
+layer("OrchestrationProjectionPipeline clean scan cover", (it) => {
+  it.effect("scans an epoch whose range came back clean exactly once", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const decoder = yield* ProjectionDecoderRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-cover");
+      const threadId = ThreadId.make("thread-cover");
+
+      // The older build applied 1 and stopped. The thread.created at 2 is
+      // outside its range, so its range holds no row of the type it lacked.
+      const applied = yield* eventStore.append(projectCreated(projectId, "evt-cover-project"));
+      const later = yield* eventStore.append(
+        threadCreated(projectId, threadId, "evt-cover-thread"),
+      );
+      yield* writeOlderEpoch(sql, {
+        missingType: "thread.created",
+        startedAt: 0,
+        endedAt: applied.sequence,
+      });
+      yield* plantWatermarks(applied.sequence);
+      yield* plantMarkerProject;
+
+      const first = makeScanCounter();
+      yield* pipeline.bootstrap.pipe(Effect.withTracer(first.tracer));
+
+      assert.equal(first.count(), 1);
+      assert.isTrue(yield* markerProjectStands(sql));
+      assert.deepEqual(yield* projectedThreadIds(sql), [threadId]);
+      // The clean scan is recorded in the epoch's lists, so the delta for it
+      // is now empty. Without it the epoch stays lacking while step (5) widens
+      // its end over row 2, and every later boot reads that row as a hole.
+      const covered = yield* decoder.listEpochs();
+      assert.equal(covered.length, 1);
+      assert.isTrue(covered[0]!.eventTypes.includes("thread.created"));
+      assert.equal(covered[0]!.endedAtSequence, later.sequence);
+
+      const second = makeScanCounter();
+      yield* pipeline.bootstrap.pipe(Effect.withTracer(second.tracer));
+
+      assert.equal(second.count(), 0);
+      assert.isTrue(yield* markerProjectStands(sql));
+      assert.equal((yield* decoder.listEpochs()).length, 1);
+    }),
+  );
+});
+
+layer("OrchestrationProjectionPipeline fast projector watermark", (it) => {
+  it.effect("scans the range the fastest projector crossed, not the slowest", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const decoder = yield* ProjectionDecoderRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-fast");
+      const holeThread = ThreadId.make("thread-fast-hole");
+
+      yield* eventStore.append(projectCreated(projectId, "evt-fast-project"));
+      for (const id of ["a", "b", "c", "d", "e", "f", "g"]) {
+        yield* insertFillerRow(sql, `fast-${id}`);
+      }
+      // Sequence 9: a type the older build could not decode, so it crossed it.
+      const hole = yield* insertRawEventRow(sql, {
+        eventId: "evt-fast-hole",
+        aggregateKind: "thread",
+        aggregateId: holeThread,
+        eventType: "thread.created",
+        payloadJson: threadCreatedPayloadJson(projectId, holeThread),
+      });
+      const tail = yield* insertFillerRow(sql, "fast-tail");
+      assert.equal(hole, 9);
+      assert.equal(tail, 10);
+
+      // The older build's epoch ends where its SLOWEST projector stood. Its
+      // fast projectors reached 10, so they crossed the row at 9 under lists
+      // that lacked its type: the range that must be scanned ends at 10.
+      yield* writeOlderEpoch(sql, { missingType: "thread.created", startedAt: 0, endedAt: 8 });
+      yield* plantWatermarks(tail, { [ORCHESTRATION_PROJECTOR_NAMES.channels]: 8 });
+      yield* plantMarkerProject;
+
+      yield* pipeline.bootstrap;
+
+      // An end taken from the slowest projector stops at 8, never looks at 9,
+      // and covers the epoch instead: the marker would stand and the thread
+      // would never be projected.
+      assert.isFalse(yield* markerProjectStands(sql));
+      assert.deepEqual(yield* projectedThreadIds(sql), [holeThread]);
+      const rebuilt = yield* decoder.listEpochs();
+      assert.equal(rebuilt.length, 1);
+      assert.equal(rebuilt[0]!.startedAtSequence, 0);
+      assert.equal(rebuilt[0]!.endedAtSequence, hole);
+    }),
+  );
+});
+
+layer("OrchestrationProjectionPipeline live tail", (it) => {
+  it.effect("scans rows the older build applied after its epoch was recorded", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const decoder = yield* ProjectionDecoderRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-tail");
+      const holeThread = ThreadId.make("thread-tail-hole");
+
+      const recorded = yield* eventStore.append(projectCreated(projectId, "evt-tail-project"));
+      const hole = yield* insertRawEventRow(sql, {
+        eventId: "evt-tail-hole",
+        aggregateKind: "thread",
+        aggregateId: holeThread,
+        eventType: "thread.created",
+        payloadJson: threadCreatedPayloadJson(projectId, holeThread),
+      });
+      const tail = yield* eventStore.append(
+        projectCreated(ProjectId.make("project-tail-2"), "evt-tail-later"),
+      );
+
+      // The older build recorded its epoch at 1 and then kept running: it
+      // applied 2 and 3 live under the same lists, skipping 2. Nothing widened
+      // the epoch, so the ledger understates the range it is responsible for.
+      yield* writeOlderEpoch(sql, {
+        missingType: "thread.created",
+        startedAt: 0,
+        endedAt: recorded.sequence,
+      });
+      yield* plantWatermarks(tail.sequence);
+      yield* plantMarkerProject;
+
+      yield* pipeline.bootstrap;
+
+      // Repairing the end to the watermark is what puts row 2 inside a scanned
+      // range. Without it the scan covers (0, 1], finds nothing, and the row
+      // the older build skipped is never applied.
+      assert.isFalse(yield* markerProjectStands(sql));
+      assert.deepEqual(yield* projectedThreadIds(sql), [holeThread]);
+      assert.isTrue(hole > recorded.sequence && hole < tail.sequence);
+      const rebuilt = yield* decoder.listEpochs();
+      assert.equal(rebuilt.length, 1);
+      assert.equal(rebuilt[0]!.startedAtSequence, 0);
+      assert.equal(rebuilt[0]!.endedAtSequence, tail.sequence);
     }),
   );
 });
