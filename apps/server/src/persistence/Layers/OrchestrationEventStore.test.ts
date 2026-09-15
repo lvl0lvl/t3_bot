@@ -107,7 +107,14 @@ const layer = it.layer(
   OrchestrationEventStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
 );
 
-layer("OrchestrationEventStore", (it) => {
+// Three tests that read the whole log, or poison it, get a block each. The
+// database behind a `layer(...)` block is shared by every test in it, so a
+// global read or a total count in one test sees the rows another test
+// appended, and an invalid-JSON row planted by one test fails every later
+// global read, so the block's outcome depended on the shuffle order (bead
+// t3_bot-cvg5 carries the seeds). Reading from 0 in a block of one is the
+// assertion that the database holds only the test's own rows.
+layer("OrchestrationEventStore json columns", (it) => {
   it.effect("stores json columns as strings and replays CLI-origin events", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;
@@ -163,7 +170,9 @@ layer("OrchestrationEventStore", (it) => {
       assert.deepEqual(replayed[0]?.metadata.origin, { surface: "cli" });
     }),
   );
+});
 
+layer("OrchestrationEventStore branded id", (it) => {
   it.effect("decodes a persisted id through its brand on read", () =>
     Effect.gen(function* () {
       // The boundary every adapter's item-id door rests on: the store decodes
@@ -179,7 +188,8 @@ layer("OrchestrationEventStore", (it) => {
         ...event,
         payload: { ...event.payload, messageId: MessageId.make("assistant: msg_1 ") },
       });
-      // The store is shared across this file's tests: pick the event by id.
+      // This block has its own database, so a read from 0 sees this event
+      // alone; it is still picked by id so the assertion names its subject.
       const replayed = yield* Stream.runCollect(eventStore.readFromSequence(0, 100)).pipe(
         Effect.map((chunk) => Array.from(chunk).find((item) => item.eventId === "evt-padded-id")),
       );
@@ -190,7 +200,9 @@ layer("OrchestrationEventStore", (it) => {
       );
     }),
   );
+});
 
+layer("OrchestrationEventStore invalid json", (it) => {
   it.effect("fails with PersistenceDecodeError when stored json is invalid", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;
@@ -260,7 +272,9 @@ layer("OrchestrationEventStore", (it) => {
       }
     }),
   );
+});
 
+layer("OrchestrationEventStore", (it) => {
   it.effect("reads one aggregate through the captured head across pruned global gaps", () =>
     Effect.gen(function* () {
       const store = yield* OrchestrationEventStore;
