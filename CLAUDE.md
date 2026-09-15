@@ -93,7 +93,13 @@ message types: `comms/README.md` there.
   claim ("exporting this constant means a test cannot silently disarm it" — one `rg` showed the fixture
   importing it). Cite the field or the SHA you read it from, so the next author can check the same place.
   Answers move: the colliding roster was "reachable by ordering (add human X, create thread X, add thread X)"
-  until t3_bot-7iw closed it at thread.create, and "replay-only" since — a cited answer carries its date.
+  until t3_bot-7iw closed it at thread.create, and "replay-only" since — a cited answer carries its date
+  AND ITS SUBJECT. Two instances on 2026-09-14, two authors, both measured correctly the first time and
+  then carried: "no guard config targets these files" was true of #71's diff and false of #74's three
+  hours later; "racy-clean measured safe" was true of a probe sequence containing a `git status` and
+  false of the code's sequence, which has none. Before reusing a measurement, write the subject it was
+  taken on beside the answer; if the subject you are about to apply it to is not that one, it is a new
+  question, and the question is cheap.
 - **Bead citations resolve against `main`, not the branch.** `bd` exports to the main checkout's
   `.beads/issues.jsonl`, so a bead created in a worktree is invisible to every branch pushed from it. Cite
   freely; the PM flushes and commits beads on `main` before merging any PR that cites them, and a body must
