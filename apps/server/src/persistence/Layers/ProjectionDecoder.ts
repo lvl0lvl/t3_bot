@@ -37,6 +37,12 @@ const ExtendEpochInput = Schema.Struct({
   endedAtSequence: NonNegativeInt,
 });
 
+const CoverEpochInput = Schema.Struct({
+  epoch: NonNegativeInt,
+  eventTypes: StringListFromJson,
+  aggregateKinds: StringListFromJson,
+});
+
 const makeProjectionDecoderRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
@@ -108,6 +114,17 @@ const makeProjectionDecoderRepository = Effect.gen(function* () {
       `,
   });
 
+  const coverEpochRow = SqlSchema.void({
+    Request: CoverEpochInput,
+    execute: (input) =>
+      sql`
+        UPDATE projection_decoder
+        SET event_types_json = ${input.eventTypes},
+            aggregate_kinds_json = ${input.aggregateKinds}
+        WHERE epoch = ${input.epoch}
+      `,
+  });
+
   const listEpochs: ProjectionDecoderRepositoryShape["listEpochs"] = () =>
     listEpochRows(undefined).pipe(
       Effect.mapError(toPersistenceSqlError("ProjectionDecoderRepository.listEpochs:query")),
@@ -128,6 +145,11 @@ const makeProjectionDecoderRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("ProjectionDecoderRepository.extendEpoch:query")),
     );
 
+  const coverEpoch: ProjectionDecoderRepositoryShape["coverEpoch"] = (input) =>
+    coverEpochRow(input).pipe(
+      Effect.mapError(toPersistenceSqlError("ProjectionDecoderRepository.coverEpoch:query")),
+    );
+
   const deleteAllEpochs: ProjectionDecoderRepositoryShape["deleteAllEpochs"] = () =>
     sql`DELETE FROM projection_decoder`.pipe(
       Effect.asVoid,
@@ -139,6 +161,7 @@ const makeProjectionDecoderRepository = Effect.gen(function* () {
     findHole,
     appendEpoch,
     extendEpoch,
+    coverEpoch,
     deleteAllEpochs,
   } satisfies ProjectionDecoderRepositoryShape;
 });

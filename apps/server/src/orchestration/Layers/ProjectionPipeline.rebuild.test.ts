@@ -434,7 +434,12 @@ layer("OrchestrationProjectionPipeline earlier epoch applied", (it) => {
       // it. The marker stands, so nothing was emptied.
       assert.isTrue(yield* markerProjectStands(sql));
       assert.deepEqual(yield* projectedThreadIds(sql), [threadId]);
-      assert.equal((yield* decoder.listEpochs()).length, 3);
+      // Two epochs, not three: epoch 2's range scanned clean, so it was
+      // covered with this build's lists and the chain continues through it
+      // rather than opening a third link.
+      const epochs = yield* decoder.listEpochs();
+      assert.equal(epochs.length, 2);
+      assert.isTrue(epochs[1]!.eventTypes.includes("thread.created"));
     }),
   );
 });

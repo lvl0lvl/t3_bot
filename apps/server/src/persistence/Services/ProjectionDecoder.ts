@@ -63,6 +63,19 @@ export interface ProjectionDecoderRepositoryShape {
     readonly endedAtSequence: number;
   }) => Effect.Effect<void, ProjectionRepositoryError>;
 
+  /**
+   * Replace one epoch's lists with the given ones.
+   *
+   * Called when a scan of that epoch's range came back clean: no row of the
+   * types it lacked exists there, so recording the larger lists is a true
+   * statement about the range and the next boot's delta for it is empty.
+   */
+  readonly coverEpoch: (input: {
+    readonly epoch: number;
+    readonly eventTypes: ReadonlyArray<string>;
+    readonly aggregateKinds: ReadonlyArray<string>;
+  }) => Effect.Effect<void, ProjectionRepositoryError>;
+
   readonly deleteAllEpochs: () => Effect.Effect<void, ProjectionRepositoryError>;
 }
 
