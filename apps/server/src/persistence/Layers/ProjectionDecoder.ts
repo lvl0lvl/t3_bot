@@ -8,6 +8,7 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
   NewProjectionDecoderEpoch,
+  ProjectionDecoderEpoch,
   ProjectionDecoderRepository,
   type ProjectionDecoderRepositoryShape,
   ProjectionHole,
@@ -18,12 +19,16 @@ const StringListFromJson = Schema.fromJsonString(Schema.Array(Schema.String));
 
 // The lists cross the sqlite boundary as JSON text; the schema does the
 // encoding both ways so no hand-written JSON touches the row.
+// A row whose event_types_json or aggregate_kinds_json is not a JSON array of
+// strings FAILS THE READ, and `listEpochs` is the first thing a bootstrap
+// calls, so the server does not start. Deliberate: a row of a known shape that
+// its own schema refuses is corruption of the same file the event log lives in,
+// and reading past it would silently rebuild every projection on every boot
+// while hiding the corruption that caused it.
 const ProjectionDecoderEpochRow = Schema.Struct({
-  epoch: NonNegativeInt,
+  ...ProjectionDecoderEpoch.fields,
   eventTypes: StringListFromJson,
   aggregateKinds: StringListFromJson,
-  startedAtSequence: NonNegativeInt,
-  endedAtSequence: NonNegativeInt,
 });
 
 const NewProjectionDecoderEpochRow = Schema.Struct({
@@ -62,8 +67,10 @@ const makeProjectionDecoderRepository = Effect.gen(function* () {
       `,
   });
 
-  // Unindexed on event_type and aggregate_kind: it runs only on a bootstrap
-  // whose lists grew, once per upgrade, over one epoch's range.
+  // Unindexed on event_type and aggregate_kind: it runs once per epoch that
+  // lacks part of this build's lists, over that epoch's range. A clean scan is
+  // then written back into the epoch's lists, so the epoch's delta is empty on
+  // every later boot and this query does not run for it again.
   const findHoleRow = SqlSchema.findOneOption({
     Request: ProjectionHoleQuery,
     Result: ProjectionHole,

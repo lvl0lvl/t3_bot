@@ -99,11 +99,20 @@ type ProjectorName =
 // them in one transaction and then runs the same replay a fresh database
 // runs, so the rebuilt state is the fresh-install state by construction. The
 // input that breaks this list: a projector that writes a table not named
-// here, whose stale rows would survive the rebuild (or, for a plain INSERT
-// like channel_post_wake's, collide with the replay). Measure it with
-// `rg -o "(INSERT INTO|UPDATE|DELETE FROM) [a-z_]+"` over the repositories
-// the pipeline provides, and compare against this list.
-export const PROJECTION_TABLES = [
+// here, whose stale rows would survive the rebuild. Every writer reachable
+// from here is an upsert, channel_post_wake's included (ChannelPostWakes.ts,
+// ON CONFLICT DO UPDATE, idempotent because the projector replays), so the
+// replay recreates every row the log still implies; what an upsert cannot do
+// is remove a row the log no longer implies, which is why the table is emptied
+// rather than left to the replay. Measure the list with
+// `rg -o "(INSERT( OR (IGNORE|REPLACE))? INTO|UPDATE|DELETE FROM) [a-z_]+"`
+// over the thirteen repository MODULES the Live layer at the bottom of this
+// file provides — not over a `Layers/Projection*.ts` glob, which misses
+// ProjectionThreadPullRequests.ts (it sits outside Layers/) and picks up
+// ProjectionCheckpoints.ts (the pipeline does not provide it). That command
+// returns these fourteen names plus projection_decoder, the ledger, which a
+// rebuild deletes separately.
+const PROJECTION_TABLES = [
   "projection_projects",
   "projection_threads",
   "projection_thread_messages",
@@ -125,9 +134,9 @@ export const PROJECTION_TABLES = [
 const decodableEventTypes: ReadonlyArray<string> = OrchestrationEventType.literals;
 const decodableAggregateKinds: ReadonlyArray<string> = OrchestrationAggregateKind.literals;
 
-// A log value bounded and quoted for the message text. The repo's schema-over-
-// JSON rule refuses `JSON.stringify` here (TS377026), and this is the encoder
-// it names; `Effect.logWarning`'s annotations keep the raw value.
+// A log value bounded and quoted for the message text: the same escape
+// Layers/OrchestrationEventStore.ts applies to the same two columns. The
+// warning's annotations keep the raw value.
 const quoteForLog = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 /** One epoch, with the part of this build's lists that epoch does not carry. */
@@ -2386,7 +2395,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       // epoch's lists, so they belong to it. ASSUMPTION: one writer per
       // database, which is one server per T3 home. Two builds sharing one
       // userdata directory break it, because each would claim the other's rows
-      // for its own epoch.
+      // for its own epoch. DISCLOSED, and this is the whole coverage story for
+      // a live tail: rows a build applies after its own boot are attributed to
+      // an epoch only here, by the NEXT boot, under the latest epoch's lists.
+      // That attribution is correct under the assumption and wrong without it,
+      // and a build that applies rows live and is never followed by another
+      // boot leaves them attributed to nothing at all.
       let states = yield* projectionStateRepository.listAll();
       const maxWatermark = maxProjectorWatermark(states);
       let epochs = yield* projectionDecoderRepository.listEpochs();
