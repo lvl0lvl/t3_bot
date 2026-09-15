@@ -150,6 +150,19 @@ single observations.
   a `git status` the product never runs, which smudges the racy entry; a same-second same-size edit was
   captured as the OLD content. Ask "which sequence" before "which version": a version number makes a
   claim look re-runnable while saying nothing about whether the right thing was run.
+- **When you move a claim into a durable artifact, either verify it or name who measured it and that
+  you did not.** Unattributed in a durable artifact means you are the source, whatever you believed
+  when you wrote it. Three firings in one night, one author: a bead cited from memory for a finding it
+  does not contain; a two-day-old board figure restated into a source comment whose real source
+  refuses a count in writing, reversing a standing ruling nobody knew existed; a lane's universal and
+  its approximation written into a bead as measured fact, both falsified by triage. The relay is where
+  authority is manufactured — nobody lied, and by the end each claim was load-bearing. This is NOT
+  "do not relay": relaying is most of what we do, and "verify everything you relay" is unaffordable
+  and will be ignored within a day. The test is whether you would be content to be cited as the source
+  of the line; if that depends on someone else having checked it, you have not checked it and the
+  artifact must say so. **Two of the three were relays of the author's own earlier words** — this is
+  not a rule about other people's claims. Your own board post from two days ago is exactly as
+  unverified as a lane report, and you will trust it more because it is yours.
 - **A mutant that stays green because no input reaches the guard is DISCLOSED, in those words, with
   which half of the mechanism IS exercised.** It is not closed with a test-only seam in production code,
   and it is not deleted from the table. #71's unreachable `nlink` refusal and #73's two defence-in-depth
