@@ -130,10 +130,16 @@ export const duplicateRefMembers = (input: {
  * A read model holding the duplicate-ref roster.
  *
  * FOR THE DECIDER'S TESTS, which are pure and take a read model rather than an
- * engine. This is the roster as a replay of pre-`1ez` rows leaves it; there is
- * no event-appending sibling here (`collidingRoster.ts` has one) because no
- * consumer holds a database yet, and an unused builder is a claim about a path
- * nobody runs. The events that would produce it are a `channel.created` seating
+ * engine. This is the roster as a replay of pre-`1ez` rows leaves it.
+ *
+ * THERE IS NO EVENT-APPENDING SIBLING HERE, and that is a departure from what
+ * `t3_bot-h2u6` asked for — it specified a fixture built by appending events
+ * with the engine restarted over them, as `collidingRoster.ts` does. It is not
+ * built because no consumer holds a database yet, and an unused builder is a
+ * claim about a path nobody runs. The departure and its consequence are
+ * `t3_bot-74kz`: the handle-ASC ordering above is read off the SQL and asserted
+ * in a comment here, NOT executed, so nothing yet proves a restarted engine
+ * actually produces it. The events that would are a `channel.created` seating
  * one handle and a `channel.member-added` seating the second for the same ref —
  * the add the aggregate now refuses.
  *

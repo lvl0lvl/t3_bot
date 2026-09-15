@@ -1065,46 +1065,51 @@ it.layer(NodeServices.layer)("command issuer authorization", (it) => {
       }),
   );
 
-  it.effect("refuses renaming one duplicate handle, naming the row that still holds the ref", () =>
-    Effect.gen(function* () {
-      // THE RENAME CASE'S COMMENT CLAIMS THIS AND NOTHING TESTED IT (`decider.ts:2308-2315`):
-      // on a roster replayed from before `t3_bot-1ez`, the REF clause fires on a rename because
-      // the renamed row is lifted out of `seated` while the OTHER row still holds the ref.
-      // Measured here rather than believed.
-      //
-      // It is also the repair path's precondition: the comment says `member.remove` of one
-      // duplicate is the fix, and it says so because rename is refused. If this ever measures
-      // false, the comment is what is wrong.
-      const roster = duplicateRefReadModel({
-        now: NOW,
-        channelId: CHANNEL,
-        channelName: "seniors",
-        canonicalHandle: OWNER,
-        legacyHandle: BOSS1,
-        first: "canonical",
-      });
-
-      const error = yield* decideOrchestrationCommand({
-        command: {
-          type: "channel.member.rename",
-          commandId: CommandId.make("cmd-duplicate-rename"),
+  it.effect(
+    "stores the same post under the OTHER handle when the roster is in the order a reboot produces",
+    () =>
+      Effect.gen(function* () {
+        // THE SAME DATABASE, THE OTHER ANSWER. The test above seats the canonical handle first,
+        // which is INSERTION order — what the projector builds in memory as `channel.member-added`
+        // arrives. A restarted engine loads the roster through `listChannelMemberRows`, which is
+        // `ORDER BY handle ASC` (`Layers/ProjectionSnapshotQuery.ts:561`), and "boss1" sorts
+        // before "owner" — so on this roster a reboot puts the LEGACY row first and `find`
+        // returns it.
+        //
+        // This is the case worth having: it is the one a real deployment reaches after any
+        // restart, and it is where the attribution a reader sees changes with nobody editing
+        // anything. The pair is also the fixture's own inversion proof — same rows, opposite
+        // order, opposite handle — so neither test can pass under a lookup that ignores order.
+        const roster = duplicateRefReadModel({
+          now: NOW,
           channelId: CHANNEL,
-          from: OWNER,
-          to: ChannelMemberHandle.make("owner-renamed"),
-        } as never,
-        readModel: roster,
-        issuer: HUMAN,
-      }).pipe(Effect.flip);
+          channelName: "seniors",
+          canonicalHandle: OWNER,
+          legacyHandle: BOSS1,
+          first: "legacy",
+        });
 
-      // THE TYPED REFUSAL, not merely something going wrong: `Effect.flip` is what distinguishes
-      // a refusal from a defect here, exactly as in the issuer tests above.
-      expect(error._tag).toBe("OrchestrationCommandInvariantError");
-      if (error._tag === "OrchestrationCommandInvariantError") {
-        expect(error.detail).toContain("are the same member");
-        // NAMES THE OTHER HANDLE. An operator reading this has to know which row to remove, and
-        // the one they typed is not it.
-        expect(error.detail).toContain(BOSS1);
-      }
-    }),
+        expect(roster.channels[0]?.members[0]).toMatchObject({
+          handle: BOSS1,
+          memberKind: "human",
+        });
+        expect(roster.channels[0]?.members[1]).toMatchObject({
+          handle: OWNER,
+          memberKind: "human",
+        });
+
+        const decided = yield* decideOrchestrationCommand({
+          command: channelProbe("channel.post.create") as never,
+          readModel: roster,
+          issuer: DUPLICATE_ISSUER,
+        });
+        const events = Array.isArray(decided) ? decided : [decided];
+        const event = events[0];
+        expect(event?.type).toBe("channel.post-created");
+        expect(
+          (event as { readonly payload?: { readonly authorHandle?: string } })?.payload
+            ?.authorHandle,
+        ).toBe(BOSS1);
+      }),
   );
 });
