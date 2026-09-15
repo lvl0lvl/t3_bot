@@ -665,8 +665,6 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         // holds: git rewrites one only when the split grows past
         // splitIndex.maxPercentChange. Writing a new shared index from the
         // temp index deletes this one, and the live index cannot open.
-        // 2026-01-01T00:00:00Z, in the seconds `utimes` takes.
-        const stamp = 1_767_225_600;
         yield* git(tmp, ["config", "core.splitIndex", "true"]);
         yield* git(tmp, ["update-index", "--split-index"]);
         const gitDir = NodePath.join(tmp, ".git");
@@ -677,7 +675,21 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
           );
         const before = yield* sharedIndexFiles;
         expect(before.length).toBe(1);
-        yield* fileSystem.utimes(NodePath.join(gitDir, before[0]!), stamp, stamp);
+        // git ages the shared index against the filesystem clock, so the stamp
+        // is taken from the file git just wrote rather than from Effect's
+        // clock, which `it.effect` holds at zero. A stamp inside git's
+        // two-week default window breaks this test: the shared index would
+        // then survive its own age, and the guard would go unmeasured.
+        const sharedIndexPath = NodePath.join(gitDir, before[0]!);
+        const writtenMillis = Option.getOrThrow(
+          (yield* fileSystem.stat(sharedIndexPath)).mtime,
+        ).getTime();
+        const stamp = Math.floor(writtenMillis / 1000) - 21 * 86_400;
+        yield* fileSystem.utimes(sharedIndexPath, stamp, stamp);
+        const staleMillis = Option.getOrThrow(
+          (yield* fileSystem.stat(sharedIndexPath)).mtime,
+        ).getTime();
+        expect(writtenMillis - staleMillis).toBeGreaterThan(14 * 86_400 * 1000);
         yield* writeTextFile(NodePath.join(tmp, "untracked.txt"), "new\n");
 
         yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
