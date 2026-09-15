@@ -1,8 +1,11 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, it } from "@effect/vitest";
 import {
+  ChannelId,
+  ChannelMemberHandle,
   CommandId,
   EventId,
+  OrchestrationAggregateKind,
   OrchestrationEventType,
   ProjectId,
   ProviderInstanceId,
@@ -12,6 +15,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -95,6 +99,37 @@ const threadCreated = (projectId: ProjectId, threadId: ThreadId, id: string) =>
     metadata: {},
     payload: threadCreatedPayload(projectId, threadId),
   }) as const;
+
+const channelCreated = (channelId: ChannelId, id: string) =>
+  ({
+    type: "channel.created",
+    eventId: EventId.make(id),
+    aggregateKind: "channel",
+    aggregateId: channelId,
+    occurredAt: now,
+    commandId: CommandId.make(`cmd-${id}`),
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    payload: {
+      channelId,
+      name: `Channel ${channelId}`,
+      members: [
+        {
+          handle: ChannelMemberHandle.make("pm"),
+          memberKind: "thread" as const,
+          memberId: "thread-pm",
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    },
+  }) as const;
+
+const projectedChannelIds = (sql: SqlClient.SqlClient) =>
+  sql<{ readonly channelId: string }>`
+    SELECT channel_id AS "channelId" FROM projection_channels ORDER BY channel_id ASC
+  `.pipe(Effect.map((rows) => rows.map((row) => row.channelId)));
 
 const encodeThreadCreatedPayload = Schema.encodeSync(Schema.fromJsonString(ThreadCreatedPayload));
 
@@ -209,14 +244,21 @@ const makeScanCounter = () => {
 // (startedAt, endedAt]. Written directly because that build cannot run here.
 const writeOlderEpoch = (
   sql: SqlClient.SqlClient,
-  input: { readonly missingType: string; readonly startedAt: number; readonly endedAt: number },
+  input: {
+    readonly missingType?: string;
+    readonly missingKind?: string;
+    readonly startedAt: number;
+    readonly endedAt: number;
+  },
 ) =>
   Effect.gen(function* () {
     const decoder = yield* ProjectionDecoderRepository;
     yield* sql`DELETE FROM projection_decoder`;
     yield* decoder.appendEpoch({
       eventTypes: OrchestrationEventType.literals.filter((type) => type !== input.missingType),
-      aggregateKinds: ["project", "thread", "channel"],
+      aggregateKinds: OrchestrationAggregateKind.literals.filter(
+        (kind) => kind !== input.missingKind,
+      ),
       startedAtSequence: input.startedAt,
       endedAtSequence: input.endedAt,
     });
@@ -738,6 +780,128 @@ layer("OrchestrationProjectionPipeline empty epoch range", (it) => {
       assert.equal(covered.length, 1);
       assert.isTrue(covered[0]!.eventTypes.includes("thread.created"));
       assert.equal(covered[0]!.endedAtSequence, later.sequence);
+    }),
+  );
+});
+
+layer("OrchestrationProjectionPipeline lacking aggregate kind", (it) => {
+  it.effect("rebuilds for a kind the older epoch lacked, with every type in its list", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-kind");
+      const channelId = ChannelId.make("channel-kind");
+
+      // The kind half of the delta on its own: this epoch's TYPE list is
+      // complete, so only `aggregate_kind` can put the row at 2 inside it.
+      yield* eventStore.append(projectCreated(projectId, "evt-kind-project"));
+      const channel = yield* eventStore.append(channelCreated(channelId, "evt-kind-channel"));
+      yield* writeOlderEpoch(sql, {
+        missingKind: "channel",
+        startedAt: 0,
+        endedAt: channel.sequence,
+      });
+      yield* plantWatermarks(channel.sequence);
+      yield* plantMarkerProject;
+
+      yield* pipeline.bootstrap;
+
+      // A scan that asked only about event types finds nothing here and covers
+      // the epoch instead, leaving the channel unprojected and the marker up.
+      assert.isFalse(yield* markerProjectStands(sql));
+      assert.deepEqual(yield* projectedChannelIds(sql), [channelId]);
+    }),
+  );
+});
+
+layer("OrchestrationProjectionPipeline rebuild warning", (it) => {
+  it.effect("warns once naming the row that was skipped, and not at all otherwise", () => {
+    const messages: string[] = [];
+    const annotationsSeen: Array<Record<string, unknown>> = [];
+    // formatStructured is the only logger in this build that hands the
+    // annotations to its output, so one capture pins both halves of the
+    // warning: the bounded text and the raw values beside it.
+    const logger = Logger.map(Logger.formatStructured, (output) => {
+      messages.push(String(output.message));
+      annotationsSeen.push(output.annotations);
+    });
+
+    return Effect.gen(function* () {
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-warn");
+      const holeThread = ThreadId.make("thread-warn-hole");
+
+      const recorded = yield* eventStore.append(projectCreated(projectId, "evt-warn-project"));
+      const hole = yield* insertRawEventRow(sql, {
+        eventId: "evt-warn-hole",
+        aggregateKind: "thread",
+        aggregateId: holeThread,
+        eventType: "thread.created",
+        payloadJson: threadCreatedPayloadJson(projectId, holeThread),
+      });
+      const tail = yield* eventStore.append(
+        projectCreated(ProjectId.make("project-warn-2"), "evt-warn-later"),
+      );
+      yield* writeOlderEpoch(sql, {
+        missingType: "thread.created",
+        startedAt: 0,
+        endedAt: recorded.sequence,
+      });
+      yield* plantWatermarks(tail.sequence);
+
+      yield* pipeline.bootstrap;
+
+      // The rebuild is the only operator-visible sign that a full replay ran
+      // and why, so it is one line naming the row, not zero and not one per row.
+      const rebuilt = messages
+        .map((message, index) => ({ message, annotations: annotationsSeen[index]! }))
+        .filter(({ message }) => message.includes("orchestration projections rebuilt"));
+      assert.equal(rebuilt.length, 1);
+      assert.isTrue(rebuilt[0]!.message.includes(`sequence ${hole}`));
+      assert.isTrue(rebuilt[0]!.message.includes("thread.created"));
+      assert.equal(rebuilt[0]!.annotations.sequence, hole);
+      assert.equal(rebuilt[0]!.annotations.eventType, "thread.created");
+      assert.equal(rebuilt[0]!.annotations.aggregateKind, "thread");
+
+      messages.length = 0;
+      annotationsSeen.length = 0;
+      yield* pipeline.bootstrap;
+
+      assert.equal(
+        messages.filter((message) => message.includes("orchestration projections rebuilt")).length,
+        0,
+      );
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  });
+});
+
+layer("OrchestrationProjectionPipeline malformed ledger row", (it) => {
+  it.effect("fails the bootstrap rather than reading past a ledger row it cannot decode", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-malformed");
+
+      yield* eventStore.append(projectCreated(projectId, "evt-malformed-project"));
+      // A row of the ledger's own shape whose list column is not a JSON array.
+      // Reading past it would rebuild every projection on every boot and hide
+      // the corruption; the read refuses and the server does not start.
+      yield* sql`
+        INSERT INTO projection_decoder (
+          event_types_json, aggregate_kinds_json, started_at_sequence, ended_at_sequence
+        ) VALUES (${"thread.created"}, ${'["project"]'}, ${0}, ${0})
+      `;
+
+      const refused = yield* Effect.result(pipeline.bootstrap);
+
+      assert.equal(refused._tag, "Failure");
+      if (refused._tag !== "Failure") return;
+      assert.equal(refused.failure._tag, "PersistenceSqlError");
+      assert.equal(refused.failure.operation, "ProjectionDecoderRepository.listEpochs:query");
     }),
   );
 });
