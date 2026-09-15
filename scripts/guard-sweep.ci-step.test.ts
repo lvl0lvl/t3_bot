@@ -169,7 +169,16 @@ const parsedWorkflow = (): Record<string, unknown> =>
 /** The workflow's `concurrency:` block, parsed. */
 const concurrency = (): Record<string, string> => {
   const block = parsedWorkflow()["concurrency"];
-  expect(block).toBeTypeOf("object");
+  // THE NULL CHECK IS NOT DECORATION. `typeof null === "object"`, so `concurrency:` written
+  // with no value under it passes `toBeTypeOf` and the claim below then dies on
+  // `TypeError: Cannot read properties of null (reading 'group')` — a crash standing in for a
+  // refusal, which is the one failure this repo counts as a defect rather than a red. Measured:
+  // an empty `concurrency:` key parses to null and reached that dereference.
+  expect(
+    block,
+    "fork-ci.yml must declare a `concurrency:` block with values under it; it is missing or empty",
+  ).toBeTypeOf("object");
+  expect(block).not.toBeNull();
   return block as Record<string, string>;
 };
 
