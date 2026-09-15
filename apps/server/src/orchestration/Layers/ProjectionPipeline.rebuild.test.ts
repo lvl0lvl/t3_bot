@@ -905,3 +905,114 @@ layer("OrchestrationProjectionPipeline malformed ledger row", (it) => {
     }),
   );
 });
+
+layer("OrchestrationProjectionPipeline rebuild atomicity", (it) => {
+  it.effect("leaves the tables and the ledger untouched when the new epoch cannot be written", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const decoder = yield* ProjectionDecoderRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-atomic");
+      const holeThread = ThreadId.make("thread-atomic-hole");
+
+      const recorded = yield* eventStore.append(projectCreated(projectId, "evt-atomic-project"));
+      yield* insertRawEventRow(sql, {
+        eventId: "evt-atomic-hole",
+        aggregateKind: "thread",
+        aggregateId: holeThread,
+        eventType: "thread.created",
+        payloadJson: threadCreatedPayloadJson(projectId, holeThread),
+      });
+      const tail = yield* eventStore.append(
+        projectCreated(ProjectId.make("project-atomic-2"), "evt-atomic-later"),
+      );
+      yield* writeOlderEpoch(sql, {
+        missingType: "thread.created",
+        startedAt: 0,
+        endedAt: recorded.sequence,
+      });
+      yield* plantWatermarks(tail.sequence);
+      yield* plantMarkerProject;
+
+      // The last statement of the rebuild refuses. Everything the rebuild did
+      // before it -- fourteen truncations and the epoch delete -- is in the
+      // same transaction, so a bootstrap that survived this would leave empty
+      // projection tables under no ledger at all: a database that rebuilds from
+      // scratch on every boot and can never find a hole again.
+      yield* sql`
+        CREATE TRIGGER projection_decoder_refuse_insert
+        BEFORE INSERT ON projection_decoder
+        BEGIN
+          SELECT RAISE(ABORT, 'projection_decoder insert refused');
+        END
+      `;
+
+      const refused = yield* Effect.result(pipeline.bootstrap);
+
+      assert.equal(refused._tag, "Failure");
+      // Rolled back: the marker row a rebuild empties is still there.
+      assert.isTrue(yield* markerProjectStands(sql));
+      // Rolled back: the older build's epoch was not deleted, so the next boot
+      // still knows which range to scan.
+      const survived = yield* decoder.listEpochs();
+      assert.equal(survived.length, 1);
+      assert.isFalse(survived[0]!.eventTypes.includes("thread.created"));
+
+      yield* sql`DROP TRIGGER projection_decoder_refuse_insert`;
+    }),
+  );
+});
+
+layer("OrchestrationProjectionPipeline hostile event type", (it) => {
+  it.effect("bounds and escapes the row's columns in the warning it writes", () => {
+    const messages: string[] = [];
+    const annotationsSeen: Array<Record<string, unknown>> = [];
+    const logger = Logger.map(Logger.formatStructured, (output) => {
+      messages.push(String(output.message));
+      annotationsSeen.push(output.annotations);
+    });
+    const escape = String.fromCharCode(27);
+    // A column a newer build wrote: long enough to fill a log file, with the
+    // two bytes that forge log lines INSIDE the first 120 characters, so the
+    // bound and the escaping are each separately necessary.
+    const hostileType = `channel.${escape}\nfuture-${"x".repeat(200_000)}`;
+
+    return Effect.gen(function* () {
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-hostile");
+
+      yield* eventStore.append(projectCreated(projectId, "evt-hostile-project"));
+      // Found through the KIND half: no type this build knows can be hostile,
+      // so the epoch's type list is complete and its kind list is short one.
+      const hole = yield* insertRawEventRow(sql, {
+        eventId: "evt-hostile-row",
+        aggregateKind: "channel",
+        aggregateId: "channel-hostile",
+        eventType: hostileType,
+        payloadJson: '{"future":true}',
+      });
+      yield* writeOlderEpoch(sql, { missingKind: "channel", startedAt: 0, endedAt: hole });
+      yield* plantWatermarks(hole);
+
+      yield* pipeline.bootstrap;
+
+      const rebuilt = messages
+        .map((message, index) => ({ message, annotations: annotationsSeen[index]! }))
+        .filter(({ message }) => message.includes("orchestration projections rebuilt"));
+      assert.equal(rebuilt.length, 1);
+      const line = rebuilt[0]!.message;
+      assert.isTrue(line.includes(`sequence ${hole}`));
+      // Bounded: the whole line stays a log line, not a log file.
+      assert.isBelow(line.length, 400);
+      // Escaped: neither byte can start a line of its own or move the cursor.
+      assert.isFalse(line.includes("\n"));
+      assert.isFalse(line.includes(escape));
+      // The structured log still carries the column exactly as it was written.
+      assert.equal(rebuilt[0]!.annotations.eventType, hostileType);
+      assert.equal(rebuilt[0]!.annotations.aggregateKind, "channel");
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  });
+});
