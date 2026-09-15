@@ -85,6 +85,10 @@ function initRepoWithCommit(
     yield* git(cwd, ["init"]);
     yield* git(cwd, ["config", "user.email", "test@test.com"]);
     yield* git(cwd, ["config", "user.name", "Test"]);
+    // A global excludes file listing one of the fixture paths makes the file
+    // ignored from setup, so a test about ignore rules measures the
+    // developer's config instead of the capture.
+    yield* git(cwd, ["config", "core.excludesFile", "/dev/null"]);
     yield* writeTextFile(NodePath.join(cwd, "README.md"), "# test\n");
     yield* git(cwd, ["add", "."]);
     yield* git(cwd, ["commit", "-m", "initial commit"]);
