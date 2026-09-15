@@ -1,5 +1,6 @@
 /**
- * FOUR CLAIMS ABOUT THE CI STEP THAT RUNS THE SWEEP, all of which fail SILENTLY when broken.
+ * FIVE CLAIMS ABOUT THE CI JOB THAT RUNS THE SWEEP AND THE WORKFLOW AROUND IT, all of which
+ * fail SILENTLY when broken.
  *
  * The bead (`t3_bot-2ij`, opened 2026-09-12 from qa29's F7 on PR #29) is about the sweep not
  * being in CI at all. #68, two days later, is the instance that showed what that costs and is why
@@ -27,6 +28,12 @@
  * CLAIM 4 — THE STEP AND ITS MATRIX ARE NOT DISARMED. Every edit that stops this job gating lives
  * outside the `run:` line: `continue-on-error: true` (sweep exits 2, step failed, JOB GREEN),
  * `if: false`, and `strategy.matrix.exclude:` (the list still names all six, fewer jobs expand).
+ *
+ * CLAIM 5 — MAIN'S RUNS NEITHER CANCEL NOR QUEUE BEHIND EACH OTHER. `cancel-in-progress` must
+ * stay guarded by the event name, or a merge kills the previous merge's sweep outright; and the
+ * group must fall through to `github.sha` on a push, or every merge shares one group and the
+ * second waits out the first (measured at ~25 minutes for the slowest config). Both are one-token
+ * edits to a line nobody re-reads, and neither reddens anything else in this repo.
  *
  * CLAIM 2 — THE MATRIX COVERS EVERY CHECKED-IN CONFIG. A seventh config added to `scripts/` and not
  * added to the matrix is never swept, and nothing anywhere goes red — which is #68's failure
@@ -173,6 +180,17 @@ describe("the CI step that runs the guard sweep", () => {
     expect(job).not.toContain("continue-on-error");
     expect(job).not.toContain("if:");
     expect(job).not.toContain("exclude:");
+  });
+
+  it("keeps main's runs from cancelling or queueing behind each other", () => {
+    // Two mechanisms, two failure modes, both silent. Reverting `cancel-in-progress` to a bare
+    // `true` lets a merge cancel the previous merge's sweep — the verdict never arrives. Reverting
+    // the group to `github.ref` puts every merge in one group, so nothing is cancelled and the
+    // second merge simply waits: main's verdict arrives, up to a sweep-length late. Neither edit
+    // reddens anything else, which is why they are asserted here.
+    const text = workflowText();
+    expect(text).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
+    expect(text).toContain("group: fork-ci-${{ github.event.pull_request.number || github.sha }}");
   });
 
   it("sweeps every checked-in config, so a new config cannot be added without being swept", () => {
