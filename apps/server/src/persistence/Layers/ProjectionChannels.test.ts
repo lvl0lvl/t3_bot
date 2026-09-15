@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Statement from "effect/unstable/sql/Statement";
 
 import { ProjectionChannelRepositoryLive } from "./ProjectionChannels.ts";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
@@ -525,6 +526,197 @@ layer("ProjectionChannelRepository", (it) => {
         rows.map((row) => row.name),
         ["order-busy", "order-quiet"],
       );
+    }),
+  );
+
+  it.effect("without the roster, a non-member still gets nothing rather than everything", () =>
+    Effect.gen(function* () {
+      // THE REFUSE SIDE OF THE ROSTER-LESS METHOD, and the reason it is written
+      // as its own test rather than trusted from the sibling's: this filter came
+      // to have five surviving mutants, one of which returned every channel to
+      // every client and reddened nothing — recorded at
+      // `orchestration/channelPosts.test.ts:18-26` (c38963c12f), with the tests
+      // that closed it in 75234a6619. No pass count, deliberately: that comment
+      // gives the reason, and 42ec7b0dbc removed the counts it argued against.
+      // The predicate is
+      // the query's, so a method that stops running the query — or runs one
+      // without the WHERE — reads as working against any fixture whose member
+      // IS a member. Only a non-member separates "filtered" from "not filtered
+      // at all".
+      //
+      // BOTH DIRECTIONS in one test, because the refusal alone passes for a
+      // method that returns nothing to anybody: the stranger sees none, and the
+      // seated member sees this channel. Named rather than counted — this file
+      // shares one database and the member is seated elsewhere in it.
+      const repo = yield* ProjectionChannelRepository;
+      const seated = ChannelId.make("rosterless-seated");
+      yield* repo.upsertChannel(
+        channelWithMembers(seated, "rosterless-seated", [
+          { handle: "walt", memberKind: "human", memberId: "rosterless-member" },
+        ]),
+      );
+
+      const stranger = yield* repo.listChannelActivityForMember(
+        unsafeRefForTest("human", "rosterless-nobody"),
+      );
+      const member = yield* repo.listChannelActivityForMember(
+        unsafeRefForTest("human", "rosterless-member"),
+      );
+
+      assert.deepStrictEqual(stranger, []);
+      assert.ok(member.some((row) => row.channelId === seated));
+    }),
+  );
+
+  it.effect("without the roster, a matching id with the wrong KIND still gets nothing", () =>
+    Effect.gen(function* () {
+      // THE SECOND HALF OF THE PREDICATE, through the method production calls.
+      // The WHERE is two fields (`m.member_kind = ? AND m.member_id = ?`), and
+      // the ONLY input that separates them is a MATCHING id with a DIFFERING
+      // kind. No other fixture for this method presents one: the refuse test
+      // above asks as a stranger whose id is seated nowhere (both refs are
+      // `human`, so it differs by id alone and returns nothing whatever the kind
+      // clause does), and the parity and statement-count fixtures ask as the one
+      // member they seat. Measured: dropping `m.member_kind` reds exactly one
+      // test in this file, and before this test it was the sibling's.
+      //
+      // The two methods share one statement today, so the sibling's test would
+      // catch it — but that sharing is an implementation detail, and
+      // `t3_bot-ajy` may delete the sibling and its test together. This repo has
+      // been bitten by the differ-in-both fixture shape four times.
+      const repo = yield* ProjectionChannelRepository;
+      yield* repo.upsertChannel(
+        channelWithMembers(ChannelId.make("kind-only-rosterless"), "kind-only-rosterless", [
+          COLLIDING_HUMAN_MEMBER,
+        ]),
+      );
+
+      const asThread = yield* repo.listChannelActivityForMember(COLLIDING_THREAD_REF);
+      const asHuman = yield* repo.listChannelActivityForMember(COLLIDING_HUMAN_REF);
+
+      // Both directions: the refusal alone passes for a filter matching nobody.
+      // Named rather than counted — this file shares one database.
+      assert.ok(!asThread.some((row) => row.channelId === "kind-only-rosterless"));
+      assert.ok(asHuman.some((row) => row.channelId === "kind-only-rosterless"));
+    }),
+  );
+
+  it.effect("returns the same channels in the same order as the roster-carrying sibling", () =>
+    Effect.gen(function* () {
+      // WHAT MAKES THE SWAP SAFE, stated as a measurement rather than as the
+      // argument that the two share a statement. The callers that moved onto
+      // the roster-less method read `channelId` and the shell fields; if its row
+      // set or order ever diverged from the sibling's, the sidebar would reorder
+      // and the post path's membership check would answer about a different set.
+      //
+      // TWO channels, because one cannot show an ordering difference, and their
+      // activity is opposite to their creation order so the ORDER BY is doing
+      // something a stable accident could not reproduce.
+      const repo = yield* ProjectionChannelRepository;
+      const older = ChannelId.make("parity-older");
+      const newer = ChannelId.make("parity-newer");
+      const member = unsafeRefForTest("human", "parity-member");
+      yield* repo.upsertChannel(
+        channelWithMembers(older, "parity-older", [{ handle: "walt", ...member }], {
+          createdAt: "2026-02-01T00:00:00.000Z",
+        }),
+      );
+      yield* repo.upsertChannel(
+        channelWithMembers(newer, "parity-newer", [{ handle: "walt", ...member }], {
+          createdAt: "2026-02-05T00:00:00.000Z",
+        }),
+      );
+      yield* repo.insertPost({
+        ...post("parity-post-older", older, 41),
+        createdAt: "2026-02-09T00:00:00.000Z",
+      });
+
+      const withRoster = yield* repo.listChannelsForMember(member);
+      const withoutRoster = yield* repo.listChannelActivityForMember(member);
+
+      // The ids AND their order, not a set comparison: ordering is the half a
+      // sorted or set-based assertion cannot see.
+      assert.deepStrictEqual(
+        withoutRoster.map((row) => row.channelId),
+        withRoster.map((row) => row.channelId),
+      );
+      assert.deepStrictEqual(
+        withoutRoster.map((row) => row.channelId),
+        [older, newer],
+      );
+      // And the roster is the ONLY difference: every other field agrees row for
+      // row. Without this the parity claim would hold for a method that
+      // returned the right ids with the wrong activity.
+      assert.deepStrictEqual(
+        withoutRoster,
+        withRoster.map(({ members: _members, ...rest }) => rest),
+      );
+    }),
+  );
+
+  it.effect("issues the same number of statements however many channels come back", () =>
+    Effect.gen(function* () {
+      // THE PROPERTY THIS CHANGE EXISTS FOR, and the only test here that reds if
+      // the per-row roster fetch comes back. Everything else in this file is
+      // satisfied by a roster-carrying implementation: the rows are the same
+      // rows, in the same order, refused for the same members. An N+1 is
+      // invisible to every assertion about WHAT came back, so it has to be
+      // asserted about HOW.
+      //
+      // A COUNT, NOT A TIMING. `Statement.CurrentTransformer` sees every
+      // statement the repository issues, so this is deterministic and needs no
+      // benchmark, no clock and no machinery.
+      const repo = yield* ProjectionChannelRepository;
+      const few = unsafeRefForTest("human", "count-few");
+      const many = unsafeRefForTest("human", "count-many");
+      yield* Effect.forEach([0, 1], (n) =>
+        repo.upsertChannel(
+          channelWithMembers(ChannelId.make(`count-few-${n}`), `count-few-${n}`, [
+            { handle: "walt", ...few },
+          ]),
+        ),
+      );
+      yield* Effect.forEach([0, 1, 2, 3, 4], (n) =>
+        repo.upsertChannel(
+          channelWithMembers(ChannelId.make(`count-many-${n}`), `count-many-${n}`, [
+            { handle: "walt", ...many },
+          ]),
+        ),
+      );
+
+      const countStatements = <A, E>(effect: Effect.Effect<A, E, never>) =>
+        Effect.gen(function* () {
+          const seen: Array<Statement.Statement<unknown>> = [];
+          yield* effect.pipe(
+            Effect.provideService(Statement.CurrentTransformer, (statement) => {
+              seen.push(statement);
+              return Effect.succeed(statement);
+            }),
+          );
+          return seen.length;
+        });
+
+      const statementsForTwoChannels = yield* countStatements(
+        repo.listChannelActivityForMember(few),
+      );
+      const statementsForFiveChannels = yield* countStatements(
+        repo.listChannelActivityForMember(many),
+      );
+
+      // FLAT IN N is the claim. Two channels and five cost the same.
+      assert.strictEqual(statementsForTwoChannels, statementsForFiveChannels);
+      assert.strictEqual(statementsForTwoChannels, 1);
+
+      // THE CONTROL, and it is what stops this test being vacuous: a counter
+      // that always reported 1 — a transformer that never fired, an effect that
+      // never ran — would pass the two assertions above no matter what the
+      // method did. The roster-carrying sibling over the SAME fixtures must
+      // grow with N, and does: one statement plus one per channel.
+      const rosterStatementsForTwo = yield* countStatements(repo.listChannelsForMember(few));
+      const rosterStatementsForFive = yield* countStatements(repo.listChannelsForMember(many));
+      assert.strictEqual(rosterStatementsForTwo, 3);
+      assert.strictEqual(rosterStatementsForFive, 6);
+      assert.ok(rosterStatementsForFive > rosterStatementsForTwo);
     }),
   );
 

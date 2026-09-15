@@ -5,6 +5,7 @@ import type { ProjectionRepositoryError } from "../persistence/Errors.ts";
 import {
   ProjectionChannelRepository,
   type ChannelMemberRef,
+  type ProjectionChannelActivity,
   type ProjectionChannelWithActivity,
 } from "../persistence/Services/ProjectionChannels.ts";
 
@@ -33,7 +34,7 @@ import {
  * it from the removal's member ref and states the one branch it still cannot
  * decide.
  */
-export function toChannelShell(row: ProjectionChannelWithActivity): OrchestrationChannelShell {
+export function toChannelShell(row: ProjectionChannelActivity): OrchestrationChannelShell {
   return {
     id: row.channelId,
     name: row.name,
@@ -94,7 +95,7 @@ export function withMemberChannels(input: {
 > {
   return Effect.gen(function* () {
     const projectionChannels = yield* ProjectionChannelRepository;
-    const rows = yield* projectionChannels.listChannelsForMember(input.member);
+    const rows = yield* projectionChannels.listChannelActivityForMember(input.member);
     return { ...input.snapshot, channels: rows.map(toChannelShell) };
   });
 }

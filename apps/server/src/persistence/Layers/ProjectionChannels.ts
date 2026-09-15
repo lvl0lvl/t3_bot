@@ -345,6 +345,20 @@ const makeProjectionChannelRepository = Effect.gen(function* () {
       ),
     );
 
+  // THE SAME QUERY, WITHOUT THE PER-ROW ROSTER FETCH. `listChannelsForMember`
+  // above is exactly this plus `Effect.forEach(rows, listMemberRows)`, so the
+  // row set and its order are identical by construction rather than by
+  // agreement — there is one statement and one predicate, and only the merge
+  // differs. Breaking input if that ever stops being true: a member with two
+  // channels must get the same two ids from both methods.
+  const listChannelActivityForMember: ProjectionChannelRepositoryShape["listChannelActivityForMember"] =
+    (member) =>
+      listChannelRowsForMember(member).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionChannelRepository.listChannelActivityForMember:query"),
+        ),
+      );
+
   const listPosts: ProjectionChannelRepositoryShape["listPosts"] = (input) =>
     listPostRows({
       channelId: input.channelId,
@@ -377,6 +391,7 @@ const makeProjectionChannelRepository = Effect.gen(function* () {
     getPost,
     getChannelWithActivityById,
     listChannelsForMember,
+    listChannelActivityForMember,
     listPosts,
     listPostsBackward,
   } satisfies ProjectionChannelRepositoryShape;

@@ -57,9 +57,9 @@ import type { ProjectionTurnRepository } from "../persistence/Services/Projectio
  * The caller asked for a channel it is not in, or one that does not exist.
  *
  * THE TWO ARE ONE ANSWER, deliberately. Distinguishing them tells a caller the
- * names of channels it cannot read, which is the disclosure `listChannelsForMember`
- * pushes into the query rather than into a caller's discretion. `getChannelByName`
- * conflates the same pair for the same reason.
+ * names of channels it cannot read, which is the disclosure
+ * `listChannelRowsForMember` pushes into the query rather than into a caller's
+ * discretion. `getChannelByName` conflates the same pair for the same reason.
  */
 export class ChannelPostsUnreadable extends Schema.TaggedError<ChannelPostsUnreadable>()(
   "ChannelPostsUnreadable",
@@ -100,9 +100,9 @@ const toPost = (
  * One page, for the member who asked.
  *
  * MEMBERSHIP IS CHECKED HERE and not in a transport, for the reason
- * `listChannelsForMember`'s docstring gives about its own query: a rule a caller
- * is trusted to apply is a rule in a file that cannot enforce it, and it is one
- * careless handler away from being untrue.
+ * `listChannelRowsForMember` — the statement both list methods run — gives about
+ * its own query: a rule a caller is trusted to apply is a rule in a file that
+ * cannot enforce it, and it is one careless handler away from being untrue.
  *
  * IT OVER-FETCHES BY ONE to decide whether a further page exists, which is how
  * `nextCursor: null` comes to mean "the end" rather than "probably the end". The
@@ -127,7 +127,7 @@ export function readChannelPostPage(input: {
     // MEMBERSHIP FIRST, before the cursor is even examined. A caller holding a
     // foreign cursor for a channel it is not in must not be able to tell the two
     // refusals apart: `ChannelCursorRejected` would confirm the channel exists.
-    const channels = yield* projectionChannels.listChannelsForMember(input.member);
+    const channels = yield* projectionChannels.listChannelActivityForMember(input.member);
     if (!channels.some((row) => row.channelId === channelId)) {
       return yield* new ChannelPostsUnreadable({ channelId });
     }

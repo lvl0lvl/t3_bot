@@ -1011,7 +1011,15 @@ const buildAppUnderTest = (options?: {
             replaceMembers: () => Effect.die("unused"),
             insertPost: () => Effect.die("unused"),
             getPost: () => Effect.succeedNone,
-            listChannelsForMember: () => Effect.succeed([]),
+            // THE ROSTER-CARRYING SIBLING DIES RATHER THAN ANSWERING EMPTY.
+            // Nothing in production calls it, so a test that reaches it has
+            // either drifted back to it or stubbed the wrong one of the pair —
+            // and an empty list would let both pass while asserting nothing
+            // about membership. Verified free: with this dying, 221/221 here
+            // still pass, so no test depends on it answering.
+            listChannelsForMember: () =>
+              Effect.die("stub listChannelActivityForMember — the method the paths call"),
+            listChannelActivityForMember: () => Effect.succeed([]),
             listPosts: () => Effect.succeed([]),
             ...options?.layers?.projectionChannels,
           }),
@@ -10216,30 +10224,47 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
    * of asserting only that some channels came back.
    */
   const channelsByMember = (input: {
-    readonly asked: Array<{ readonly memberKind: string; readonly memberId: string }>;
-  }) => ({
-    listChannelsForMember: (member: { memberKind: string; memberId: string }) => {
-      input.asked.push(member);
-      return Effect.succeed(
-        member.memberKind === "human" && member.memberId === HUMAN_OPERATOR_MEMBER_ID
-          ? [
-              channelRow({
-                latestPostAt: "2026-01-01T00:00:01.000Z",
-                members: [
-                  { handle: "walt", memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
-                ],
-              }),
-            ]
-          : [
-              {
-                ...channelRow({ latestPostAt: null, members: [] }),
-                channelId: ChannelId.make("channel-someone-else"),
-                name: "someone-else",
-              },
-            ],
-      );
-    },
-  });
+    readonly asked: Array<{
+      readonly memberKind: string;
+      readonly memberId: string;
+      readonly via: "activity" | "roster";
+    }>;
+  }) => {
+    // BOTH METHODS ANSWER, AND EACH RECORDS WHICH ONE WAS CALLED. Answering both
+    // is necessary — a stub that answered only one would let the other path fall
+    // through to the base mock and pass for the wrong reason. But answering both
+    // IDENTICALLY made the call site invisible: a caller rewired to the
+    // roster-carrying sibling got the same rows and no assertion could see it,
+    // which is how the post path came to be wired to the roster-less method and
+    // pinned by nothing (measured: reverting it reds nothing without `via`).
+    // `via` is what lets a test name the site rather than the behaviour.
+    const answer =
+      (via: "activity" | "roster") => (member: { memberKind: string; memberId: string }) => {
+        input.asked.push({ ...member, via });
+        return Effect.succeed(
+          member.memberKind === "human" && member.memberId === HUMAN_OPERATOR_MEMBER_ID
+            ? [
+                channelRow({
+                  latestPostAt: "2026-01-01T00:00:01.000Z",
+                  members: [
+                    { handle: "walt", memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
+                  ],
+                }),
+              ]
+            : [
+                {
+                  ...channelRow({ latestPostAt: null, members: [] }),
+                  channelId: ChannelId.make("channel-someone-else"),
+                  name: "someone-else",
+                },
+              ],
+        );
+      };
+    return {
+      listChannelsForMember: answer("roster"),
+      listChannelActivityForMember: answer("activity"),
+    };
+  };
 
   it.effect("reads the snapshot BEFORE the channels, so one created in the gap still lands", () =>
     Effect.gen(function* () {
@@ -10264,7 +10289,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           projectionChannels: {
-            listChannelsForMember: () =>
+            // The snapshot path reads the roster-less method (`t3_bot-rex`);
+            // this test is about WHEN it is read relative to the snapshot, so
+            // the flag has to be observed by the method the path actually calls.
+            listChannelActivityForMember: () =>
               Effect.succeed(
                 snapshotRead
                   ? [
@@ -10326,7 +10354,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // channel CHANGES, so channels that exist and sit still reach a client
       // through the snapshot or not at all — which is exactly how the sidebar
       // came to be empty against a real server while every stream test passed.
-      const asked: Array<{ readonly memberKind: string; readonly memberId: string }> = [];
+      const asked: Array<{
+        readonly memberKind: string;
+        readonly memberId: string;
+        readonly via: "activity" | "roster";
+      }> = [];
 
       yield* buildAppUnderTest({
         layers: {
@@ -10411,7 +10443,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   });
 
   const postsByMember = (input: {
-    readonly asked: Array<{ readonly memberKind: string; readonly memberId: string }>;
+    readonly asked: Array<{
+      readonly memberKind: string;
+      readonly memberId: string;
+      readonly via: "activity" | "roster";
+    }>;
     readonly paged: Array<{
       readonly limit: number;
       readonly beforeSequence?: number | undefined;
@@ -10462,7 +10498,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
   it.effect("the SOCKET door reads a channel's posts as the connection's member", () =>
     Effect.gen(function* () {
-      const asked: Array<{ readonly memberKind: string; readonly memberId: string }> = [];
+      const asked: Array<{
+        readonly memberKind: string;
+        readonly memberId: string;
+        readonly via: "activity" | "roster";
+      }> = [];
       const paged: Array<{ readonly limit: number; readonly beforeSequence: number | undefined }> =
         [];
 
@@ -10493,6 +10533,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         { memberKind: asked[0]?.memberKind, memberId: asked[0]?.memberId },
         { memberKind: "human", memberId: HUMAN_OPERATOR_MEMBER_ID },
       );
+      // AND WHICH METHOD IT ASKED, which is the post path's half of "a guard
+      // wired at N call sites needs N tests". The membership check is one of two
+      // sites moved onto the roster-less method; the shell site is named by the
+      // snapshot-ordering test, and before this assertion nothing named this one
+      // — rewiring it back to the roster-carrying sibling reddened nothing
+      // anywhere, because both stubs answer the same rows.
+      assert.equal(asked[0]?.via, "activity");
       // And it over-fetched by one, which is what makes `nextCursor: null` mean
       // the end rather than probably the end.
       assert.deepStrictEqual(paged, [{ limit: 3, beforeSequence: undefined }]);
@@ -10505,7 +10552,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // twice. #20 wired the channel shell into the socket and not into HTTP;
       // the browser bootstraps over HTTP, so the sidebar stayed empty while
       // every socket-side test passed. N sites, N tests.
-      const asked: Array<{ readonly memberKind: string; readonly memberId: string }> = [];
+      const asked: Array<{
+        readonly memberKind: string;
+        readonly memberId: string;
+        readonly via: "activity" | "roster";
+      }> = [];
       const paged: Array<{ readonly limit: number; readonly beforeSequence: number | undefined }> =
         [];
 
@@ -10599,7 +10650,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // so asking for `channel-project` as the operator's door while the
       // repository holds a different channel exercises the membership refusal
       // rather than an absent channel.
-      const asked: Array<{ readonly memberKind: string; readonly memberId: string }> = [];
+      const asked: Array<{
+        readonly memberKind: string;
+        readonly memberId: string;
+        readonly via: "activity" | "roster";
+      }> = [];
       const paged: Array<{ readonly limit: number; readonly beforeSequence: number | undefined }> =
         [];
 
@@ -10803,7 +10858,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       // `afterSequence`, so a snapshot without channels here leaves the sidebar
       // empty forever: the resume path sends events rather than a snapshot, and
       // there are no events for channels that have not changed.
-      const asked: Array<{ readonly memberKind: string; readonly memberId: string }> = [];
+      const asked: Array<{
+        readonly memberKind: string;
+        readonly memberId: string;
+        readonly via: "activity" | "roster";
+      }> = [];
 
       yield* buildAppUnderTest({
         layers: {
