@@ -57,7 +57,10 @@ message types: `comms/README.md` there.
   commit — the one thing guaranteed not to include the work you just did; three of us lost an uncommitted fix
   to `git checkout --` in one night.
 - **Mutate each guard in both directions: inert AND wider.** An inert mutant proves what the guard
-  refuses; a wider mutant proves what it must admit. Every guard has an admit side, and the admit side
+  refuses; a wider mutant proves what it must admit. When the assertion is about a MEASUREMENT, the
+  obligation falls on the measuring apparatus too: a statement counter stuck at 1 passes "the same
+  count however many rows" perfectly, because the guard is not what is broken — show the same
+  instrument producing a different number on a fixture where it should. Every guard has an admit side, and the admit side
   is usually the feature (an author exclusion widened to "threads wake nobody" stayed green over a reactor
   whose whole purpose is agents mentioning agents).
 - **Ask what the assertion does when the subject is ABSENT.** `findIndex` returns -1 and -1 is less than
@@ -100,6 +103,58 @@ message types: `comms/README.md` there.
   Name your riskiest claim to the reviewer in that prompt ("I assert the finalizers run before
   `process.exit` — verify it"): saying it to someone else is what makes you run it, and it caught a
   worktree leak on #17 that a green gate and a pushed comment had already blessed.
+
+### Rules from 2026-09-14 (first night; cut a rule with its date if it never fires again)
+
+Each names the failure that produced it. Two have fired more than once and are marked; the rest are
+single observations.
+
+- **When one thing has produced repeated defects of the same class, ask what would have to be true for
+  it not to exist.** The SECOND correction of one class in one place is the signal to delete, not the
+  third. Twice this night a requirement to prove a delicate thing correct was discharged by deleting
+  it: #71's prose claims (three corrections produced four new false ones) and #73's index-flag
+  classifier (four defects, so any flag became a reason not to use the copied index at all). Both
+  deletions removed the maintenance obligation as well as the bug.
+- **A result carries a positive statement of what ran** — a green with its executed count, a red with
+  the mutant that typechecked and the test that named it. Silence, an idle review lane, a compile crash
+  counted as a kill, and a "measured" over a NOT RUN row are the same failure: success reported by the
+  ABSENCE of a failure signal, which is what a crashed, silent or skipped run also produces.
+  _(Fired four times in one night, on four different instruments.)_
+- **A gating check must gate on a status that ENCODES ITS VERDICT.** Sequencing with `;` gates nothing,
+  and a pipeline through `grep -c`, `wc -l` or `tee` replaces the verdict with "the pipeline ran":
+  `grep -c` exits 0 when it FINDS matches, so `tsc | grep -cE ': error' | xargs echo && git push`
+  pushes over five type errors. One layer below the rule above — a status meaning RAN read as PASSED.
+- **A checker that narrows its own scope reports success over the reduced scope.** `Layer.mock` takes a
+  PARTIAL, so adding a method to a shape leaves every existing stub compiling: `tsc` says 0 errors and
+  29 tests die at runtime. A clean typecheck after a shape change is not evidence the stubs were
+  updated — when you add a method to a shape, grep every mock of that shape. Distinct from the rule
+  above: tsc ran over every file and answered truthfully; the QUESTION had silently changed. Found only
+  because the factory-to-call-site rule said to run the suite — that rule paid for itself (t3_bot-wto).
+- **A review record states what each lane was GIVEN, not only what it found** — blind or primed,
+  against which sha, and if primed, with what. A lane told four known findings cannot corroborate them,
+  and a record listing only findings cannot tell independent confirmation from an echo. The merge record
+  is the one document nobody re-reviews.
+- **A correction is the highest-risk site for the defect class it corrects**, so grep the PR body for
+  the claim you are correcting before you push. Measured on #71: three false claims corrected, four
+  fresh ones introduced doing it, by an author holding this rule.
+- **Prefer DELETING a claim to restating it.** A deletion cannot introduce a claim. Measured numbers go
+  to their bead, where they are dated and owned; source comments keep only what the code enforces and
+  mechanisms, which do not rot. "143 files" was wrong within hours; "pnpm hard-links what a `file:`
+  package publishes" cannot go stale.
+- **An audit that runs before the fix does not cover the fix**, and **an audit scoped to the tree does
+  not cover the document ABOUT the tree.** #71's body was two corrections behind its own source because
+  every lane, the claim audit and the deletion commit were scoped to source files. Before "PR ready",
+  grep the body for every claim the review corrected. _(Fired twice on one PR, by different routes.)_
+- **A "safe" claim about a race needs the losing timing CONSTRUCTED, not observed — and the sequence
+  measured must be the sequence the code runs.** A capture was called racy-safe from a probe containing
+  a `git status` the product never runs, which smudges the racy entry; a same-second same-size edit was
+  captured as the OLD content. Ask "which sequence" before "which version": a version number makes a
+  claim look re-runnable while saying nothing about whether the right thing was run.
+- **A mutant that stays green because no input reaches the guard is DISCLOSED, in those words, with
+  which half of the mechanism IS exercised.** It is not closed with a test-only seam in production code,
+  and it is not deleted from the table. #71's unreachable `nlink` refusal and #73's two defence-in-depth
+  checks are the instances; the seam nearly added to redden them would have manufactured a proof of
+  nothing.
 
 ## Merge gate
 
