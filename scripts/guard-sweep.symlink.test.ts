@@ -1,6 +1,12 @@
 /**
- * ONE CLAIM: a mutation file that is a tracked symlink, or that resolves outside the tree, is
- * NOT RUN before anything is written through it.
+ * ONE CLAIM: a mutation file of either shape whose write would land somewhere
+ * `git checkout -- <file>` does not restore — a symlink THE INDEX NAMES, or a regular file that
+ * shares its inode with another name — is NOT RUN before anything is written through it.
+ *
+ * The two shapes, not the general property: the symlink limb asks the index and the hard-link
+ * limb asks the filesystem, so a symlink the index does not know about is not refused and this
+ * suite does not claim it is (`t3_bot-4w2`, pre-existing). The describe title below is the
+ * suite's topic and is deliberately shorter than this; the claim is the one stated here.
  *
  * The defect this pins (`t3_bot-k1v`, found by #42's review) is a FALSE KILL beside an unmeasured
  * row. `readFileString`/`writeFileString` follow a link, so a row on `src/link.ts -> thing.ts`
@@ -18,6 +24,15 @@
  * predicate. Separate from `guard-sweep.paths.test.ts` (a spelling git prints differently) — a
  * link is spelled exactly as porcelain prints it. The same claim in the other direction: the
  * reason names the row's OWN index entry, not the first entry its pathspec happens to match.
+ *
+ * A HARD LINK is the same defect without the index knowing (`t3_bot-43k`, found by #66's
+ * review): mode `100644`, porcelain clean, realpath inside — and `writeFileString` truncates
+ * the shared inode, so every other name holds the mutation while the restore unlinks and
+ * recreates only the tree's own name. Reached by the INSTALL a fresh worktree has to run —
+ * pnpm hard-links what a `file:`-protocol package publishes — and also by `--in-place` on a
+ * `cp -al` / `rsync --link-dest` checkout, or a `setupCommand` that runs `ln`. A fresh
+ * worktree is not the safe case; there is no safe case, which is why the fixtures below
+ * build the link explicitly rather than relying on a mode to be immune.
  */
 import { describe, expect, it } from "vite-plus/test";
 
@@ -109,7 +124,7 @@ const runSweep = (root: string, config: string, ...flags: ReadonlyArray<string>)
     { cwd: root, encoding: "utf8" },
   );
 
-describe("a mutation file that is a symlink is not written through", () => {
+describe("a mutation file whose write lands where the restore does not reach is not written through", () => {
   it("reports the link row NOT RUN and measures the row after it on an untouched target", () => {
     const { root, elsewhere, config } = scaffold([
       rowOn("through-the-link", "src/link.ts"),
@@ -167,6 +182,34 @@ describe("a mutation file that is a symlink is not written through", () => {
     }
   });
 
+  it("names the link count, not the anchor, when a hard-linked file lacks the anchor", () => {
+    const { root, elsewhere, config } = scaffold([rowOn("on-hardlinked-plain", "src/plain.ts")]);
+    try {
+      // THE SAME PRE-FLIGHT SITE AS THE TEST ABOVE, for the other class. The gate is called from
+      // TWO places — the pre-flight skip and the row loop — and every other hard-link test here
+      // reaches only the row loop, because their files HOLD the anchor and so the pre-flight has
+      // nothing to object to. Only a hard-linked file whose anchor is ABSENT separates them:
+      // `src/plain.ts` has no `if (guard) {`, so with the pre-flight skip removed the pre-flight
+      // reads it, finds no anchor, and refuses the WHOLE config at exit 1 blaming a stale anchor
+      // — turning "one row could not be measured" into "the tool or config failed", which is a
+      // different verdict about a different thing. Measured both ways: exit 3 naming the link
+      // count here, exit 1 naming the anchor with the skip removed.
+      const twin = NodePath.join(elsewhere, "plaintwin.ts");
+      NodeFS.linkSync(NodePath.join(root, "src/plain.ts"), twin);
+      expect(NodeFS.statSync(twin).nlink).toBe(2);
+      expect(git(root, "status", "--porcelain")).toBe("");
+
+      const done = runSweep(root, config, "--in-place");
+
+      expect(done.stdout).not.toContain("could not be applied");
+      expect(done.stdout).toContain("on-hardlinked-plain: NOT RUN");
+      expect(done.stdout).toContain("src/plain.ts has 2 links");
+      expect(done.status).toBe(3);
+    } finally {
+      remove(root, elsewhere);
+    }
+  });
+
   it("never writes to a file outside the tree that a link points at", () => {
     const { root, elsewhere, config, outside } = scaffold([
       rowOn("through-the-outlink", "src/outlink.ts"),
@@ -178,6 +221,100 @@ describe("a mutation file that is a symlink is not written through", () => {
       // The bytes the sweep must never have touched: an absolute-target link used to leave the
       // mutation in this file after the run, outside anything the tool created or restores.
       expect(NodeFS.readFileSync(outside, "utf8")).toBe("a\nif (guard) {\nb\n");
+      expect(done.status).toBe(3);
+    } finally {
+      remove(root, elsewhere);
+    }
+  });
+
+  it("refuses a file that shares its inode with a name outside the tree", () => {
+    const { root, elsewhere, config } = scaffold([rowOn("through-the-hardlink", "src/thing.ts")]);
+    try {
+      // THE INPUT: after the commit, a second name for thing.ts's inode outside the tree — the
+      // shape `cp -al` / `rsync --link-dest` leaves behind. The index says 100644, porcelain says
+      // clean, and the file resolves inside the root; only the inode's link count knows.
+      const twin = NodePath.join(elsewhere, "twin.ts");
+      NodeFS.linkSync(NodePath.join(root, "src/thing.ts"), twin);
+      expect(NodeFS.statSync(twin).nlink).toBe(2);
+      expect(git(root, "status", "--porcelain")).toBe("");
+
+      const done = runSweep(root, config, "--in-place");
+
+      // Without this refusal the row is `killed by 1` at exit 0 — the mutation went through the
+      // shared inode, the suite read it, and `git checkout -- src/thing.ts` unlinked and
+      // recreated only the tree's name — so the twin holds `if (false) {` after the run.
+      expect(done.stdout).toContain("through-the-hardlink: NOT RUN");
+      expect(done.stdout).toContain("has 2 links");
+      expect(NodeFS.readFileSync(twin, "utf8")).toBe("a\nif (guard) {\nb\n");
+      expect(git(root, "status", "--porcelain")).toBe("");
+      expect(done.status).toBe(3);
+    } finally {
+      remove(root, elsewhere);
+    }
+  });
+
+  it("refuses a file a setupCommand hardlinked to a name outside the tree", () => {
+    const { root, elsewhere, config, outside } = scaffold([]);
+    try {
+      // THE OTHER ROUTE: worktree mode is immune on its own (a fresh checkout has every file at
+      // one link), but a `setupCommand` runs inside the worktree before the baseline and can
+      // replace a tracked file with a second name for an outside inode — same bytes, so the
+      // `moved` gate sees a clean porcelain.
+      NodeFS.writeFileSync(
+        config,
+        JSON.stringify({
+          testCommand: [NodePath.join(root, "suite.sh")],
+          setupCommand: ["/bin/sh", "-c", `rm src/thing.ts && ln '${outside}' src/thing.ts`],
+          mutations: [rowOn("through-the-setup-hardlink", "src/thing.ts")],
+        }),
+      );
+
+      const done = runSweep(root, config);
+
+      expect(done.stdout).toContain("through-the-setup-hardlink: NOT RUN");
+      expect(done.stdout).toContain("has 2 links");
+      // The outside inode the setup command shared: untouched after the run.
+      expect(NodeFS.readFileSync(outside, "utf8")).toBe("a\nif (guard) {\nb\n");
+      expect(done.status).toBe(3);
+    } finally {
+      remove(root, elsewhere);
+    }
+  });
+
+  it("refuses both tracked names of one inode and hands the tree back clean", () => {
+    const { root, elsewhere, config } = scaffold([
+      rowOn("on-a", "src/a.ts"),
+      rowOn("on-b", "src/b.ts"),
+      rowOn("on-thing", "src/thing.ts"),
+    ]);
+    try {
+      // THE INPUT: two tracked names for one inode, both committed. Unlike a twin outside the
+      // tree, git SEES the second name: without the refusal the a-row's write goes through the
+      // inode, `git checkout -- src/a.ts` recreates only `a.ts`, so `b.ts` keeps the mutation —
+      // the b-row is NOT RUN on an anchor the leftover replaced, and porcelain prints
+      // ` M src/b.ts` after an `--in-place` run: the operator's tree handed back dirty, which
+      // is refusal 4's premise, and the next run refused at exit 1.
+      NodeFS.writeFileSync(NodePath.join(root, "src/a.ts"), "a\nif (guard) {\nb\n");
+      NodeFS.linkSync(NodePath.join(root, "src/a.ts"), NodePath.join(root, "src/b.ts"));
+      git(root, "add", "-A");
+      git(root, "commit", "--quiet", "-m", "twins");
+      expect(NodeFS.statSync(NodePath.join(root, "src/b.ts")).nlink).toBe(2);
+      expect(git(root, "status", "--porcelain")).toBe("");
+
+      const done = runSweep(root, config, "--in-place");
+
+      // THE TREE FIRST: the porcelain line is the observable an outside twin can never produce,
+      // because git never lists the outside name. Then the report.
+      expect(git(root, "status", "--porcelain")).toBe("");
+      expect(NodeFS.readFileSync(NodePath.join(root, "src/a.ts"), "utf8")).toBe(
+        "a\nif (guard) {\nb\n",
+      );
+      expect(NodeFS.readFileSync(NodePath.join(root, "src/b.ts"), "utf8")).toBe(
+        "a\nif (guard) {\nb\n",
+      );
+      expect(done.stdout).toContain("on-a: NOT RUN — src/a.ts has 2 links");
+      expect(done.stdout).toContain("on-b: NOT RUN — src/b.ts has 2 links");
+      expect(done.stdout).toContain("on-thing: killed by 1");
       expect(done.status).toBe(3);
     } finally {
       remove(root, elsewhere);
@@ -200,6 +337,64 @@ describe("a mutation file that is a symlink is not written through", () => {
       expect(done.stdout).toContain("could not read src");
       expect(done.status).toBe(3);
     } finally {
+      remove(root, elsewhere);
+    }
+  });
+
+  it("names a dangling link a symlink, not an unreadable file", () => {
+    const { root, elsewhere, config } = scaffold([
+      rowOn("through-the-dangle", "src/dangle.ts"),
+      rowOn("on-thing", "src/thing.ts"),
+    ]);
+    try {
+      // THE INPUT: a committed link to a name that does not exist. `stat` follows the link and
+      // fails, so with the link count asked before the index mode this row falls to the read
+      // gate as "could not read" — a reason that hides which gate should have caught it.
+      NodeFS.symlinkSync("nowhere.ts", NodePath.join(root, "src/dangle.ts"));
+      git(root, "add", "-A");
+      git(root, "commit", "--quiet", "-m", "dangle");
+      expect(git(root, "ls-files", "-s", "--", "src/dangle.ts").startsWith("120000 ")).toBe(true);
+      expect(git(root, "status", "--porcelain")).toBe("");
+
+      const done = runSweep(root, config, "--in-place");
+
+      expect(done.stdout).toContain("through-the-dangle: NOT RUN");
+      expect(done.stdout).toContain("src/dangle.ts is a symlink in the index");
+      expect(done.stdout).not.toContain("could not read src/dangle.ts");
+      expect(done.stdout).toContain("on-thing: killed by 1");
+      expect(done.status).toBe(3);
+    } finally {
+      remove(root, elsewhere);
+    }
+  });
+
+  it("hands a tracked file its stat cannot see to the read gate, and measures the next row", () => {
+    const { root, elsewhere, config } = scaffold([
+      rowOn("under-locked-dir", "sub/deep.ts"),
+      rowOn("on-thing", "src/thing.ts"),
+    ]);
+    const sub = NodePath.join(root, "sub");
+    try {
+      // THE INPUT: a committed file under a directory the sweep cannot open. Porcelain prints
+      // nothing for it and `ls-files` answers from the index, so every gate before the link
+      // gate passes and its `stat` is EACCES — the one tracked-file shape whose stat fails.
+      NodeFS.mkdirSync(sub);
+      NodeFS.writeFileSync(NodePath.join(sub, "deep.ts"), "a\nif (guard) {\nb\n");
+      git(root, "add", "-A");
+      git(root, "commit", "--quiet", "-m", "deep");
+      NodeFS.chmodSync(sub, 0o000);
+      expect(git(root, "ls-files", "-s", "--", "sub/deep.ts").startsWith("100644 ")).toBe(true);
+
+      const done = runSweep(root, config, "--in-place");
+
+      // An unreadable file is NOT RUN with the read gate's reason — not the stat's, and not a
+      // `TypeError` at the pre-flight (exit 1, no report) if the stat's result were unwrapped.
+      expect(done.stdout).toContain("under-locked-dir: NOT RUN — could not read sub/deep.ts");
+      expect(done.stdout).toContain("on-thing: killed by 1");
+      expect(done.status).toBe(3);
+    } finally {
+      // Before `remove`: `rmSync` cannot enter a mode-000 directory, and the scratch repo leaks.
+      NodeFS.chmodSync(sub, 0o755);
       remove(root, elsewhere);
     }
   });
