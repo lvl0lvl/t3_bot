@@ -60,9 +60,10 @@ const OrchestrationEventPersistedRowSchema = Schema.Struct({
   metadata: EventMetadataFromJsonString,
 });
 
+// The persisted row's columns, with three widened. A new column added to the
+// row above reaches the read without a second edit here.
 const OrchestrationEventReadRowSchema = Schema.Struct({
-  sequence: NonNegativeInt,
-  eventId: EventId,
+  ...OrchestrationEventPersistedRowSchema.fields,
   // Plain strings, not the closed unions: a row written by a newer build
   // carries a type, an aggregate kind and an id shape this build does not
   // know, and the read decides per row whether to skip it (unknown type or
@@ -72,12 +73,6 @@ const OrchestrationEventReadRowSchema = Schema.Struct({
   type: Schema.String,
   aggregateKind: Schema.String,
   aggregateId: Schema.String,
-  occurredAt: IsoDateTime,
-  commandId: Schema.NullOr(CommandId),
-  causationEventId: Schema.NullOr(EventId),
-  correlationId: Schema.NullOr(CommandId),
-  payload: UnknownFromJsonString,
-  metadata: EventMetadataFromJsonString,
 });
 
 const isKnownEventType = Schema.is(OrchestrationEventType);
