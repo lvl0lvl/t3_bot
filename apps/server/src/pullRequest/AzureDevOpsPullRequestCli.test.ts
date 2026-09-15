@@ -6,13 +6,21 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import * as AzureDevOpsCli from "../sourceControl/AzureDevOpsCli.ts";
 import * as AzureDevOpsPullRequestCli from "./AzureDevOpsPullRequestCli.ts";
 import * as AzureDevOpsPullRequestProvider from "./AzureDevOpsPullRequestProvider.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const mockedExecute = vi.fn<AzureDevOpsCli.AzureDevOpsCli["Service"]["execute"]>();
 
 const layer = it.layer(
   AzureDevOpsPullRequestCli.layer.pipe(
     Layer.provide(
-      Layer.mock(AzureDevOpsCli.AzureDevOpsCli)({
+      mockService(AzureDevOpsCli.AzureDevOpsCli)({
+        createPullRequest: unstubbed,
+        getDefaultBranch: unstubbed,
+        checkoutPullRequest: unstubbed,
+        listPullRequests: unstubbed,
+        getPullRequest: unstubbed,
+        getRepositoryCloneUrls: unstubbed,
+        createRepository: unstubbed,
         execute: mockedExecute,
       }),
     ),

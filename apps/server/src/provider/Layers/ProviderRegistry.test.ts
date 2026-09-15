@@ -59,6 +59,7 @@ import type { ProviderInstance } from "../ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
+import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 const decodeServerSettings = Schema.decodeSync(ServerSettings);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodedDefaultServerSettings = encodeServerSettings(DEFAULT_SERVER_SETTINGS);
@@ -84,7 +85,8 @@ const TestHttpClientLive = Layer.succeed(
   ),
 );
 
-const BackgroundPolicyAlwaysRunLayer = Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+const BackgroundPolicyAlwaysRunLayer = mockService(BackgroundPolicy.BackgroundPolicy)({
+  subscribe: unstubbed,
   reportClientActivity: () => Effect.void,
   removeRpcClient: () => Effect.void,
   reportHostPowerState: () => Effect.void,

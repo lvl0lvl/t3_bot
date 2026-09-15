@@ -44,6 +44,7 @@ import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.t
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitManager from "./GitManager.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const encodeCliJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -684,7 +685,13 @@ function makeManager(input?: {
 
   const managerLayer = Layer.mergeAll(
     Layer.succeed(TextGeneration.TextGeneration, textGeneration),
-    Layer.mock(ProviderRegistry.ProviderRegistry)({
+    mockService(ProviderRegistry.ProviderRegistry)({
+      setProviderMaintenanceActionState: unstubbed,
+      streamChanges: unstubbed,
+      refresh: unstubbed,
+      refreshInstance: unstubbed,
+      refreshWorkspaceSnapshot: unstubbed,
+      getProviderMaintenanceCapabilitiesForInstance: unstubbed,
       getProviders: Effect.succeed([]),
     }),
     Layer.succeed(
@@ -1780,7 +1787,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         Effect.provide(
           GitLabCli.layer.pipe(
             Layer.provide(
-              Layer.mock(VcsProcess.VcsProcess)({
+              mockService(VcsProcess.VcsProcess)({
                 run: (input) =>
                   Effect.sync(() => {
                     calls.push(input);

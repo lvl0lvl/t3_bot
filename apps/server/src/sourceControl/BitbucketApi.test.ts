@@ -19,6 +19,7 @@ import * as BitbucketApi from "./BitbucketApi.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import type * as VcsDriver from "../vcs/VcsDriver.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const bitbucketPullRequest = {
   id: 42,
@@ -128,7 +129,9 @@ function makeLayer(input: {
       ),
     ),
     Layer.provide(
-      Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+      mockService(VcsDriverRegistry.VcsDriverRegistry)({
+        get: unstubbed,
+        detect: unstubbed,
         resolve: () =>
           Effect.succeed({
             kind: "git",
@@ -146,7 +149,39 @@ function makeLayer(input: {
           }),
       }),
     ),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)(git)),
+    Layer.provide(
+      mockService(GitVcsDriver.GitVcsDriver)({
+        commit: unstubbed,
+        createRef: unstubbed,
+        createWorktree: unstubbed,
+        execute: unstubbed,
+        fetchPullRequestBranch: unstubbed,
+        fetchPullRequestHeadCommit: unstubbed,
+        fetchRemote: unstubbed,
+        getReviewDiffFileContents: unstubbed,
+        getReviewDiffPreview: unstubbed,
+        initRepo: unstubbed,
+        listRefs: unstubbed,
+        prepareCommitContext: unstubbed,
+        pruneWorktrees: unstubbed,
+        pullCurrentBranch: unstubbed,
+        pushCurrentBranch: unstubbed,
+        readRangeContext: unstubbed,
+        refreshCheckedOutBranch: unstubbed,
+        remoteBranchExists: unstubbed,
+        remoteExists: unstubbed,
+        removeWorktree: unstubbed,
+        renameBranch: unstubbed,
+        resolveCommit: unstubbed,
+        resolveDefaultBranchName: unstubbed,
+        resolveRemoteTrackingCommit: unstubbed,
+        status: unstubbed,
+        statusDetails: unstubbed,
+        statusDetailsLocal: unstubbed,
+        statusDetailsRemote: unstubbed,
+        ...git,
+      }),
+    ),
     Layer.provide(
       ConfigProvider.layer(
         ConfigProvider.fromEnv({

@@ -5,13 +5,21 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as GitLabCli from "../sourceControl/GitLabCli.ts";
 import * as GitLabPullRequestCli from "./GitLabPullRequestCli.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const mockedExecute = vi.fn<GitLabCli.GitLabCli["Service"]["execute"]>();
 
 const layer = it.layer(
   GitLabPullRequestCli.layer.pipe(
     Layer.provide(
-      Layer.mock(GitLabCli.GitLabCli)({
+      mockService(GitLabCli.GitLabCli)({
+        createMergeRequest: unstubbed,
+        getDefaultBranch: unstubbed,
+        checkoutMergeRequest: unstubbed,
+        listMergeRequests: unstubbed,
+        getMergeRequest: unstubbed,
+        getRepositoryCloneUrls: unstubbed,
+        createRepository: unstubbed,
         execute: mockedExecute,
       }),
     ),

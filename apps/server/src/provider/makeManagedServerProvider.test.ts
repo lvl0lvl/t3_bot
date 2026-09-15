@@ -20,6 +20,7 @@ import { TestClock } from "effect/testing";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { makeManagedServerProvider } from "./makeManagedServerProvider.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const emptyCapabilities = createModelCapabilities({ optionDescriptors: [] });
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
@@ -100,7 +101,8 @@ const refreshedSnapshotSecond: ServerProvider = {
 };
 
 function makeBackgroundPolicyLayer(shouldRunScopeWork: boolean) {
-  return Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+  return mockService(BackgroundPolicy.BackgroundPolicy)({
+    subscribe: unstubbed,
     reportClientActivity: () => Effect.void,
     removeRpcClient: () => Effect.void,
     reportHostPowerState: () => Effect.void,

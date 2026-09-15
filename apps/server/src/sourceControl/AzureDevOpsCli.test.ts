@@ -10,6 +10,7 @@ import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as AzureDevOpsCli from "./AzureDevOpsCli.ts";
+import { mockService } from "../testUtils/mockService.ts";
 
 const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
   exitCode: ChildProcessSpawner.ExitCode(0),
@@ -22,7 +23,7 @@ const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
 const mockRun = vi.fn<VcsProcess.VcsProcess["Service"]["run"]>();
 
 const supportLayer = Layer.mergeAll(
-  Layer.mock(VcsProcess.VcsProcess)({
+  mockService(VcsProcess.VcsProcess)({
     run: mockRun,
   }),
   NodeServices.layer,

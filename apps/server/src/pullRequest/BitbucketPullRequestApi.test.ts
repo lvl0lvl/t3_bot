@@ -4,13 +4,22 @@ import * as Layer from "effect/Layer";
 
 import * as BitbucketApi from "../sourceControl/BitbucketApi.ts";
 import * as BitbucketPullRequestApi from "./BitbucketPullRequestApi.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const mockedRequest = vi.fn<BitbucketApi.BitbucketApi["Service"]["request"]>();
 
 const layer = it.layer(
   BitbucketPullRequestApi.layer.pipe(
     Layer.provide(
-      Layer.mock(BitbucketApi.BitbucketApi)({
+      mockService(BitbucketApi.BitbucketApi)({
+        createRepository: unstubbed,
+        createPullRequest: unstubbed,
+        getDefaultBranch: unstubbed,
+        checkoutPullRequest: unstubbed,
+        probeAuth: unstubbed,
+        listPullRequests: unstubbed,
+        getPullRequest: unstubbed,
+        getRepositoryCloneUrls: unstubbed,
         request: mockedRequest,
       }),
     ),

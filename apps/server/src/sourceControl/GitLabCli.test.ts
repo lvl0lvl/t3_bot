@@ -7,12 +7,13 @@ import { VcsProcessExitError } from "@t3tools/contracts";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitLabCli from "./GitLabCli.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const mockedRun = vi.fn<VcsProcess.VcsProcess["Service"]["run"]>();
 const layer = it.layer(
   GitLabCli.layer.pipe(
     Layer.provide(
-      Layer.mock(VcsProcess.VcsProcess)({
+      mockService(VcsProcess.VcsProcess)({
         run: mockedRun,
       }),
     ),

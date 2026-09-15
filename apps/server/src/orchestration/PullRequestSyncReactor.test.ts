@@ -31,6 +31,7 @@ import {
 } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 import * as PullRequestSyncReactor from "./PullRequestSyncReactor.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const NOW = "2026-08-28T12:00:00.000Z";
 const PROJECT_ID = ProjectId.make("sync-project");
@@ -200,16 +201,60 @@ const makeHarness = Effect.fn("makePullRequestSyncHarness")(function* (options: 
   };
 
   const dependencies = Layer.mergeAll(
-    Layer.mock(ProjectionSnapshotQuery)({
+    mockService(ProjectionSnapshotQuery)({
+      getTurnStartMessage: unstubbed,
+      getThreadDetailById: unstubbed,
+      getThreadDetailSnapshot: unstubbed,
+      getThreadCheckpointContext: unstubbed,
+      getFullThreadDiffContext: unstubbed,
+      getThreadShellById: unstubbed,
+      getThreadRuntimeContext: unstubbed,
+      getActiveProjectByWorkspaceRoot: unstubbed,
+      getProjectShellById: unstubbed,
+      getFirstActiveThreadIdByProjectId: unstubbed,
+      getImportedAgentSessionSources: unstubbed,
+      searchThreads: unstubbed,
+      getSnapshotSequence: unstubbed,
+      getCounts: unstubbed,
+      getEventReplayStats: unstubbed,
+      getUserInputActivity: unstubbed,
+      getCommandReadModel: unstubbed,
+      getSnapshot: unstubbed,
+      getArchivedShellSnapshot: unstubbed,
       getShellSnapshot: () =>
         Queue.offer(snapshotReads, undefined).pipe(Effect.andThen(Ref.get(snapshots))),
     }),
-    Layer.mock(PullRequestService)({
+    mockService(PullRequestService)({
+      labelCandidates: unstubbed,
+      setLabels: unstubbed,
+      setThreadResolution: unstubbed,
+      setReaction: unstubbed,
+      reviewerCandidates: unstubbed,
+      requestReviewers: unstubbed,
+      comment: unstubbed,
+      updateComment: unstubbed,
+      submitReview: unstubbed,
+      replyToThread: unstubbed,
+      diff: unstubbed,
+      diffFileContents: unstubbed,
+      runAction: unstubbed,
+      update: unstubbed,
+      refreshAfterTurn: unstubbed,
+      detail: unstubbed,
+      activity: unstubbed,
+      threadComments: unstubbed,
+      list: unstubbed,
+      listStats: unstubbed,
+      subscribeMerges: unstubbed,
+      subscribeRefreshes: unstubbed,
       summary,
       stack,
       invalidate: options.invalidate ?? (() => Effect.void),
     }),
-    Layer.mock(OrchestrationEngineService)({
+    mockService(OrchestrationEngineService)({
+      readThreadEvents: unstubbed,
+      getThreadReplayStats: unstubbed,
+      subscribeDomainEvents: unstubbed,
       readEvents: () => Stream.empty,
       dispatch,
       streamDomainEvents: Stream.empty,

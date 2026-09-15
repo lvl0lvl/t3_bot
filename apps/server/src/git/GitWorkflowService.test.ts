@@ -8,18 +8,73 @@ import * as GitManager from "./GitManager.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 function makeLayer(input: {
   readonly detect: VcsDriverRegistry.VcsDriverRegistry["Service"]["detect"];
 }) {
   return GitWorkflowService.layer.pipe(
     Layer.provide(
-      Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+      mockService(VcsDriverRegistry.VcsDriverRegistry)({
+        get: unstubbed,
+        resolve: unstubbed,
         detect: input.detect,
       }),
     ),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-    Layer.provide(Layer.mock(GitManager.GitManager)({})),
+    Layer.provide(
+      mockService(GitVcsDriver.GitVcsDriver)({
+        createRef: unstubbed,
+        switchRef: unstubbed,
+        initRepo: unstubbed,
+        listLocalBranchNames: unstubbed,
+        setBranchUpstream: unstubbed,
+        removeWorktree: unstubbed,
+        pruneWorktrees: unstubbed,
+        renameBranch: unstubbed,
+        remoteBranchExists: unstubbed,
+        resolveRemoteTrackingCommit: unstubbed,
+        fetchRemoteBranch: unstubbed,
+        fetchRemoteTrackingBranch: unstubbed,
+        resolvePrimaryRemoteName: unstubbed,
+        resolveDefaultBranchName: unstubbed,
+        fetchRemote: unstubbed,
+        remoteExists: unstubbed,
+        fetchPullRequestHeadCommit: unstubbed,
+        resolveCommit: unstubbed,
+        refreshCheckedOutBranch: unstubbed,
+        ensureRemote: unstubbed,
+        listRefs: unstubbed,
+        pullCurrentBranch: unstubbed,
+        createWorktree: unstubbed,
+        fetchPullRequestBranch: unstubbed,
+        readRangeContext: unstubbed,
+        getReviewDiffPreview: unstubbed,
+        getReviewDiffFileContents: unstubbed,
+        readConfigValue: unstubbed,
+        statusDetailsRemote: unstubbed,
+        prepareCommitContext: unstubbed,
+        commit: unstubbed,
+        pushCurrentBranch: unstubbed,
+        execute: unstubbed,
+        status: unstubbed,
+        statusDetails: unstubbed,
+        statusDetailsLocal: unstubbed,
+      }),
+    ),
+    Layer.provide(
+      mockService(GitManager.GitManager)({
+        preparePullRequestThread: unstubbed,
+        runStackedAction: unstubbed,
+        invalidateLocalStatus: unstubbed,
+        invalidateRemoteStatus: unstubbed,
+        invalidateStatus: unstubbed,
+        resolvePullRequest: unstubbed,
+        status: unstubbed,
+        localStatus: unstubbed,
+        remoteStatus: unstubbed,
+        branchPullRequest: unstubbed,
+      }),
+    ),
   );
 }
 
@@ -88,13 +143,61 @@ describe("GitWorkflowService", () => {
 
     const testLayer = GitWorkflowService.layer.pipe(
       Layer.provide(
-        Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+        mockService(VcsDriverRegistry.VcsDriverRegistry)({
+          get: unstubbed,
+          resolve: unstubbed,
           detect: () => Effect.succeed(null),
         }),
       ),
-      Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
       Layer.provide(
-        Layer.mock(GitManager.GitManager)({
+        mockService(GitVcsDriver.GitVcsDriver)({
+          createRef: unstubbed,
+          switchRef: unstubbed,
+          initRepo: unstubbed,
+          listLocalBranchNames: unstubbed,
+          setBranchUpstream: unstubbed,
+          removeWorktree: unstubbed,
+          pruneWorktrees: unstubbed,
+          renameBranch: unstubbed,
+          remoteBranchExists: unstubbed,
+          resolveRemoteTrackingCommit: unstubbed,
+          fetchRemoteBranch: unstubbed,
+          fetchRemoteTrackingBranch: unstubbed,
+          resolvePrimaryRemoteName: unstubbed,
+          resolveDefaultBranchName: unstubbed,
+          fetchRemote: unstubbed,
+          remoteExists: unstubbed,
+          fetchPullRequestHeadCommit: unstubbed,
+          resolveCommit: unstubbed,
+          refreshCheckedOutBranch: unstubbed,
+          ensureRemote: unstubbed,
+          listRefs: unstubbed,
+          pullCurrentBranch: unstubbed,
+          createWorktree: unstubbed,
+          fetchPullRequestBranch: unstubbed,
+          readRangeContext: unstubbed,
+          getReviewDiffPreview: unstubbed,
+          getReviewDiffFileContents: unstubbed,
+          readConfigValue: unstubbed,
+          statusDetailsRemote: unstubbed,
+          prepareCommitContext: unstubbed,
+          commit: unstubbed,
+          pushCurrentBranch: unstubbed,
+          execute: unstubbed,
+          status: unstubbed,
+          statusDetails: unstubbed,
+          statusDetailsLocal: unstubbed,
+        }),
+      ),
+      Layer.provide(
+        mockService(GitManager.GitManager)({
+          resolvePullRequest: unstubbed,
+          preparePullRequestThread: unstubbed,
+          runStackedAction: unstubbed,
+          branchPullRequest: unstubbed,
+          invalidateLocalStatus: unstubbed,
+          invalidateRemoteStatus: unstubbed,
+          invalidateStatus: unstubbed,
           localStatus,
           remoteStatus,
           status,

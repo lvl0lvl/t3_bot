@@ -28,6 +28,7 @@ import {
 import { PullRequestProviderRegistry, fromProviders } from "./PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./PullRequestService.ts";
 import * as PullRequestReadCache from "./PullRequestReadCache.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 function project(input: {
   readonly id: string;
@@ -188,11 +189,33 @@ function makeService(input: {
     Effect.provide(
       Layer.mergeAll(
         Layer.succeed(PullRequestProviderRegistry, fromProviders(input.providers)),
-        Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+        mockService(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+          get: unstubbed,
+          resolve: unstubbed,
+          discover: unstubbed,
           resolveHandle:
             input.resolveHandle ?? (() => Effect.die("Unexpected provider refinement")),
         }),
-        Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+        mockService(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+          getTurnStartMessage: unstubbed,
+          getThreadDetailById: unstubbed,
+          getThreadDetailSnapshot: unstubbed,
+          getThreadCheckpointContext: unstubbed,
+          getFullThreadDiffContext: unstubbed,
+          getThreadShellById: unstubbed,
+          getThreadRuntimeContext: unstubbed,
+          getActiveProjectByWorkspaceRoot: unstubbed,
+          getProjectShellById: unstubbed,
+          getFirstActiveThreadIdByProjectId: unstubbed,
+          getImportedAgentSessionSources: unstubbed,
+          searchThreads: unstubbed,
+          getSnapshotSequence: unstubbed,
+          getCounts: unstubbed,
+          getEventReplayStats: unstubbed,
+          getUserInputActivity: unstubbed,
+          getCommandReadModel: unstubbed,
+          getSnapshot: unstubbed,
+          getArchivedShellSnapshot: unstubbed,
           getShellSnapshot: () =>
             Effect.succeed({
               snapshotSequence: 1,

@@ -15,6 +15,7 @@ import * as GitHubCli from "./GitHubCli.ts";
 import * as GitLabCli from "./GitLabCli.ts";
 import * as SourceControlDiscovery from "./SourceControlDiscovery.ts";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const sourceControlProviderRegistryTestLayer = (input: {
   readonly bitbucket: Partial<BitbucketApi.BitbucketApi["Service"]>;
@@ -26,12 +27,54 @@ const sourceControlProviderRegistryTestLayer = (input: {
         ServerConfig.layerTest(process.cwd(), {
           prefix: "t3-source-control-registry-test-",
         }).pipe(Layer.provide(NodeServices.layer)),
-        Layer.mock(AzureDevOpsCli.AzureDevOpsCli)({}),
-        Layer.mock(BitbucketApi.BitbucketApi)(input.bitbucket),
-        Layer.mock(GitHubCli.GitHubCli)({}),
-        Layer.mock(GitLabCli.GitLabCli)({}),
-        Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({}),
-        Layer.mock(VcsProcess.VcsProcess)(input.process),
+        mockService(AzureDevOpsCli.AzureDevOpsCli)({
+          createRepository: unstubbed,
+          createPullRequest: unstubbed,
+          getDefaultBranch: unstubbed,
+          checkoutPullRequest: unstubbed,
+          execute: unstubbed,
+          listPullRequests: unstubbed,
+          getPullRequest: unstubbed,
+          getRepositoryCloneUrls: unstubbed,
+        }),
+        mockService(BitbucketApi.BitbucketApi)({
+          checkoutPullRequest: unstubbed,
+          createPullRequest: unstubbed,
+          createRepository: unstubbed,
+          getDefaultBranch: unstubbed,
+          getPullRequest: unstubbed,
+          getRepositoryCloneUrls: unstubbed,
+          listPullRequests: unstubbed,
+          probeAuth: unstubbed,
+          request: unstubbed,
+          ...input.bitbucket,
+        }),
+        mockService(GitHubCli.GitHubCli)({
+          createRepository: unstubbed,
+          createPullRequest: unstubbed,
+          getDefaultBranch: unstubbed,
+          checkoutPullRequest: unstubbed,
+          execute: unstubbed,
+          listOpenPullRequests: unstubbed,
+          getPullRequest: unstubbed,
+          getRepositoryCloneUrls: unstubbed,
+        }),
+        mockService(GitLabCli.GitLabCli)({
+          createRepository: unstubbed,
+          createMergeRequest: unstubbed,
+          getDefaultBranch: unstubbed,
+          checkoutMergeRequest: unstubbed,
+          execute: unstubbed,
+          listMergeRequests: unstubbed,
+          getMergeRequest: unstubbed,
+          getRepositoryCloneUrls: unstubbed,
+        }),
+        mockService(VcsDriverRegistry.VcsDriverRegistry)({
+          get: unstubbed,
+          detect: unstubbed,
+          resolve: unstubbed,
+        }),
+        mockService(VcsProcess.VcsProcess)({ run: unstubbed, ...input.process }),
       ),
     ),
   );
@@ -95,7 +138,7 @@ it.effect("reports implemented tools separately from locally available executabl
         prefix: "t3-source-control-discovery-",
       }),
     ),
-    Layer.provide(Layer.mock(VcsProcess.VcsProcess)(processMock)),
+    Layer.provide(mockService(VcsProcess.VcsProcess)(processMock)),
     Layer.provide(
       sourceControlProviderRegistryTestLayer({
         process: processMock,
@@ -224,7 +267,7 @@ Logged in to gitlab.com as gitlab-user
         prefix: "t3-source-control-auth-discovery-",
       }),
     ),
-    Layer.provide(Layer.mock(VcsProcess.VcsProcess)(processMock)),
+    Layer.provide(mockService(VcsProcess.VcsProcess)(processMock)),
     Layer.provide(
       sourceControlProviderRegistryTestLayer({
         process: processMock,

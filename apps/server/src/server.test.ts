@@ -226,6 +226,7 @@ import {
   transferBudgetViolations,
 } from "../integration/TransferBudgetReport.integration.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+import { mockService, unstubbed } from "./testUtils/mockService.ts";
 
 const defaultProjectId = ProjectId.make("project-default");
 const defaultThreadId = ThreadId.make("thread-default");
@@ -411,7 +412,7 @@ const makeAuthTestLayer = () =>
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provide(ServerSecretStore.layer),
     Layer.provide(
-      Layer.mock(ServerEnvironment.ServerEnvironmentIdentity)({
+      mockService(ServerEnvironment.ServerEnvironmentIdentity)({
         getEnvironmentId: Effect.succeed(testEnvironmentDescriptor.environmentId),
       }),
     ),
@@ -650,7 +651,7 @@ const buildAppUnderTest = (options?: {
       initRepository: () => Effect.void,
       ...options?.layers?.vcsDriver,
     };
-    const vcsDriverRegistryLayer = Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+    const vcsDriverRegistryLayer = mockService(VcsDriverRegistry.VcsDriverRegistry)({
       get: () => Effect.succeed(defaultVcsDriver),
       detect: (input) =>
         defaultVcsDriver.detectRepository(input.cwd).pipe(
@@ -703,10 +704,56 @@ const buildAppUnderTest = (options?: {
         }),
       ...options?.layers?.vcsDriverRegistry,
     });
-    const gitVcsDriverLayer = Layer.mock(GitVcsDriver.GitVcsDriver)({
+    const gitVcsDriverLayer = mockService(GitVcsDriver.GitVcsDriver)({
+      commit: unstubbed,
+      createRef: unstubbed,
+      createWorktree: unstubbed,
+      ensureRemote: unstubbed,
+      execute: unstubbed,
+      fetchPullRequestBranch: unstubbed,
+      fetchPullRequestHeadCommit: unstubbed,
+      fetchRemote: unstubbed,
+      fetchRemoteBranch: unstubbed,
+      fetchRemoteTrackingBranch: unstubbed,
+      getReviewDiffFileContents: unstubbed,
+      getReviewDiffPreview: unstubbed,
+      initRepo: unstubbed,
+      listLocalBranchNames: unstubbed,
+      listRefs: unstubbed,
+      prepareCommitContext: unstubbed,
+      pruneWorktrees: unstubbed,
+      pullCurrentBranch: unstubbed,
+      pushCurrentBranch: unstubbed,
+      readConfigValue: unstubbed,
+      readRangeContext: unstubbed,
+      refreshCheckedOutBranch: unstubbed,
+      remoteBranchExists: unstubbed,
+      remoteExists: unstubbed,
+      removeWorktree: unstubbed,
+      renameBranch: unstubbed,
+      resolveCommit: unstubbed,
+      resolveDefaultBranchName: unstubbed,
+      resolvePrimaryRemoteName: unstubbed,
+      resolveRemoteTrackingCommit: unstubbed,
+      setBranchUpstream: unstubbed,
+      status: unstubbed,
+      statusDetails: unstubbed,
+      statusDetailsLocal: unstubbed,
+      statusDetailsRemote: unstubbed,
+      switchRef: unstubbed,
       ...options?.layers?.gitVcsDriver,
     });
-    const gitManagerLayer = Layer.mock(GitManager.GitManager)({
+    const gitManagerLayer = mockService(GitManager.GitManager)({
+      branchPullRequest: unstubbed,
+      invalidateLocalStatus: unstubbed,
+      invalidateRemoteStatus: unstubbed,
+      invalidateStatus: unstubbed,
+      localStatus: unstubbed,
+      preparePullRequestThread: unstubbed,
+      remoteStatus: unstubbed,
+      resolvePullRequest: unstubbed,
+      runStackedAction: unstubbed,
+      status: unstubbed,
       ...options?.layers?.gitManager,
     });
     const workspaceEntriesLayer = WorkspaceEntries.layer.pipe(
@@ -735,7 +782,9 @@ const buildAppUnderTest = (options?: {
       Layer.provide(vcsDriverRegistryLayer),
     );
     const reviewLayer = options?.layers?.reviewService
-      ? Layer.mock(ReviewService.ReviewService)({
+      ? mockService(ReviewService.ReviewService)({
+          getDiffFileContents: unstubbed,
+          getDiffPreview: unstubbed,
           ...options.layers.reviewService,
         })
       : ReviewService.layer.pipe(
@@ -743,7 +792,12 @@ const buildAppUnderTest = (options?: {
           Layer.provide(vcsDriverRegistryLayer),
         );
     const vcsStatusBroadcasterLayer = options?.layers?.vcsStatusBroadcaster
-      ? Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
+      ? mockService(VcsStatusBroadcaster.VcsStatusBroadcaster)({
+          getStatus: unstubbed,
+          refreshLocalStatus: unstubbed,
+          refreshPullRequestStatus: unstubbed,
+          refreshStatus: unstubbed,
+          streamStatus: unstubbed,
           ...options.layers.vcsStatusBroadcaster,
         })
       : VcsStatusBroadcaster.layer.pipe(Layer.provide(gitWorkflowLayer));
@@ -770,7 +824,13 @@ const buildAppUnderTest = (options?: {
     ).pipe(
       Layer.provide(
         Layer.mergeAll(
-          Layer.mock(Keybindings.Keybindings)({
+          mockService(Keybindings.Keybindings)({
+            getSnapshot: unstubbed,
+            ready: unstubbed,
+            removeKeybindingRule: unstubbed,
+            start: unstubbed,
+            syncDefaultKeybindingsOnStartup: unstubbed,
+            upsertKeybindingRule: unstubbed,
             loadConfigState: Effect.succeed({
               keybindings: [],
               issues: [],
@@ -778,12 +838,13 @@ const buildAppUnderTest = (options?: {
             streamChanges: Stream.empty,
             ...options?.layers?.keybindings,
           }),
-          Layer.mock(EnvironmentTheme.EnvironmentThemeService)({
+          mockService(EnvironmentTheme.EnvironmentThemeService)({
             current: Effect.succeed([]),
             streamChanges: Stream.empty,
             ...options?.layers?.environmentTheme,
           }),
-          Layer.mock(UsageLimitSources.UsageLimitSources)({
+          mockService(UsageLimitSources.UsageLimitSources)({
+            consumeResetCredit: unstubbed,
             current: Effect.succeed([]),
             streamChanges: Stream.make([]),
             refresh: Effect.void,
@@ -793,7 +854,8 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provide(
         Layer.mergeAll(
-          Layer.mock(ProviderRegistry.ProviderRegistry)({
+          mockService(ProviderRegistry.ProviderRegistry)({
+            refreshWorkspaceSnapshot: unstubbed,
             getProviders: Effect.succeed([]),
             refresh: () => Effect.succeed([]),
             refreshInstance: () => Effect.succeed([]),
@@ -805,30 +867,76 @@ const buildAppUnderTest = (options?: {
             streamChanges: Stream.empty,
             ...options?.layers?.providerRegistry,
           }),
-          Layer.mock(ProviderService.ProviderService)({
+          mockService(ProviderService.ProviderService)({
+            assertConversationRollbackSupported: unstubbed,
+            compactThread: unstubbed,
+            getCapabilities: unstubbed,
+            getInstanceInfo: unstubbed,
+            interruptTurn: unstubbed,
+            listSessions: unstubbed,
+            respondToRequest: unstubbed,
+            respondToUserInput: unstubbed,
+            rollbackConversation: unstubbed,
+            sendTurn: unstubbed,
+            startSession: unstubbed,
+            stopSession: unstubbed,
+            streamEvents: unstubbed,
             uploadFeedback: () => Effect.die("Provider feedback is not stubbed in this test"),
             ...options?.layers?.providerService,
           }),
-          Layer.mock(ProviderAuthService)({
+          mockService(ProviderAuthService)({
+            cancel: unstubbed,
+            complete: unstubbed,
+            logout: unstubbed,
+            start: unstubbed,
+            subscribe: unstubbed,
+            tryHandlePromptCommand: unstubbed,
             ...options?.layers?.providerAuth,
           }),
-          Layer.mock(ProviderInstanceRegistry)({
+          mockService(ProviderInstanceRegistry)({
+            listUnavailable: unstubbed,
+            streamChanges: unstubbed,
+            subscribeChanges: unstubbed,
             getInstance: () => Effect.succeed(undefined),
             listInstances: Effect.succeed([]),
             ...options?.layers?.providerInstanceRegistry,
           }),
-          Layer.mock(AntigravityInstallation)({
+          mockService(AntigravityInstallation)({
+            acquire: unstubbed,
+            cancel: unstubbed,
+            changes: unstubbed,
+            remove: unstubbed,
+            resolve: unstubbed,
+            start: unstubbed,
+            state: unstubbed,
             managedDirectory: "unused-test-antigravity-runtime",
             ...options?.layers?.antigravityInstallation,
           }),
-          Layer.mock(ProviderSessionDirectory.ProviderSessionDirectory)({
+          mockService(ProviderSessionDirectory.ProviderSessionDirectory)({
+            getProvider: unstubbed,
+            recordImportedTranscript: unstubbed,
             upsert: () => Effect.void,
             getBinding: () => Effect.succeed(Option.none()),
             listThreadIds: () => Effect.succeed([]),
             listBindings: () => Effect.succeed([]),
             ...options?.layers?.providerSessionDirectory,
           }),
-          Layer.mock(DeviceService.DeviceService)({
+          mockService(DeviceService.DeviceService)({
+            readiness: unstubbed,
+            readinessIfSupported: unstubbed,
+            agentReadinessIfSupported: unstubbed,
+            shutdown: unstubbed,
+            detail: unstubbed,
+            action: unstubbed,
+            screenshot: unstubbed,
+            configure: unstubbed,
+            list: unstubbed,
+            open: unstubbed,
+            close: unstubbed,
+            agentCli: unstubbed,
+            testHost: unstubbed,
+            agentTarget: unstubbed,
+            subscribe: unstubbed,
             state: Effect.succeed(EMPTY_DEVICE_STATE),
             currentReadiness: () => Effect.succeed(null),
             sessionsForThread: () => Effect.succeed([]),
@@ -836,7 +944,8 @@ const buildAppUnderTest = (options?: {
         ),
       ),
       Layer.provide(
-        Layer.mock(ServerSettings.ServerSettingsService)({
+        mockService(ServerSettings.ServerSettingsService)({
+          subscribeChanges: unstubbed,
           start: Effect.void,
           ready: Effect.void,
           getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
@@ -847,18 +956,20 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provide(
         Layer.mergeAll(
-          Layer.mock(ExternalLauncher.ExternalLauncher)({
+          mockService(ExternalLauncher.ExternalLauncher)({
+            launchBrowser: unstubbed,
+            launchEditor: unstubbed,
             resolveAvailableEditors: () => Effect.succeed([]),
             resolveFileManagerRevealKind: () => Effect.sync((): undefined => undefined),
             ...options?.layers?.externalLauncher,
           }),
-          Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
+          mockService(RemoteOpenTargets.RemoteOpenTargets)({
             resolveTargets: () => Effect.succeed([]),
           }),
         ),
       ),
       Layer.provide(
-        Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({
+        mockService(ProcessDiagnostics.ProcessDiagnostics)({
           read: Effect.succeed({
             serverPid: process.pid,
             readAt: TEST_EPOCH,
@@ -879,7 +990,7 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provide([
         HostResources.layer,
-        Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
+        mockService(ProcessResourceMonitor.ProcessResourceMonitor)({
           readHistory: (input) =>
             Effect.succeed({
               readAt: TEST_EPOCH,
@@ -895,7 +1006,7 @@ const buildAppUnderTest = (options?: {
         }),
       ]),
       Layer.provide(
-        Layer.mock(TraceDiagnostics.TraceDiagnostics)({
+        mockService(TraceDiagnostics.TraceDiagnostics)({
           read: () =>
             Effect.succeed({
               traceFilePath: "",
@@ -926,25 +1037,37 @@ const buildAppUnderTest = (options?: {
       Layer.provide(reviewLayer),
       Layer.provide(vcsProvisioningLayer),
       Layer.provide(
-        Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
+        mockService(SourceControlRepositoryService.SourceControlRepositoryService)({
+          cloneRepository: unstubbed,
+          lookupRepository: unstubbed,
+          publishRepository: unstubbed,
           ...options?.layers?.sourceControlRepositoryService,
         }),
       ),
       Layer.provideMerge(vcsStatusBroadcasterLayer),
       Layer.provide(
-        Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
+        mockService(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
           runForThread: () => Effect.succeed({ status: "no-script" as const }),
           ...options?.layers?.projectSetupScriptRunner,
         }),
       ),
       Layer.provide(
-        Layer.mock(TerminalManager.TerminalManager)({
+        mockService(TerminalManager.TerminalManager)({
+          attachStream: unstubbed,
+          clear: unstubbed,
+          close: unstubbed,
+          open: unstubbed,
+          resize: unstubbed,
+          restart: unstubbed,
+          subscribe: unstubbed,
+          subscribeMetadata: unstubbed,
+          write: unstubbed,
           ...options?.layers?.terminalManager,
         }),
       ),
       Layer.provide(
         Layer.mergeAll(
-          Layer.mock(PreviewManager.PreviewManager)({
+          mockService(PreviewManager.PreviewManager)({
             open: () => Effect.die("PreviewManager not stubbed in this test"),
             navigate: () => Effect.die("PreviewManager not stubbed in this test"),
             resize: () => Effect.die("PreviewManager not stubbed in this test"),
@@ -957,7 +1080,7 @@ const buildAppUnderTest = (options?: {
               PubSub.subscribe(pubsub),
             ),
           }),
-          Layer.mock(PortScanner.PortDiscovery)({
+          mockService(PortScanner.PortDiscovery)({
             scan: () => Effect.succeed([]),
             subscribe: () => Effect.void,
             retain: Effect.void,
@@ -968,7 +1091,8 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provide(
         Layer.mergeAll(
-          Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
+          mockService(OrchestrationEngine.OrchestrationEngineService)({
+            subscribeDomainEvents: unstubbed,
             readEvents: () => Stream.empty,
             readThreadEvents: () => Stream.empty,
             getThreadReplayStats: () =>
@@ -1003,7 +1127,8 @@ const buildAppUnderTest = (options?: {
            * real-database tests in `persistence/Layers/ProjectionChannels.test.ts`
            * are where that guard is held.
            */
-          Layer.mock(ProjectionChannelRepository)({
+          mockService(ProjectionChannelRepository)({
+            listPostsBackward: unstubbed,
             upsertChannel: () => Effect.die("unused"),
             getChannelByName: () => Effect.succeedNone,
             getChannelById: () => Effect.succeedNone,
@@ -1029,19 +1154,27 @@ const buildAppUnderTest = (options?: {
           // here rather than a stub that hides something. The real join is
           // pinned in `channelPosts.test.ts` and `MentionWakeReactor.test.ts`
           // over a real database.
-          Layer.mock(ChannelPostWakeRepository)({
+          mockService(ChannelPostWakeRepository)({
             link: () => Effect.die("unused"),
             listByPostIds: () => Effect.succeed([]),
           }),
-          Layer.mock(ProjectionTurnRepository)({
+          mockService(ProjectionTurnRepository)({
+            listByThreadId: unstubbed,
+            getByTurnId: unstubbed,
+            clearCheckpointTurnConflict: unstubbed,
+            deleteByThreadId: unstubbed,
+            upsertByTurnId: unstubbed,
+            replacePendingTurnStart: unstubbed,
+            getPendingTurnStartByThreadId: unstubbed,
+            deletePendingTurnStartByThreadId: unstubbed,
             listStatesByTurnIds: () => Effect.succeed([]),
           }),
-          Layer.mock(ThreadDeletionReactor)({
+          mockService(ThreadDeletionReactor)({
             start: () => Effect.void,
             drainThrough: () => Effect.void,
             ...options?.layers?.threadDeletionReactor,
           }),
-          Layer.mock(PullRequestSyncReactor.PullRequestSyncReactor)({
+          mockService(PullRequestSyncReactor.PullRequestSyncReactor)({
             start: () => Effect.void,
             drain: Effect.void,
             requestSync: () => Effect.void,
@@ -1050,7 +1183,10 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provide(
         Layer.mergeAll(
-          Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+          mockService(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+            getFullThreadDiffContext: unstubbed,
+            getThreadRuntimeContext: unstubbed,
+            getTurnStartMessage: unstubbed,
             getUserInputActivity: () => Effect.die("unused"),
             getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
             getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
@@ -1089,7 +1225,7 @@ const buildAppUnderTest = (options?: {
         ),
       ),
       Layer.provide(
-        Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({
+        mockService(CheckpointDiffQuery.CheckpointDiffQuery)({
           getTurnDiff: () =>
             Effect.succeed({
               threadId: defaultThreadId,
@@ -1113,20 +1249,20 @@ const buildAppUnderTest = (options?: {
       Layer.provide(resourceTelemetryLayer),
       Layer.provide(UsageService.layerTest),
       Layer.provide(
-        Layer.mock(AnalyticsService.AnalyticsService)({
+        mockService(AnalyticsService.AnalyticsService)({
           record: () => Effect.void,
           flush: Effect.void,
           ...options?.layers?.analyticsService,
         }),
       ),
       Layer.provide(
-        Layer.mock(BrowserTraceCollector.BrowserTraceCollector)({
+        mockService(BrowserTraceCollector.BrowserTraceCollector)({
           record: () => Effect.void,
           ...options?.layers?.browserTraceCollector,
         }),
       ),
       Layer.provide(
-        Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({
+        mockService(ServerLifecycleEvents.ServerLifecycleEvents)({
           publish: (event) => Effect.succeed({ ...(event as any), sequence: 1 }),
           snapshot: Effect.succeed({ sequence: 0, events: [] }),
           stream: Stream.empty,
@@ -1134,7 +1270,7 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(ServerRuntimeStartup.ServerRuntimeStartup)({
+        mockService(ServerRuntimeStartup.ServerRuntimeStartup)({
           awaitCommandReady: Effect.void,
           markHttpListening: Effect.void,
           markRunningProviderSessionsForContinuation: Effect.succeed([]),
@@ -1144,7 +1280,7 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+        mockService(BackgroundPolicy.BackgroundPolicy)({
           reportClientActivity: () => Effect.void,
           removeRpcClient: () => Effect.void,
           reportHostPowerState: () => Effect.void,
@@ -1196,14 +1332,14 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(ServerEnvironment.ServerEnvironment)({
+        mockService(ServerEnvironment.ServerEnvironment)({
           getEnvironmentId: Effect.succeed(testEnvironmentDescriptor.environmentId),
           getDescriptor: Effect.succeed(testEnvironmentDescriptor),
           ...options?.layers?.serverEnvironment,
         }),
       ),
       Layer.provide(
-        Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+        mockService(RepositoryIdentityResolver.RepositoryIdentityResolver)({
           resolve: () => Effect.succeed(null),
           ...options?.layers?.repositoryIdentityResolver,
         }),
@@ -1232,7 +1368,8 @@ const buildAppUnderTest = (options?: {
         ),
       ),
       Layer.provide(
-        Layer.mock(CloudCliTokenManager.CloudCliTokenManager)({
+        mockService(CloudCliTokenManager.CloudCliTokenManager)({
+          store: unstubbed,
           get: Effect.die(new Error("Unexpected T3 Connect CLI authorization request.")),
           getExisting: Effect.succeed(Option.none()),
           hasCredential: Effect.succeed(false),
@@ -7080,7 +7217,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const hostResources = yield* HostResources.make().pipe(
         Effect.provideService(HostProcessPlatform, "darwin"),
         Effect.provide(
-          Layer.mock(ChildProcessSpawner.ChildProcessSpawner)({
+          mockService(ChildProcessSpawner.ChildProcessSpawner)({
+            spawn: unstubbed,
+            exitCode: unstubbed,
+            streamString: unstubbed,
+            streamLines: unstubbed,
+            lines: unstubbed,
             string: () =>
               Ref.update(commandCalls, (count) => count + 1).pipe(
                 Effect.as(
@@ -7109,7 +7251,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const hostResources = yield* HostResources.make().pipe(
         Effect.provideService(HostProcessPlatform, "darwin"),
         Effect.provide(
-          Layer.mock(ChildProcessSpawner.ChildProcessSpawner)({
+          mockService(ChildProcessSpawner.ChildProcessSpawner)({
+            spawn: unstubbed,
+            exitCode: unstubbed,
+            streamString: unstubbed,
+            streamLines: unstubbed,
+            lines: unstubbed,
             string: () =>
               Effect.gen(function* () {
                 const call = yield* Ref.updateAndGet(commandCalls, (count) => count + 1);

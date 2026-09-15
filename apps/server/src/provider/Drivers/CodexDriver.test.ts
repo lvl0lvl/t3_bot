@@ -26,6 +26,7 @@ import {
   resolveLatestProviderVersion,
 } from "../providerMaintenance.ts";
 import { CodexDriver } from "./CodexDriver.ts";
+import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 
 const testLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-codex-driver-maintenance-",
@@ -35,7 +36,15 @@ const testLayer = ServerConfig.layerTest(process.cwd(), {
   Layer.provideMerge(ModelManifest.layerTest),
   Layer.provideMerge(codexResetCreditLayerTest),
   Layer.provideMerge(
-    Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+    mockService(BackgroundPolicy.BackgroundPolicy)({
+      streamChanges: unstubbed,
+      subscribe: unstubbed,
+      hasDemand: unstubbed,
+      shouldRunOpportunisticWork: unstubbed,
+      reportClientActivity: unstubbed,
+      removeRpcClient: unstubbed,
+      reportHostPowerState: unstubbed,
+      snapshot: unstubbed,
       shouldRunScopeWork: () => Effect.succeed(false),
     }),
   ),

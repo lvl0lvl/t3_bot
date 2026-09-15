@@ -26,6 +26,7 @@ import { ProjectionSnapshotQuery } from "../../../orchestration/Services/Project
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { listThreadPullRequests, PullRequestsToolkitHandlersLive } from "./handlers.ts";
 import { PullRequestLinkFailedError, PullRequestsToolkit } from "./tools.ts";
+import { mockService, unstubbed } from "../../../testUtils/mockService.ts";
 
 const PROJECT_ID = ProjectId.make("project-1");
 const THREAD_ID = ThreadId.make("thread-1");
@@ -160,7 +161,25 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
       return { sequence: 1 };
     });
   const dependencies = Layer.mergeAll(
-    Layer.mock(ProjectionSnapshotQuery)({
+    mockService(ProjectionSnapshotQuery)({
+      getThreadDetailById: unstubbed,
+      getThreadDetailSnapshot: unstubbed,
+      getThreadCheckpointContext: unstubbed,
+      getFullThreadDiffContext: unstubbed,
+      getThreadRuntimeContext: unstubbed,
+      getTurnStartMessage: unstubbed,
+      getEventReplayStats: unstubbed,
+      getActiveProjectByWorkspaceRoot: unstubbed,
+      getFirstActiveThreadIdByProjectId: unstubbed,
+      getImportedAgentSessionSources: unstubbed,
+      getArchivedShellSnapshot: unstubbed,
+      searchThreads: unstubbed,
+      getSnapshotSequence: unstubbed,
+      getCounts: unstubbed,
+      getUserInputActivity: unstubbed,
+      getCommandReadModel: unstubbed,
+      getSnapshot: unstubbed,
+      getShellSnapshot: unstubbed,
       // The one thread fixture answers for either token id, under that id.
       getThreadShellById: (threadId) =>
         Effect.succeed(
@@ -170,7 +189,10 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
         ),
       getProjectShellById: () => Effect.succeed(Option.fromNullishOr(project)),
     }),
-    Layer.mock(OrchestrationEngineService)({
+    mockService(OrchestrationEngineService)({
+      readThreadEvents: unstubbed,
+      getThreadReplayStats: unstubbed,
+      subscribeDomainEvents: unstubbed,
       readEvents: () => Stream.empty,
       dispatch,
       streamDomainEvents: Stream.empty,

@@ -73,6 +73,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ServerActivation } from "../../serverActivation.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import * as GitWorkflowService from "../../git/GitWorkflowService.ts";
+import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
@@ -461,14 +462,41 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(reactorOrchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
-      Layer.provide(Layer.mock(ProviderAuthService, { tryHandlePromptCommand })),
+      Layer.provide(
+        mockService(ProviderAuthService)({
+          start: unstubbed,
+          complete: unstubbed,
+          cancel: unstubbed,
+          logout: unstubbed,
+          subscribe: unstubbed,
+          tryHandlePromptCommand,
+        }),
+      ),
       Layer.provideMerge(makeProviderRegistryLayer(providerSnapshots as never)),
       Layer.provideMerge(
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
+        mockService(GitWorkflowService.GitWorkflowService)({
+          createRef: unstubbed,
+          switchRef: unstubbed,
+          remoteExists: unstubbed,
+          remoteBranchExists: unstubbed,
+          resolveRemoteTrackingCommit: unstubbed,
+          removeWorktree: unstubbed,
+          resolvePullRequest: unstubbed,
+          preparePullRequestThread: unstubbed,
+          listRefs: unstubbed,
+          fetchRemote: unstubbed,
+          invalidateRemoteStatus: unstubbed,
+          invalidateStatus: unstubbed,
+          pullCurrentBranch: unstubbed,
+          runStackedAction: unstubbed,
+          status: unstubbed,
+          localStatus: unstubbed,
+          remoteStatus: unstubbed,
+          invalidateLocalStatus: unstubbed,
           renameBranch,
           pruneWorktrees,
           createWorktree,
-        } satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>),
+        }),
       ),
       Layer.provideMerge(
         Layer.succeed(VcsStatusBroadcaster, {
@@ -482,7 +510,9 @@ describe("ProviderCommandReactor", () => {
         }),
       ),
       Layer.provideMerge(
-        Layer.mock(TextGeneration, {
+        mockService(TextGeneration)({
+          generateCommitMessage: unstubbed,
+          generatePrContent: unstubbed,
           generateBranchName,
           generateThreadTitle,
         }),

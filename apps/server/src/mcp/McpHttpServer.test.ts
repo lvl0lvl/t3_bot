@@ -26,6 +26,7 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as DeviceService from "../device/DeviceService.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
@@ -83,10 +84,37 @@ const PullRequestsTestLayer = McpHttpServer.PullRequestsToolkitRegistrationLive.
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provide(
     Layer.mergeAll(
-      Layer.mock(ProjectionSnapshotQuery)({
+      mockService(ProjectionSnapshotQuery)({
+        getTurnStartMessage: unstubbed,
+        getThreadDetailById: unstubbed,
+        getThreadDetailSnapshot: unstubbed,
+        getImportedAgentSessionSources: unstubbed,
+        getThreadCheckpointContext: unstubbed,
+        getFullThreadDiffContext: unstubbed,
+        getThreadRuntimeContext: unstubbed,
+        getEventReplayStats: unstubbed,
+        getActiveProjectByWorkspaceRoot: unstubbed,
+        getProjectShellById: unstubbed,
+        getFirstActiveThreadIdByProjectId: unstubbed,
+        getArchivedShellSnapshot: unstubbed,
+        searchThreads: unstubbed,
+        getSnapshotSequence: unstubbed,
+        getCounts: unstubbed,
+        getUserInputActivity: unstubbed,
+        getCommandReadModel: unstubbed,
+        getSnapshot: unstubbed,
+        getShellSnapshot: unstubbed,
         getThreadShellById: () => Effect.succeed(Option.none()),
       }),
-      Layer.mock(OrchestrationEngineService)({}),
+      mockService(OrchestrationEngineService)({
+        streamDomainEvents: unstubbed,
+        subscribeDomainEvents: unstubbed,
+        latestSequence: unstubbed,
+        readEvents: unstubbed,
+        readThreadEvents: unstubbed,
+        getThreadReplayStats: unstubbed,
+        dispatch: unstubbed,
+      }),
       NodeServices.layer,
     ),
   ),
@@ -834,7 +862,28 @@ it.effect(
  */
 const MergedLayerTestLayer = McpHttpServer.layer.pipe(
   Layer.provide(HttpRouter.layer),
-  Layer.provide(Layer.mock(DeviceService.DeviceService)({})),
+  Layer.provide(
+    mockService(DeviceService.DeviceService)({
+      currentReadiness: unstubbed,
+      sessionsForThread: unstubbed,
+      screenshot: unstubbed,
+      readiness: unstubbed,
+      readinessIfSupported: unstubbed,
+      agentReadinessIfSupported: unstubbed,
+      close: unstubbed,
+      shutdown: unstubbed,
+      detail: unstubbed,
+      action: unstubbed,
+      subscribe: unstubbed,
+      configure: unstubbed,
+      list: unstubbed,
+      open: unstubbed,
+      agentCli: unstubbed,
+      testHost: unstubbed,
+      agentTarget: unstubbed,
+      state: unstubbed,
+    }),
+  ),
   Layer.provide(
     McpSessionRegistry.layer.pipe(
       Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),

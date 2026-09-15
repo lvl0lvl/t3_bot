@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 
 import * as GitLabPullRequestCli from "./GitLabPullRequestCli.ts";
 import { gitLabViewerPermissions, make } from "./GitLabPullRequestProvider.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 describe("gitLabViewerPermissions", () => {
   it("offers everything to a viewer GitLab says can merge", () => {
@@ -99,7 +100,25 @@ describe("getChangeRequest base freshness", () => {
       });
     }).pipe(
       Effect.provide(
-        Layer.mock(GitLabPullRequestCli.GitLabPullRequestCli)({
+        mockService(GitLabPullRequestCli.GitLabPullRequestCli)({
+          listReactions: unstubbed,
+          setReaction: unstubbed,
+          listDiscussions: unstubbed,
+          submitReview: unstubbed,
+          replyToDiscussion: unstubbed,
+          setDiscussionResolution: unstubbed,
+          runMergeRequestAction: unstubbed,
+          updateMergeRequest: unstubbed,
+          commentOnMergeRequest: unstubbed,
+          updateNote: unstubbed,
+          getMergeRequestDiff: unstubbed,
+          getMergeRequestDiffFileContents: unstubbed,
+          listReviewerCandidates: unstubbed,
+          setReviewerRequest: unstubbed,
+          getViewerUsername: unstubbed,
+          listMergeRequests: unstubbed,
+          listNotes: unstubbed,
+          listCommits: unstubbed,
           getMergeRequestDetail: () => Effect.succeed({ ...detail, ...divergence }),
           getProjectMergeCapabilities: () =>
             Effect.succeed({ merge: true, squash: true, rebase: true }),
@@ -143,7 +162,28 @@ describe("rewriting what has already been said", () => {
 
   const providerWith = make.pipe(
     Effect.provide(
-      Layer.mock(GitLabPullRequestCli.GitLabPullRequestCli)({ updateMergeRequest, updateNote }),
+      mockService(GitLabPullRequestCli.GitLabPullRequestCli)({
+        listReactions: unstubbed,
+        setReaction: unstubbed,
+        listDiscussions: unstubbed,
+        submitReview: unstubbed,
+        replyToDiscussion: unstubbed,
+        setDiscussionResolution: unstubbed,
+        listReviewerCandidates: unstubbed,
+        setReviewerRequest: unstubbed,
+        runMergeRequestAction: unstubbed,
+        commentOnMergeRequest: unstubbed,
+        listCommits: unstubbed,
+        getMergeRequestDiff: unstubbed,
+        getMergeRequestDiffFileContents: unstubbed,
+        getProjectMergeCapabilities: unstubbed,
+        getViewerUsername: unstubbed,
+        listMergeRequests: unstubbed,
+        getMergeRequestDetail: unstubbed,
+        listNotes: unstubbed,
+        updateMergeRequest,
+        updateNote,
+      }),
     ),
   );
 

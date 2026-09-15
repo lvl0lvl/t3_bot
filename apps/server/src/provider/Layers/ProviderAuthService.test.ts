@@ -30,6 +30,7 @@ import {
   type ProviderRuntimeBindingWithMetadata,
 } from "../Services/ProviderSessionDirectory.ts";
 import { makeProviderAuthService } from "./ProviderAuthService.ts";
+import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 
 const instanceId = ProviderInstanceId.make("antigravity-personal");
 const otherInstanceId = ProviderInstanceId.make("antigravity-work");
@@ -185,12 +186,20 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
   const service = yield* makeProviderAuthService.pipe(
     Effect.provide(
       Layer.mergeAll(
-        Layer.mock(ProviderInstanceRegistry)({
+        mockService(ProviderInstanceRegistry)({
+          listInstances: unstubbed,
+          listUnavailable: unstubbed,
+          streamChanges: unstubbed,
           getInstance: (id) =>
             Effect.succeed(instances.find((instance) => instance.instanceId === id)),
           subscribeChanges: PubSub.subscribe(registryChanges),
         }),
-        Layer.mock(ProviderSessionDirectory)({
+        mockService(ProviderSessionDirectory)({
+          upsert: unstubbed,
+          recordImportedTranscript: unstubbed,
+          getProvider: unstubbed,
+          getBinding: unstubbed,
+          listThreadIds: unstubbed,
           listBindings: () =>
             Effect.suspend(() => {
               assert.isTrue(gateClosed);
@@ -200,7 +209,19 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
                 : Effect.succeed([...bindings.values()]);
             }),
         }),
-        Layer.mock(ProviderService)({
+        mockService(ProviderService)({
+          assertConversationRollbackSupported: unstubbed,
+          rollbackConversation: unstubbed,
+          uploadFeedback: unstubbed,
+          streamEvents: unstubbed,
+          respondToRequest: unstubbed,
+          respondToUserInput: unstubbed,
+          getCapabilities: unstubbed,
+          getInstanceInfo: unstubbed,
+          startSession: unstubbed,
+          sendTurn: unstubbed,
+          compactThread: unstubbed,
+          interruptTurn: unstubbed,
           listSessions: () =>
             Effect.sync(() => {
               assert.isTrue(gateClosed);
@@ -260,7 +281,10 @@ const makeSubscriptionHarness = Effect.fn("ProviderAuthService.test.makeSubscrip
     const service = yield* makeProviderAuthService.pipe(
       Effect.provide(
         Layer.mergeAll(
-          Layer.mock(ProviderInstanceRegistry)({
+          mockService(ProviderInstanceRegistry)({
+            listInstances: unstubbed,
+            listUnavailable: unstubbed,
+            streamChanges: unstubbed,
             subscribeChanges: Effect.gen(function* () {
               const subscription = yield* PubSub.subscribe(changes);
               subscribed = true;
@@ -278,8 +302,30 @@ const makeSubscriptionHarness = Effect.fn("ProviderAuthService.test.makeSubscrip
                 return instance;
               }),
           }),
-          Layer.mock(ProviderService)({}),
-          Layer.mock(ProviderSessionDirectory)({}),
+          mockService(ProviderService)({
+            uploadFeedback: unstubbed,
+            streamEvents: unstubbed,
+            getCapabilities: unstubbed,
+            getInstanceInfo: unstubbed,
+            assertConversationRollbackSupported: unstubbed,
+            rollbackConversation: unstubbed,
+            respondToRequest: unstubbed,
+            respondToUserInput: unstubbed,
+            stopSession: unstubbed,
+            listSessions: unstubbed,
+            startSession: unstubbed,
+            sendTurn: unstubbed,
+            compactThread: unstubbed,
+            interruptTurn: unstubbed,
+          }),
+          mockService(ProviderSessionDirectory)({
+            listThreadIds: unstubbed,
+            listBindings: unstubbed,
+            upsert: unstubbed,
+            recordImportedTranscript: unstubbed,
+            getProvider: unstubbed,
+            getBinding: unstubbed,
+          }),
         ),
       ),
     );

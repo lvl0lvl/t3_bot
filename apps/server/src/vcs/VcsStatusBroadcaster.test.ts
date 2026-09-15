@@ -28,6 +28,7 @@ import * as VcsStatusBroadcaster from "./VcsStatusBroadcaster.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 
@@ -83,7 +84,23 @@ function makeTestLayer(state: {
     Layer.provideMerge(NodeServices.layer),
     Layer.provide(makeBackgroundPolicyLayer(() => state.backgroundWorkEnabled !== false)),
     Layer.provide(
-      Layer.mock(GitWorkflowService.GitWorkflowService)({
+      mockService(GitWorkflowService.GitWorkflowService)({
+        pruneWorktrees: unstubbed,
+        createRef: unstubbed,
+        switchRef: unstubbed,
+        renameBranch: unstubbed,
+        remoteExists: unstubbed,
+        remoteBranchExists: unstubbed,
+        resolveRemoteTrackingCommit: unstubbed,
+        removeWorktree: unstubbed,
+        preparePullRequestThread: unstubbed,
+        listRefs: unstubbed,
+        createWorktree: unstubbed,
+        fetchRemote: unstubbed,
+        status: unstubbed,
+        pullCurrentBranch: unstubbed,
+        runStackedAction: unstubbed,
+        resolvePullRequest: unstubbed,
         localStatus: () =>
           Effect.sync(() => {
             state.localStatusCalls += 1;
@@ -114,7 +131,8 @@ function makeTestLayer(state: {
 }
 
 function makeBackgroundPolicyLayer(shouldRunScopeWork: (scope: BackgroundScope) => boolean) {
-  return Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+  return mockService(BackgroundPolicy.BackgroundPolicy)({
+    subscribe: unstubbed,
     reportClientActivity: () => Effect.void,
     removeRpcClient: () => Effect.void,
     reportHostPowerState: () => Effect.void,
@@ -165,7 +183,22 @@ describe("VcsStatusBroadcaster", () => {
           }),
         ),
         Layer.provide(
-          Layer.mock(GitWorkflowService.GitWorkflowService)({
+          mockService(GitWorkflowService.GitWorkflowService)({
+            createRef: unstubbed,
+            switchRef: unstubbed,
+            renameBranch: unstubbed,
+            remoteBranchExists: unstubbed,
+            resolveRemoteTrackingCommit: unstubbed,
+            removeWorktree: unstubbed,
+            pruneWorktrees: unstubbed,
+            listRefs: unstubbed,
+            createWorktree: unstubbed,
+            fetchRemote: unstubbed,
+            remoteExists: unstubbed,
+            status: unstubbed,
+            runStackedAction: unstubbed,
+            resolvePullRequest: unstubbed,
+            preparePullRequestThread: unstubbed,
             localStatus: () => Effect.succeed(localStatus),
             remoteStatus: () => Effect.succeed(remoteStatus),
             invalidateLocalStatus: () => Effect.void,
@@ -276,7 +309,23 @@ describe("VcsStatusBroadcaster", () => {
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(makeBackgroundPolicyLayer(() => true)),
       Layer.provide(
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
+        mockService(GitWorkflowService.GitWorkflowService)({
+          pruneWorktrees: unstubbed,
+          createRef: unstubbed,
+          switchRef: unstubbed,
+          renameBranch: unstubbed,
+          remoteExists: unstubbed,
+          remoteBranchExists: unstubbed,
+          resolveRemoteTrackingCommit: unstubbed,
+          removeWorktree: unstubbed,
+          preparePullRequestThread: unstubbed,
+          listRefs: unstubbed,
+          createWorktree: unstubbed,
+          fetchRemote: unstubbed,
+          status: unstubbed,
+          pullCurrentBranch: unstubbed,
+          runStackedAction: unstubbed,
+          resolvePullRequest: unstubbed,
           localStatus: () => Effect.succeed(baseLocalStatus),
           remoteStatus: () =>
             Effect.gen(function* () {
@@ -322,7 +371,25 @@ describe("VcsStatusBroadcaster", () => {
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(makeBackgroundPolicyLayer(() => true)),
       Layer.provide(
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
+        mockService(GitWorkflowService.GitWorkflowService)({
+          switchRef: unstubbed,
+          renameBranch: unstubbed,
+          resolveRemoteTrackingCommit: unstubbed,
+          removeWorktree: unstubbed,
+          pruneWorktrees: unstubbed,
+          createRef: unstubbed,
+          createWorktree: unstubbed,
+          fetchRemote: unstubbed,
+          remoteExists: unstubbed,
+          remoteBranchExists: unstubbed,
+          runStackedAction: unstubbed,
+          resolvePullRequest: unstubbed,
+          preparePullRequestThread: unstubbed,
+          listRefs: unstubbed,
+          status: unstubbed,
+          invalidateLocalStatus: unstubbed,
+          invalidateRemoteStatus: unstubbed,
+          pullCurrentBranch: unstubbed,
           localStatus: () => Effect.succeed(baseLocalStatus),
           remoteStatus: () =>
             Effect.gen(function* () {
@@ -429,7 +496,23 @@ describe("VcsStatusBroadcaster", () => {
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(makeBackgroundPolicyLayer(() => true)),
       Layer.provide(
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
+        mockService(GitWorkflowService.GitWorkflowService)({
+          pruneWorktrees: unstubbed,
+          createRef: unstubbed,
+          switchRef: unstubbed,
+          renameBranch: unstubbed,
+          remoteExists: unstubbed,
+          remoteBranchExists: unstubbed,
+          resolveRemoteTrackingCommit: unstubbed,
+          removeWorktree: unstubbed,
+          preparePullRequestThread: unstubbed,
+          listRefs: unstubbed,
+          createWorktree: unstubbed,
+          fetchRemote: unstubbed,
+          status: unstubbed,
+          pullCurrentBranch: unstubbed,
+          runStackedAction: unstubbed,
+          resolvePullRequest: unstubbed,
           localStatus: () =>
             Effect.sync(() => {
               state.localStatusCalls += 1;
@@ -539,7 +622,24 @@ describe("VcsStatusBroadcaster", () => {
         Layer.provideMerge(NodeServices.layer),
         Layer.provide(makeBackgroundPolicyLayer(() => true)),
         Layer.provide(
-          Layer.mock(GitWorkflowService.GitWorkflowService)({
+          mockService(GitWorkflowService.GitWorkflowService)({
+            removeWorktree: unstubbed,
+            pruneWorktrees: unstubbed,
+            createRef: unstubbed,
+            switchRef: unstubbed,
+            renameBranch: unstubbed,
+            fetchRemote: unstubbed,
+            remoteExists: unstubbed,
+            remoteBranchExists: unstubbed,
+            resolveRemoteTrackingCommit: unstubbed,
+            resolvePullRequest: unstubbed,
+            preparePullRequestThread: unstubbed,
+            listRefs: unstubbed,
+            createWorktree: unstubbed,
+            status: unstubbed,
+            invalidateStatus: unstubbed,
+            pullCurrentBranch: unstubbed,
+            runStackedAction: unstubbed,
             localStatus: (input) =>
               Effect.sync(() => {
                 seenCwds.push(input.cwd);
@@ -560,7 +660,7 @@ describe("VcsStatusBroadcaster", () => {
               Effect.sync(() => {
                 state.remoteInvalidationCalls += 1;
               }),
-          } satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>),
+          }),
         ),
       );
 
@@ -704,7 +804,24 @@ describe("VcsStatusBroadcaster", () => {
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(makeBackgroundPolicyLayer(() => true)),
       Layer.provide(
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
+        mockService(GitWorkflowService.GitWorkflowService)({
+          removeWorktree: unstubbed,
+          pruneWorktrees: unstubbed,
+          createRef: unstubbed,
+          switchRef: unstubbed,
+          renameBranch: unstubbed,
+          fetchRemote: unstubbed,
+          remoteExists: unstubbed,
+          remoteBranchExists: unstubbed,
+          resolveRemoteTrackingCommit: unstubbed,
+          resolvePullRequest: unstubbed,
+          preparePullRequestThread: unstubbed,
+          listRefs: unstubbed,
+          createWorktree: unstubbed,
+          status: unstubbed,
+          invalidateStatus: unstubbed,
+          pullCurrentBranch: unstubbed,
+          runStackedAction: unstubbed,
           localStatus: () =>
             Effect.sync(() => {
               state.localStatusCalls += 1;
@@ -904,7 +1021,24 @@ describe("VcsStatusBroadcaster", () => {
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(makeBackgroundPolicyLayer(() => false)),
       Layer.provide(
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
+        mockService(GitWorkflowService.GitWorkflowService)({
+          removeWorktree: unstubbed,
+          pruneWorktrees: unstubbed,
+          createRef: unstubbed,
+          switchRef: unstubbed,
+          renameBranch: unstubbed,
+          fetchRemote: unstubbed,
+          remoteExists: unstubbed,
+          remoteBranchExists: unstubbed,
+          resolveRemoteTrackingCommit: unstubbed,
+          resolvePullRequest: unstubbed,
+          preparePullRequestThread: unstubbed,
+          listRefs: unstubbed,
+          createWorktree: unstubbed,
+          status: unstubbed,
+          invalidateStatus: unstubbed,
+          pullCurrentBranch: unstubbed,
+          runStackedAction: unstubbed,
           localStatus: () =>
             Effect.sync(() => {
               state.localStatusCalls += 1;
@@ -923,7 +1057,7 @@ describe("VcsStatusBroadcaster", () => {
             Effect.sync(() => {
               state.remoteInvalidationCalls += 1;
             }),
-        } satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>),
+        }),
       ),
     );
 
@@ -957,7 +1091,24 @@ describe("VcsStatusBroadcaster", () => {
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(makeBackgroundPolicyLayer(() => true)),
       Layer.provide(
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
+        mockService(GitWorkflowService.GitWorkflowService)({
+          removeWorktree: unstubbed,
+          pruneWorktrees: unstubbed,
+          createRef: unstubbed,
+          switchRef: unstubbed,
+          renameBranch: unstubbed,
+          fetchRemote: unstubbed,
+          remoteExists: unstubbed,
+          remoteBranchExists: unstubbed,
+          resolveRemoteTrackingCommit: unstubbed,
+          resolvePullRequest: unstubbed,
+          preparePullRequestThread: unstubbed,
+          listRefs: unstubbed,
+          createWorktree: unstubbed,
+          status: unstubbed,
+          invalidateStatus: unstubbed,
+          pullCurrentBranch: unstubbed,
+          runStackedAction: unstubbed,
           localStatus: () =>
             Effect.sync(() => {
               state.localStatusCalls += 1;
@@ -987,7 +1138,7 @@ describe("VcsStatusBroadcaster", () => {
             Effect.sync(() => {
               state.remoteInvalidationCalls += 1;
             }),
-        } satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>),
+        }),
       ),
     );
 

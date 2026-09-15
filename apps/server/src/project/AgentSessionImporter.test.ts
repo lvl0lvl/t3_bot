@@ -60,6 +60,7 @@ import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
 import { importRecentAgentThreads } from "./AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const PROJECT_ID = ProjectId.make("project-1");
 const WORKSPACE_ROOT = "/tmp/project-from-server";
@@ -171,7 +172,24 @@ const makeSnapshotsLayer = (input: {
   readonly project?: OrchestrationProjectShell;
   readonly getThread?: (threadId: ThreadId) => Option.Option<OrchestrationThread>;
 }) =>
-  Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+  mockService(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+    getFullThreadDiffContext: unstubbed,
+    getThreadShellById: unstubbed,
+    getThreadRuntimeContext: unstubbed,
+    getTurnStartMessage: unstubbed,
+    getThreadDetailSnapshot: unstubbed,
+    getEventReplayStats: unstubbed,
+    getActiveProjectByWorkspaceRoot: unstubbed,
+    getFirstActiveThreadIdByProjectId: unstubbed,
+    getThreadCheckpointContext: unstubbed,
+    getArchivedShellSnapshot: unstubbed,
+    searchThreads: unstubbed,
+    getSnapshotSequence: unstubbed,
+    getCounts: unstubbed,
+    getUserInputActivity: unstubbed,
+    getCommandReadModel: unstubbed,
+    getSnapshot: unstubbed,
+    getShellSnapshot: unstubbed,
     getProjectShellById: () =>
       Effect.succeed(input.project === undefined ? Option.none() : Option.some(input.project)),
     getImportedAgentSessionSources: () => Effect.succeed([]),
@@ -303,8 +321,23 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
           ),
           Effect.provide(
             Layer.mergeAll(
-              Layer.mock(OrchestrationEngine.OrchestrationEngineService)({}),
-              Layer.mock(ProviderSessionDirectory.ProviderSessionDirectory)({}),
+              mockService(OrchestrationEngine.OrchestrationEngineService)({
+                streamDomainEvents: unstubbed,
+                subscribeDomainEvents: unstubbed,
+                latestSequence: unstubbed,
+                readEvents: unstubbed,
+                readThreadEvents: unstubbed,
+                getThreadReplayStats: unstubbed,
+                dispatch: unstubbed,
+              }),
+              mockService(ProviderSessionDirectory.ProviderSessionDirectory)({
+                listThreadIds: unstubbed,
+                listBindings: unstubbed,
+                upsert: unstubbed,
+                recordImportedTranscript: unstubbed,
+                getProvider: unstubbed,
+                getBinding: unstubbed,
+              }),
               makeSnapshotsLayer({
                 project: { ...makeProject(), workspaceRoot: "/tmp/project-moved" },
               }),
@@ -923,14 +956,58 @@ it.layer(integrationLayer)("AgentSessionImporter integration", (it) => {
             }),
           ),
           Layer.provide(
-            Layer.mock(ProviderAuthService)({
+            mockService(ProviderAuthService)({
+              start: unstubbed,
+              complete: unstubbed,
+              cancel: unstubbed,
+              logout: unstubbed,
+              subscribe: unstubbed,
               tryHandlePromptCommand: () => Effect.succeed(false),
             }),
           ),
           Layer.provide(makeProviderRegistryLayer()),
-          Layer.provide(Layer.mock(GitWorkflowService)({})),
-          Layer.provide(Layer.mock(VcsStatusBroadcaster)({})),
-          Layer.provide(Layer.mock(TextGeneration)({})),
+          Layer.provide(
+            mockService(GitWorkflowService)({
+              removeWorktree: unstubbed,
+              pruneWorktrees: unstubbed,
+              createRef: unstubbed,
+              switchRef: unstubbed,
+              renameBranch: unstubbed,
+              fetchRemote: unstubbed,
+              remoteExists: unstubbed,
+              remoteBranchExists: unstubbed,
+              resolveRemoteTrackingCommit: unstubbed,
+              resolvePullRequest: unstubbed,
+              preparePullRequestThread: unstubbed,
+              listRefs: unstubbed,
+              createWorktree: unstubbed,
+              invalidateRemoteStatus: unstubbed,
+              invalidateStatus: unstubbed,
+              pullCurrentBranch: unstubbed,
+              runStackedAction: unstubbed,
+              status: unstubbed,
+              localStatus: unstubbed,
+              remoteStatus: unstubbed,
+              invalidateLocalStatus: unstubbed,
+            }),
+          ),
+          Layer.provide(
+            mockService(VcsStatusBroadcaster)({
+              getStatus: unstubbed,
+              refreshLocalStatus: unstubbed,
+              refreshStatus: unstubbed,
+              refreshPullRequestStatus: unstubbed,
+              streamStatus: unstubbed,
+            }),
+          ),
+          Layer.provide(
+            mockService(TextGeneration)({
+              generateCommitMessage: unstubbed,
+              generatePrContent: unstubbed,
+              generateBranchName: unstubbed,
+              generateThreadTitle: unstubbed,
+            }),
+          ),
           Layer.provide(ServerSettingsService.layerTest()),
         );
 

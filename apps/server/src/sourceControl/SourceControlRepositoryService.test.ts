@@ -15,6 +15,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import type * as SourceControlProvider from "./SourceControlProvider.ts";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
 import * as SourceControlRepositoryService from "./SourceControlRepositoryService.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const CLONE_URLS = {
   nameWithOwner: "octocat/t3code",
@@ -61,12 +62,48 @@ function makeLayer(input: {
 }) {
   const serviceLayer = SourceControlRepositoryService.layer.pipe(
     Layer.provide(
-      Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+      mockService(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+        resolveHandle: unstubbed,
+        resolve: unstubbed,
+        discover: unstubbed,
         get: () => Effect.succeed(input.provider ?? makeProvider()),
       }),
     ),
     Layer.provide(
-      Layer.mock(GitVcsDriver.GitVcsDriver)({
+      mockService(GitVcsDriver.GitVcsDriver)({
+        commit: unstubbed,
+        createRef: unstubbed,
+        createWorktree: unstubbed,
+        fetchPullRequestBranch: unstubbed,
+        fetchPullRequestHeadCommit: unstubbed,
+        fetchRemote: unstubbed,
+        fetchRemoteBranch: unstubbed,
+        fetchRemoteTrackingBranch: unstubbed,
+        getReviewDiffFileContents: unstubbed,
+        getReviewDiffPreview: unstubbed,
+        initRepo: unstubbed,
+        listLocalBranchNames: unstubbed,
+        listRefs: unstubbed,
+        prepareCommitContext: unstubbed,
+        pruneWorktrees: unstubbed,
+        pullCurrentBranch: unstubbed,
+        readConfigValue: unstubbed,
+        readRangeContext: unstubbed,
+        refreshCheckedOutBranch: unstubbed,
+        remoteBranchExists: unstubbed,
+        remoteExists: unstubbed,
+        removeWorktree: unstubbed,
+        renameBranch: unstubbed,
+        resolveCommit: unstubbed,
+        resolveDefaultBranchName: unstubbed,
+        resolvePrimaryRemoteName: unstubbed,
+        resolveRemoteTrackingCommit: unstubbed,
+        setBranchUpstream: unstubbed,
+        status: unstubbed,
+        statusDetails: unstubbed,
+        statusDetailsLocal: unstubbed,
+        statusDetailsRemote: unstubbed,
+        switchRef: unstubbed,
         execute: () => Effect.succeed(processOutput()),
         ensureRemote: () => Effect.succeed("origin"),
         pushCurrentBranch: () =>

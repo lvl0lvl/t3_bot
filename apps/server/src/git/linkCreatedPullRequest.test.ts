@@ -22,6 +22,7 @@ import {
 } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { createdPullRequestKey, linkCreatedPullRequest } from "./linkCreatedPullRequest.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const PROJECT_ID = ProjectId.make("project-1");
 const THREAD_ID = ThreadId.make("thread-1");
@@ -81,11 +82,32 @@ const makeDependencies = (
   threadShell: OrchestrationThreadShell | null = thread,
 ) =>
   Layer.mergeAll(
-    Layer.mock(ProjectionSnapshotQuery)({
+    mockService(ProjectionSnapshotQuery)({
+      getThreadDetailById: unstubbed,
+      getThreadDetailSnapshot: unstubbed,
+      getThreadCheckpointContext: unstubbed,
+      getFullThreadDiffContext: unstubbed,
+      getThreadRuntimeContext: unstubbed,
+      getTurnStartMessage: unstubbed,
+      getEventReplayStats: unstubbed,
+      getActiveProjectByWorkspaceRoot: unstubbed,
+      getFirstActiveThreadIdByProjectId: unstubbed,
+      getImportedAgentSessionSources: unstubbed,
+      getArchivedShellSnapshot: unstubbed,
+      searchThreads: unstubbed,
+      getSnapshotSequence: unstubbed,
+      getCounts: unstubbed,
+      getUserInputActivity: unstubbed,
+      getCommandReadModel: unstubbed,
+      getSnapshot: unstubbed,
+      getShellSnapshot: unstubbed,
       getThreadShellById: () => Effect.succeed(Option.fromNullishOr(threadShell)),
       getProjectShellById: () => Effect.succeed(Option.some(project)),
     }),
-    Layer.mock(OrchestrationEngineService)({
+    mockService(OrchestrationEngineService)({
+      readThreadEvents: unstubbed,
+      getThreadReplayStats: unstubbed,
+      subscribeDomainEvents: unstubbed,
       readEvents: () => Stream.empty,
       dispatch,
       streamDomainEvents: Stream.empty,
