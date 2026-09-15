@@ -1,5 +1,5 @@
 /**
- * SEVEN CLAIMS ABOUT THE CI JOB THAT RUNS THE SWEEP AND THE WORKFLOW AROUND IT, all of which
+ * EIGHT CLAIMS ABOUT THE CI JOB THAT RUNS THE SWEEP AND THE WORKFLOW AROUND IT, all of which
  * fail SILENTLY when broken.
  *
  * The bead (`t3_bot-2ij`, opened 2026-09-12 from qa29's F7 on PR #29) is about the sweep not
@@ -39,11 +39,24 @@
  * never kills a verdict mid-computation. Both are one-token edits to lines nobody re-reads, and
  * reverting either alone breaks the pair, so one test names both.
  *
- * CLAIM 6 — THE PUSH TRIGGER REACHES THE SHA ARM ONLY FROM `main`. It is the precondition CLAIM 5
- * rests on. Widen it and every push gets its own group with cancellation off: the sweep fans out
- * unbounded instead of running on main in parallel. The KEYS of `push:` are pinned, not just the
- * value of `branches:` — adding `tags:` leaves `branches: [main]` untouched and still reaches the
- * sha arm from a ref that is not a branch, which is the "admits every other constant" shape.
+ * CLAIM 6 — THE TRIGGER LIST IS PINNED, BOTH DIRECTIONS. It is the precondition CLAIM 5 rests on,
+ * and it is pinned wider than its own rationale on purpose, so read the failure before deleting it.
+ *   WIDER: every push reaches the `github.sha` arm. Adding `tags:` leaves `branches: [main]`
+ *   untouched and still reaches it from a ref that is not a branch, so the KEYS of `push:` are
+ *   pinned and not only the value of `branches:` — the "admits every other constant" shape.
+ *   NARROWER: `on.pull_request` is pinned too, because the damage runs the other way. Narrowing it
+ *   to `branches: [main]` drops CI for every PR that does not target main, silently and green.
+ *   A guard mutated in one direction only is half a guard.
+ *   AND IT REFUSES LEGITIMATE ADDITIONS, which is the trade: `workflow_dispatch:` and
+ *   `merge_group:` do not fan out unboundedly, and CLAIM 6 still reds on them. This workflow
+ *   declares no `merge_group:` today, so a merge queue runs nothing from it; whoever adds one
+ *   edits this claim with it, having read why. The failure message says so rather than reading
+ *   as an obstacle.
+ *
+ * CLAIM 8 — THE SWEEP'S SIX CONFIGS RUN IN PARALLEL. `concurrency:` is not the only way to
+ * serialize them: `strategy.max-parallel: 1` does it in one line, from a key no other claim here
+ * reads, and restores the cost this file's CLAIM 5 exists to remove. Measured: with that line
+ * added, all seven other claims stay green.
  *
  * CLAIM 7 — NO JOB DECLARES ITS OWN `concurrency:`. The workflow-level block above is not the only
  * place this can be undone. Three lines under any job — `concurrency: {group: fork-ci-sweep}` —
@@ -249,9 +262,27 @@ describe("the CI job that runs the guard sweep, and the workflow around it", () 
       push?: Record<string, unknown> & { branches?: Array<string> };
       pull_request?: unknown;
     };
-    expect(Object.keys(on).sort()).toEqual(["pull_request", "push"]);
-    expect(Object.keys(on.push ?? {})).toEqual(["branches"]);
+    expect(
+      Object.keys(on).sort(),
+      "fork-ci.yml declares exactly two triggers, and CLAIM 5's group expression is written for " +
+        "those two. A new trigger changes which refs reach the `github.sha` arm, so it is a " +
+        "decision about the concurrency group and not only about when CI runs. This includes " +
+        "`merge_group:`: none is declared today, so a merge queue runs nothing from this " +
+        "workflow. Adding a trigger on purpose means editing this claim with it",
+    ).toEqual(["pull_request", "push"]);
+    expect(
+      Object.keys(on.push ?? {}),
+      "a sibling filter under `push:` reaches the same `github.sha` arm from a ref that is not a " +
+        'branch — `tags: ["v*"]` leaves `branches: [main]` exactly as it is, and a tag pushed ' +
+        "at a sha already on main lands in that merge run's own group",
+    ).toEqual(["branches"]);
     expect(on.push?.branches).toEqual(["main"]);
+    expect(
+      on.pull_request,
+      "`pull_request:` carries no filters, and pinning that is the other direction of this guard: " +
+        "narrowing it — `branches: [main]` — drops CI for every PR that does not target main, " +
+        "silently, with every test here still green",
+    ).toBeNull();
   });
 
   it("lets no job declare its own concurrency, which would re-serialize the sweep one level down", () => {
@@ -282,5 +313,25 @@ describe("the CI job that runs the guard sweep, and the workflow around it", () 
     const checked = checkedInConfigs();
     expect(checked.length).toBeGreaterThan(0);
     expect(matrixConfigs(workflowText())).toEqual(checked);
+  });
+
+  it("runs the sweep's configs in parallel, so no strategy key re-serializes them", () => {
+    // CLAIM 5 removed the serialization between MERGES. This is the serialization WITHIN one
+    // merge, and it is reached by a key nothing else here reads: `strategy.max-parallel`. One
+    // line restores the whole cost, with every other claim in this file still green.
+    //
+    // Not `toBeUndefined()`: raising the cap to the config count is a legitimate edit, and a
+    // guard that refuses what it should admit gets deleted by the next person who needs it.
+    const jobs = parsedWorkflow()["jobs"] as Record<string, Record<string, unknown>>;
+    const strategy = (jobs["sweep"]?.["strategy"] ?? {}) as Record<string, unknown>;
+    const configs = matrixConfigs(workflowText());
+    expect(configs.length).toBeGreaterThan(0);
+    const cap = strategy["max-parallel"];
+    expect(
+      cap === undefined || (typeof cap === "number" && cap >= configs.length),
+      `the sweep's ${configs.length} configs must be free to run at once: max-parallel is ` +
+        `${String(cap)}, which serializes them and restores exactly the verdict latency this ` +
+        `workflow's concurrency group was changed to remove`,
+    ).toBe(true);
   });
 });
