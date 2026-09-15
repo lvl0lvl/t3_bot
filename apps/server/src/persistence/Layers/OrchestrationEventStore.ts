@@ -60,6 +60,64 @@ const OrchestrationEventPersistedRowSchema = Schema.Struct({
   metadata: EventMetadataFromJsonString,
 });
 
+const OrchestrationEventReadRowSchema = Schema.Struct({
+  sequence: NonNegativeInt,
+  eventId: EventId,
+  // A plain string, not the closed union: a row written by a newer build
+  // carries a type this build does not know, and the read decides per row
+  // whether to skip it (unknown type) or fail (known type, refused payload).
+  type: Schema.String,
+  aggregateKind: OrchestrationAggregateKind,
+  aggregateId: OrchestrationAggregateId,
+  occurredAt: IsoDateTime,
+  commandId: Schema.NullOr(CommandId),
+  causationEventId: Schema.NullOr(EventId),
+  correlationId: Schema.NullOr(CommandId),
+  payload: UnknownFromJsonString,
+  metadata: EventMetadataFromJsonString,
+});
+
+const isKnownEventType = Schema.is(OrchestrationEventType);
+
+// A row whose type is outside this build's union was written by a newer build.
+// The read skips it and logs one warning per row per read, and keeps failing
+// on a KNOWN type whose payload its schema refuses: that is corruption, and
+// reading past it would hide data loss. DISCLOSED: a skipped event leaves every
+// later known event applied to a state that is missing its effect (a newer
+// build's event that a later known event depends on); that is the cost of an
+// older build reading a newer log, and the alternative was a server that
+// cannot start on it. DISCLOSED: the warning is per row and uncapped, so a
+// log with many unknown rows logs one line each on every replay.
+const decodeRowsSkippingUnknownTypes = (
+  rows: ReadonlyArray<typeof OrchestrationEventReadRowSchema.Type>,
+  operation: string,
+) =>
+  Effect.forEach(rows, (row) => {
+    const { type, ...rest } = row;
+    if (!isKnownEventType(type)) {
+      return Effect.logWarning(
+        `orchestration event skipped: unknown type ${type} at sequence ${row.sequence}`,
+      ).pipe(
+        Effect.annotateLogs({
+          sequence: row.sequence,
+          type,
+          aggregateKind: row.aggregateKind,
+          aggregateId: row.aggregateId,
+          occurredAt: row.occurredAt,
+        }),
+        Effect.as(Option.none<OrchestrationEvent>()),
+      );
+    }
+    return decodeEvent({ ...rest, type }).pipe(
+      Effect.mapError(toPersistenceDecodeError(operation)),
+      Effect.map(Option.some),
+    );
+  }).pipe(
+    Effect.map((decoded) =>
+      decoded.flatMap((event) => (Option.isSome(event) ? [event.value] : [])),
+    ),
+  );
+
 const HasEventAfterRequestSchema = Schema.Struct({
   aggregateKind: Schema.String,
   aggregateId: Schema.String,
@@ -178,7 +236,7 @@ const makeEventStore = Effect.gen(function* () {
 
   const readEventRowsFromSequence = SqlSchema.findAll({
     Request: ReadFromSequenceRequestSchema,
-    Result: OrchestrationEventPersistedRowSchema,
+    Result: OrchestrationEventReadRowSchema,
     execute: (request) =>
       sql`
         SELECT
@@ -202,7 +260,7 @@ const makeEventStore = Effect.gen(function* () {
 
   const readAggregateEventRows = SqlSchema.findAll({
     Request: AggregateReplayRequestSchema,
-    Result: OrchestrationEventPersistedRowSchema,
+    Result: OrchestrationEventReadRowSchema,
     execute: (request) =>
       sql`
         SELECT
@@ -300,24 +358,25 @@ const makeEventStore = Effect.gen(function* () {
             ),
           ),
           Effect.flatMap((rows) =>
-            Effect.forEach(rows, (row) =>
-              decodeEvent(row).pipe(
-                Effect.mapError(
-                  toPersistenceDecodeError("OrchestrationEventStore.readFromSequence:rowToEvent"),
-                ),
-              ),
+            decodeRowsSkippingUnknownTypes(
+              rows,
+              "OrchestrationEventStore.readFromSequence:rowToEvent",
+            ).pipe(
+              Effect.map((events) => {
+                // The cursor comes from the last row read, not the last event
+                // decoded: a skipped row at the end of a page would otherwise
+                // be re-read forever or end the read short.
+                const lastRow = rows.at(-1);
+                const nextRemaining = remaining - events.length;
+                return [
+                  events,
+                  lastRow === undefined || nextRemaining <= 0
+                    ? Option.none()
+                    : Option.some({ cursor: lastRow.sequence, remaining: nextRemaining }),
+                ] as const;
+              }),
             ),
           ),
-          Effect.map((events) => {
-            const last = events.at(-1);
-            const nextRemaining = remaining - events.length;
-            return [
-              events,
-              last === undefined || nextRemaining <= 0
-                ? Option.none()
-                : Option.some({ cursor: last.sequence, remaining: nextRemaining }),
-            ] as const;
-          }),
         ),
     );
   };
@@ -369,27 +428,25 @@ const makeEventStore = Effect.gen(function* () {
             ),
           ),
           Effect.flatMap((rows) =>
-            Effect.forEach(rows, (row) =>
-              decodeEvent(row).pipe(
-                Effect.mapError(
-                  toPersistenceDecodeError("OrchestrationEventStore.readAggregateRange:rowToEvent"),
-                ),
-              ),
+            decodeRowsSkippingUnknownTypes(
+              rows,
+              "OrchestrationEventStore.readAggregateRange:rowToEvent",
+            ).pipe(
+              Effect.map((events) => {
+                const lastRow = rows.at(-1);
+                const nextRemaining = remaining - events.length;
+                return [
+                  events,
+                  lastRow === undefined ||
+                  rows.length < Math.min(remaining, READ_PAGE_SIZE) ||
+                  nextRemaining <= 0 ||
+                  lastRow.sequence >= input.toSequenceInclusive
+                    ? Option.none()
+                    : Option.some({ cursor: lastRow.sequence, remaining: nextRemaining }),
+                ] as const;
+              }),
             ),
           ),
-          Effect.map((events) => {
-            const last = events.at(-1);
-            const nextRemaining = remaining - events.length;
-            return [
-              events,
-              last === undefined ||
-              events.length < READ_PAGE_SIZE ||
-              nextRemaining === 0 ||
-              last.sequence >= input.toSequenceInclusive
-                ? Option.none()
-                : Option.some({ cursor: last.sequence, remaining: nextRemaining }),
-            ] as const;
-          }),
         ),
     );
   };

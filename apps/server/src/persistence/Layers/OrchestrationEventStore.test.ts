@@ -11,6 +11,7 @@ import {
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -198,6 +199,188 @@ layer("OrchestrationEventStore", (it) => {
         assert.ok(
           scopedResult.failure.operation.includes(
             "OrchestrationEventStore.readAggregateRange:decodeRows",
+          ),
+        );
+      }
+    }),
+  );
+
+  it.effect("skips a row whose type this build does not know and reads the rows after it", () => {
+    const messages: string[] = [];
+    const logger = Logger.make<unknown, void>(({ message }) => {
+      messages.push(String(message));
+    });
+
+    return Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const projectId = ProjectId.make("project-unknown-type");
+      const projectCreated = (
+        eventId: string,
+        commandId: string,
+      ): Omit<OrchestrationEvent, "sequence"> => ({
+        type: "project.created",
+        eventId: EventId.make(eventId),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        occurredAt: now,
+        commandId: CommandId.make(commandId),
+        causationEventId: null,
+        correlationId: CommandId.make(commandId),
+        metadata: {},
+        payload: {
+          projectId,
+          title: "Unknown Type Project",
+          workspaceRoot: "/tmp/project-unknown-type",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      const first = yield* eventStore.append(
+        projectCreated("evt-unknown-first", "cmd-unknown-first"),
+      );
+      // A newer build wrote this row: a type outside this build's union, with a
+      // payload this build cannot decode. The read must skip it and keep going;
+      // a read that stops here leaves the server unable to start on this log.
+      const unknownRows = yield* sql<{ readonly sequence: number }>`
+        INSERT INTO orchestration_events (
+          event_id,
+          aggregate_kind,
+          stream_id,
+          stream_version,
+          event_type,
+          occurred_at,
+          command_id,
+          causation_event_id,
+          correlation_id,
+          actor_kind,
+          payload_json,
+          metadata_json
+        )
+        VALUES (
+          ${EventId.make("evt-unknown-future")},
+          ${"project"},
+          ${projectId},
+          ${1},
+          ${"project.future-event"},
+          ${now},
+          ${null},
+          ${null},
+          ${null},
+          ${"server"},
+          ${'{"future":true}'},
+          ${"{}"}
+        )
+        RETURNING sequence
+      `;
+      const unknownSequence = unknownRows[0]!.sequence;
+      const last = yield* eventStore.append(projectCreated("evt-unknown-last", "cmd-unknown-last"));
+
+      const replayed = yield* Stream.runCollect(
+        eventStore.readFromSequence(first.sequence - 1, 10),
+      ).pipe(Effect.map((chunk) => Array.from(chunk, (event) => event.eventId)));
+      assert.deepEqual(replayed, [first.eventId, last.eventId]);
+
+      // A limit that ends a page on the skipped row: a cursor taken from the
+      // last decoded event instead of the last row read re-reads the skipped
+      // row and stops short of the event after it.
+      const pagedPastSkip = yield* Stream.runCollect(
+        eventStore.readFromSequence(first.sequence - 1, 2),
+      ).pipe(Effect.map((chunk) => Array.from(chunk, (event) => event.eventId)));
+      assert.deepEqual(pagedPastSkip, [first.eventId, last.eventId]);
+
+      const ranged = yield* eventStore
+        .readAggregateRange({
+          aggregateKind: "project",
+          aggregateId: projectId,
+          fromSequenceExclusive: 0,
+          toSequenceInclusive: last.sequence,
+          limit: 2,
+        })
+        .pipe(
+          Stream.runCollect,
+          Effect.map((chunk) => Array.from(chunk, (event) => event.eventId)),
+        );
+      assert.deepEqual(ranged, [first.eventId, last.eventId]);
+
+      // One warning per skipped row per read: three reads crossed the row. A
+      // skip that logs nothing is a silent loss of history.
+      const skipWarnings = messages.filter((message) => message.includes("project.future-event"));
+      assert.equal(skipWarnings.length, 3);
+      for (const warning of skipWarnings) {
+        assert.ok(warning.includes(String(unknownSequence)));
+      }
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  });
+
+  it.effect("keeps failing when a known type carries a payload its schema refuses", () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      // Valid JSON, known type, wrong shape: corruption or a bug, not a newer
+      // build. Reading past it would hide data loss.
+      const rows = yield* sql<{ readonly sequence: number }>`
+        INSERT INTO orchestration_events (
+          event_id,
+          aggregate_kind,
+          stream_id,
+          stream_version,
+          event_type,
+          occurred_at,
+          command_id,
+          causation_event_id,
+          correlation_id,
+          actor_kind,
+          payload_json,
+          metadata_json
+        )
+        VALUES (
+          ${EventId.make("evt-store-bad-payload")},
+          ${"project"},
+          ${ProjectId.make("project-bad-payload")},
+          ${0},
+          ${"project.created"},
+          ${now},
+          ${null},
+          ${null},
+          ${null},
+          ${"server"},
+          ${"{}"},
+          ${"{}"}
+        )
+        RETURNING sequence
+      `;
+
+      const replayResult = yield* Effect.result(
+        Stream.runCollect(eventStore.readFromSequence(rows[0]!.sequence - 1, 10)),
+      );
+      assert.equal(replayResult._tag, "Failure");
+      if (replayResult._tag === "Failure") {
+        assert.ok(isPersistenceDecodeError(replayResult.failure));
+        assert.ok(
+          replayResult.failure.operation.includes(
+            "OrchestrationEventStore.readFromSequence:rowToEvent",
+          ),
+        );
+      }
+      const rangedResult = yield* eventStore
+        .readAggregateRange({
+          aggregateKind: "project",
+          aggregateId: "project-bad-payload",
+          fromSequenceExclusive: 0,
+          toSequenceInclusive: rows[0]!.sequence,
+        })
+        .pipe(Stream.runCollect, Effect.result);
+      assert.equal(rangedResult._tag, "Failure");
+      if (rangedResult._tag === "Failure") {
+        assert.ok(isPersistenceDecodeError(rangedResult.failure));
+        assert.ok(
+          rangedResult.failure.operation.includes(
+            "OrchestrationEventStore.readAggregateRange:rowToEvent",
           ),
         );
       }
