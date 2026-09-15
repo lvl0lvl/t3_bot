@@ -81,9 +81,14 @@ status. A late checkpoint or diff must not extend the recorded turn duration or 
 showing provider work as active.
 
 [Checkpoints](../../apps/server/src/checkpointing/CheckpointStore.ts) use hidden Git refs to
-capture workspace state without adding commits to the user's branch. A revert must coordinate
-workspace state with the provider conversation. A provider that cannot roll back its conversation
-must reject that operation before changing the filesystem.
+capture workspace state without adding commits to the user's branch. A turn's diff starts from
+the tree the turn found (`start/N`), not from the previous checkpoint (`turn/N-1`): several threads
+can share one checkout, and what changed between their turns is not the turn's. That snapshot is
+taken by the provider command reactor before the provider is handed the turn, because behind the
+checkpoint reactor's queue it races the provider's first write; it waits under the id of the message
+that started the turn until the turn completes and its count is settled. A revert must
+coordinate workspace state with the provider conversation. A provider that cannot roll back its
+conversation must reject that operation before changing the filesystem.
 
 ## Waiting for asynchronous work
 

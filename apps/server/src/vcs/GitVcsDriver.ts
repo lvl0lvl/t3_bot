@@ -711,6 +711,145 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       return path.isAbsolute(gitCommonDir) ? gitCommonDir : path.resolve(cwd, gitCommonDir);
     });
 
+  const resolveGitIndexPath = (cwd: string) =>
+    execute({
+      operation: "GitVcsDriver.checkpoints.resolveGitIndexPath",
+      cwd,
+      args: ["rev-parse", "--git-path", "index"],
+    }).pipe(
+      Effect.map((result) => {
+        const indexPath = result.stdout.trim();
+        return path.isAbsolute(indexPath) ? indexPath : path.resolve(cwd, indexPath);
+      }),
+    );
+
+  // The copied index's own optimisations must not decide what a snapshot holds:
+  // a split index would write shared files into the user's git dir (or delete the
+  // one the live index still references), and a file monitor token or an
+  // untracked-file cache would let `add -A` skip work on the strength of state
+  // this process did not observe. The split-index pair and the `--no-split-index`
+  // expansion below are the ones `readUnifiedWorkingTreeReviewDiff` in
+  // GitVcsDriverCore.ts applies to its own copy of the live index; keep them equal.
+  const seededIndexConfig = [
+    "-c",
+    "core.splitIndex=false",
+    "-c",
+    "splitIndex.sharedIndexExpire=never",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.untrackedCache=false",
+  ];
+
+  /**
+   * Seed the temp index from the live one so `add -A` can trust its stat cache: an
+   * index built by `read-tree` carries none and git rehashes every file (1.5 s on a
+   * 21k-file checkout against ~0.3 s). The copy contributes ONLY that cache. Its
+   * membership, staged content and merge stages are reset to HEAD, and then three
+   * checks say so positively; if any fails, the copy is discarded and the caller
+   * seeds from HEAD the slow way. Returns whether the temp index is ready.
+   *
+   * What falls back, and pays the old cost plus ~0.2 s: a checkout with any index
+   * flag set (a sparse checkout's skip-worktree bits, `assume-unchanged`, an index
+   * path this process cannot spell), an unmerged index the reset did not clear,
+   * and a repository with no index file or no HEAD.
+   */
+  const seedTempIndexFromLiveIndex = (input: {
+    readonly operation: string;
+    readonly cwd: string;
+    readonly tempIndexPath: string;
+    readonly env: NodeJS.ProcessEnv;
+  }) =>
+    Effect.gen(function* () {
+      const liveIndexPath = yield* resolveGitIndexPath(input.cwd);
+      const liveIndexExists = yield* fileSystem
+        .exists(liveIndexPath)
+        .pipe(Effect.orElseSucceed(() => false));
+      if (!liveIndexExists || !(yield* hasHeadCommit(input.cwd))) {
+        return false;
+      }
+      const run = (args: ReadonlyArray<string>) =>
+        execute({
+          operation: input.operation,
+          cwd: input.cwd,
+          args: [...seededIndexConfig, ...args],
+          env: input.env,
+          allowNonZeroExit: true,
+        });
+      const liveIndex = yield* fileSystem
+        .stat(liveIndexPath)
+        .pipe(
+          Effect.andThen((info) =>
+            fileSystem.copyFile(liveIndexPath, input.tempIndexPath).pipe(Effect.as(info)),
+          ),
+        )
+        .pipe(
+          Effect.mapError(
+            (error) =>
+              new VcsProcessExitError({
+                operation: input.operation,
+                command: "copy index",
+                cwd: input.cwd,
+                exitCode: 1,
+                detail: error.message,
+              }),
+          ),
+        );
+
+      // Expand a split index into the copy, then reset what the copy says the
+      // tree holds to HEAD; the stat cache of every entry HEAD keeps survives.
+      const expanded = yield* run(["update-index", "--no-split-index"]);
+      const reset = yield* run(["read-tree", "--reset", "HEAD"]);
+      // Membership and content equal HEAD; no entry carries a flag `add -A` would
+      // trust instead of reading the file; no merge stage survived the reset.
+      const sameAsHead = yield* run(["diff", "--cached", "--quiet", "HEAD", "--"]);
+      const flags = yield* run(["ls-files", "-v", "-z"]);
+      const unmerged = yield* run(["ls-files", "-u", "-z"]);
+      const flagged = flags.stdout
+        .split("\0")
+        .some((line) => line.length > 0 && !line.startsWith("H "));
+      if (
+        expanded.exitCode !== 0 ||
+        reset.exitCode !== 0 ||
+        sameAsHead.exitCode !== 0 ||
+        flags.exitCode !== 0 ||
+        unmerged.exitCode !== 0 ||
+        flagged ||
+        unmerged.stdout.length > 0
+      ) {
+        yield* fileSystem.remove(input.tempIndexPath, { force: true }).pipe(Effect.ignore);
+        return false;
+      }
+
+      // Git treats an entry whose mtime is not older than the index file's as
+      // racily clean and hashes it instead of trusting its stat. Every command
+      // above rewrote the copy with a fresh mtime, younger than every entry, so
+      // a same-size edit made in the second the live index was written would be
+      // trusted as unchanged; the live index's timestamps put the rule back.
+      const mtime = Option.getOrUndefined(liveIndex.mtime);
+      if (mtime !== undefined) {
+        yield* fileSystem
+          .utimes(
+            input.tempIndexPath,
+            Option.getOrElse(liveIndex.atime, () => mtime),
+            mtime,
+          )
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new VcsProcessExitError({
+                  operation: input.operation,
+                  command: "utimes index",
+                  cwd: input.cwd,
+                  exitCode: 1,
+                  detail: error.message,
+                }),
+            ),
+          );
+      }
+      return true;
+    });
+
   const checkpoints: VcsDriver.VcsCheckpointOps = {
     captureCheckpoint: Effect.fn("GitVcsDriver.checkpoints.captureCheckpoint")(function* (input) {
       const operation = "GitVcsDriver.checkpoints.captureCheckpoint";
@@ -733,8 +872,13 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         .pipe(Effect.ignore);
 
       yield* Effect.gen(function* () {
-        const headExists = yield* hasHeadCommit(input.cwd);
-        if (headExists) {
+        const seeded = yield* seedTempIndexFromLiveIndex({
+          operation,
+          cwd: input.cwd,
+          tempIndexPath,
+          env: commitEnv,
+        });
+        if (!seeded && (yield* hasHeadCommit(input.cwd))) {
           yield* execute({
             operation,
             cwd: input.cwd,
@@ -746,14 +890,14 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         yield* execute({
           operation,
           cwd: input.cwd,
-          args: ["add", "-A", "--", "."],
+          args: [...seededIndexConfig, "add", "-A", "--", "."],
           env: commitEnv,
         });
 
         const writeTreeResult = yield* execute({
           operation,
           cwd: input.cwd,
-          args: ["write-tree"],
+          args: [...seededIndexConfig, "write-tree"],
           env: commitEnv,
         });
         const treeOid = writeTreeResult.stdout.trim();
@@ -913,6 +1057,32 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
             }),
           { discard: true },
         );
+      },
+    ),
+
+    renameCheckpointRef: Effect.fn("GitVcsDriver.checkpoints.renameCheckpointRef")(
+      function* (input) {
+        const operation = "GitVcsDriver.checkpoints.renameCheckpointRef";
+        const commitOid = yield* resolveCheckpointCommit(input.cwd, input.fromCheckpointRef);
+        if (!commitOid) {
+          return yield* new VcsProcessExitError({
+            operation,
+            command: "git rev-parse",
+            cwd: input.cwd,
+            exitCode: 1,
+            detail: `Checkpoint ref '${input.fromCheckpointRef}' does not exist.`,
+          });
+        }
+        yield* execute({
+          operation,
+          cwd: input.cwd,
+          args: ["update-ref", input.toCheckpointRef, commitOid],
+        });
+        yield* execute({
+          operation,
+          cwd: input.cwd,
+          args: ["update-ref", "-d", input.fromCheckpointRef],
+        });
       },
     ),
   };

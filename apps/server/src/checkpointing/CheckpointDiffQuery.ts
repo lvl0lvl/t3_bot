@@ -30,7 +30,7 @@ import {
   CheckpointWorkspacePathMissingError,
 } from "./Errors.ts";
 import type { CheckpointServiceError } from "./Errors.ts";
-import { checkpointRefForThreadTurn } from "./Utils.ts";
+import { checkpointRefForThreadTurn, turnStartCheckpointRefForThreadTurn } from "./Utils.ts";
 import * as CheckpointStore from "./CheckpointStore.ts";
 
 /** Service tag for checkpoint diff queries. */
@@ -165,15 +165,29 @@ export const make = Effect.gen(function* () {
         });
       }
 
-      const diff = yield* checkpointStore
-        .diffCheckpoints({
-          cwd: workspaceCwd,
-          fromCheckpointRef,
-          toCheckpointRef,
-          fallbackFromToHead: false,
-          ignoreWhitespace,
-        })
-        .pipe(Effect.withSpan("checkpoint.turnDiff.diffCheckpoints"));
+      const diffFrom = (from: CheckpointRef) =>
+        checkpointStore
+          .diffCheckpoints({
+            cwd: workspaceCwd,
+            fromCheckpointRef: from,
+            toCheckpointRef,
+            fallbackFromToHead: false,
+            ignoreWhitespace,
+          })
+          .pipe(Effect.withSpan("checkpoint.turnDiff.diffCheckpoints"));
+
+      // One turn's diff starts from the tree that turn found (`start/N`), the
+      // base its stored summary used; a range spanning turns starts from the
+      // turn that ends it. A turn with no start snapshot (a thread from before
+      // they existed, a continuation after a restart) has none: the diff is
+      // tried, not preflighted (two ref probes per view were what #2586
+      // removed), and the turn ref stands in when git refuses the ref.
+      const diff =
+        input.fromTurnCount === input.toTurnCount - 1
+          ? yield* diffFrom(
+              turnStartCheckpointRefForThreadTurn(input.threadId, input.toTurnCount),
+            ).pipe(Effect.catch(() => diffFrom(fromCheckpointRef)))
+          : yield* diffFrom(fromCheckpointRef);
 
       const turnDiff = buildTurnDiffResult(input, diff);
       if (!isTurnDiffResult(turnDiff)) {

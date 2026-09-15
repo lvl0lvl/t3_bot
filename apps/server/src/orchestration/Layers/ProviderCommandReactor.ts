@@ -5,6 +5,7 @@ import {
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
+  type MessageId,
   type ProjectId,
   type OrchestrationSession,
   ThreadId,
@@ -30,7 +31,11 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
-import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
+import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
+import {
+  pendingTurnStartCheckpointRef,
+  resolveThreadWorkspaceCwd,
+} from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import {
   ProviderAdapterRequestError,
@@ -325,6 +330,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
   const gitWorkflow = yield* GitWorkflowService;
+  const checkpointStore = yield* CheckpointStore.CheckpointStore;
   const fileSystem = yield* FileSystem.FileSystem;
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
@@ -620,6 +626,93 @@ const make = Effect.gen(function* () {
       .getThreadDetailById(threadId, { activityKinds: [] })
       .pipe(Effect.map(Option.getOrUndefined));
   });
+
+  /**
+   * The tree the turn finds, captured before the provider is handed the turn:
+   * the checkpoint reactor takes its snapshots behind a queue, and behind a
+   * queue the snapshot races the provider's first write (the test adapter wins
+   * that race every time). A send while the session reports a running turn is
+   * a follow-up into that turn — Codex accepts them mid-turn — and takes no
+   * snapshot; the running turn keeps the one it started with. Best-effort: a
+   * checkout without git, or a capture that fails, leaves the turn to diff from
+   * the previous checkpoint.
+   */
+  const resolveTurnStartSnapshotCwd = (thread: {
+    readonly projectId: ProjectId;
+    readonly worktreePath: string | null;
+  }) =>
+    resolveProject(thread.projectId).pipe(
+      Effect.map((project) =>
+        resolveThreadWorkspaceCwd({ thread, projects: project ? [project] : [] }),
+      ),
+    );
+
+  const deleteTurnStartSnapshot = (input: {
+    readonly thread: {
+      readonly id: ThreadId;
+      readonly projectId: ProjectId;
+      readonly worktreePath: string | null;
+    };
+    readonly messageId: MessageId;
+  }) =>
+    Effect.gen(function* () {
+      const cwd = yield* resolveTurnStartSnapshotCwd(input.thread);
+      if (!cwd || !(yield* checkpointStore.isGitRepository(cwd))) {
+        return;
+      }
+      yield* checkpointStore.deleteCheckpointRefs({
+        cwd,
+        checkpointRefs: [pendingTurnStartCheckpointRef(input.thread.id, input.messageId)],
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause)
+          : Effect.logWarning("failed to delete the turn's start snapshot", {
+              threadId: input.thread.id,
+              messageId: input.messageId,
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    );
+
+  const captureTurnStartSnapshot = (input: {
+    readonly thread: {
+      readonly id: ThreadId;
+      readonly projectId: ProjectId;
+      readonly worktreePath: string | null;
+    };
+    readonly messageId: MessageId;
+  }) =>
+    Effect.gen(function* () {
+      const cwd = yield* resolveTurnStartSnapshotCwd(input.thread);
+      if (!cwd) {
+        return;
+      }
+      const session = (yield* providerService.listSessions()).find(
+        (entry) => entry.threadId === input.thread.id,
+      );
+      if (session?.activeTurnId !== undefined) {
+        return;
+      }
+      if (!(yield* checkpointStore.isGitRepository(cwd))) {
+        return;
+      }
+      yield* checkpointStore.captureCheckpoint({
+        cwd,
+        checkpointRef: pendingTurnStartCheckpointRef(input.thread.id, input.messageId),
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause)
+          : Effect.logWarning("failed to capture the turn's start snapshot", {
+              threadId: input.thread.id,
+              messageId: input.messageId,
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    );
 
   const rejectStartedThreadModelChangeIfRequired = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
@@ -1547,9 +1640,21 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const send = providerService
-      .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.asVoid, Effect.catchCause(recoverTurnStartFailure));
+    // A refused send leaves no turn to complete and consume the snapshot, so
+    // it goes with the failure; a follow-up into a running turn captured none
+    // and the delete finds nothing.
+    const send = captureTurnStartSnapshot({
+      thread,
+      messageId: event.payload.messageId,
+    }).pipe(
+      Effect.andThen(providerService.sendTurn(sendTurnRequest.value)),
+      Effect.asVoid,
+      Effect.catchCause((cause) =>
+        deleteTurnStartSnapshot({ thread, messageId: event.payload.messageId }).pipe(
+          Effect.andThen(recoverTurnStartFailure(cause)),
+        ),
+      ),
+    );
     // The forked send settles `sent` from here on, so drop the entry the post-processing hook uses.
     if (resumed && event.commandId !== null) resumedTurnStarts.delete(event.commandId);
     yield* send.pipe(

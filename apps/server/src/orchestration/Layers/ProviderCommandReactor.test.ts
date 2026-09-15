@@ -53,6 +53,8 @@ import {
 } from "../../provider/Services/ProviderService.ts";
 import { ProviderAuthService } from "../../provider/Services/ProviderAuthService.ts";
 import { makeProviderRegistryLayer } from "../../provider/testUtils/providerRegistryMock.ts";
+import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
+import { pendingTurnStartCheckpointRef } from "../../checkpointing/Utils.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
@@ -184,6 +186,8 @@ describe("ProviderCommandReactor", () => {
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderServiceError>;
     readonly tryHandlePromptCommandEffect?: ProviderAuthService["Service"]["tryHandlePromptCommand"];
+    readonly captureCheckpointEffect?: () => Effect.Effect<void>;
+    readonly sendTurnEffect?: () => Effect.Effect<never, ProviderAdapterRequestError>;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -263,12 +267,26 @@ describe("ProviderCommandReactor", () => {
         ),
       );
     });
+    const callOrder: Array<"captureCheckpoint" | "sendTurn"> = [];
     const sendTurn = vi.fn((_: unknown) =>
-      Effect.succeed({
-        threadId: ThreadId.make("thread-1"),
-        turnId: asTurnId("turn-1"),
-      }),
+      Effect.sync(() => {
+        callOrder.push("sendTurn");
+      }).pipe(
+        Effect.andThen(
+          input?.sendTurnEffect?.() ??
+            Effect.succeed({
+              threadId: ThreadId.make("thread-1"),
+              turnId: asTurnId("turn-1"),
+            }),
+        ),
+      ),
     );
+    const captureCheckpoint = vi.fn((_: unknown) =>
+      Effect.sync(() => {
+        callOrder.push("captureCheckpoint");
+      }).pipe(Effect.andThen(input?.captureCheckpointEffect?.() ?? Effect.void)),
+    );
+    const deleteCheckpointRefs = vi.fn((_: unknown) => Effect.void);
     const compactThread = vi.fn((_: ThreadId) => input?.compactThreadEffect?.() ?? Effect.void);
     const interruptTurn = vi.fn((_: unknown) => input?.interruptTurnEffect?.() ?? Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
@@ -487,6 +505,21 @@ describe("ProviderCommandReactor", () => {
           generateThreadTitle,
         }),
       ),
+      Layer.provideMerge(
+        Layer.succeed(CheckpointStore.CheckpointStore, {
+          isGitRepository: () => Effect.succeed(true),
+          captureCheckpoint:
+            captureCheckpoint as CheckpointStore.CheckpointStore["Service"]["captureCheckpoint"],
+          hasCheckpointRef: () => Effect.die("hasCheckpointRef should not be called in this test"),
+          restoreCheckpoint: () =>
+            Effect.die("restoreCheckpoint should not be called in this test"),
+          diffCheckpoints: () => Effect.die("diffCheckpoints should not be called in this test"),
+          deleteCheckpointRefs:
+            deleteCheckpointRefs as CheckpointStore.CheckpointStore["Service"]["deleteCheckpointRefs"],
+          renameCheckpointRef: () =>
+            Effect.die("renameCheckpointRef should not be called in this test"),
+        }),
+      ),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
@@ -607,6 +640,9 @@ describe("ProviderCommandReactor", () => {
       tryHandlePromptCommand,
       startSession,
       sendTurn,
+      captureCheckpoint,
+      deleteCheckpointRefs,
+      callOrder,
       compactThread,
       interruptTurn,
       respondToRequest,
@@ -881,6 +917,149 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.status).toBe("starting");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
   });
+
+  effectIt.effect("captures the tree the turn finds before the provider receives the turn", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-snapshot"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-snapshot"),
+          role: "user",
+          text: "edit a file",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      yield* Effect.promise(() => waitFor(() => harness.callOrder.length === 2));
+      // The provider's first write can follow sendTurn immediately; a snapshot
+      // taken after it lists nothing the turn did.
+      expect(harness.callOrder).toEqual(["captureCheckpoint", "sendTurn"]);
+      expect(harness.captureCheckpoint.mock.calls[0]?.[0]).toEqual({
+        cwd: "/tmp/provider-project",
+        checkpointRef: pendingTurnStartCheckpointRef(
+          ThreadId.make("thread-1"),
+          asMessageId("user-message-snapshot"),
+        ),
+      });
+    }),
+  );
+
+  effectIt.effect("sends a follow-up into a running turn without a start snapshot", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const startTurn = (messageId: string, commandId: string) =>
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(commandId),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId(messageId),
+            role: "user",
+            text: messageId,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+
+      yield* startTurn("user-message-first", "cmd-turn-start-first");
+      yield* Effect.promise(() => waitFor(() => harness.callOrder.length === 2));
+      expect(harness.callOrder).toEqual(["captureCheckpoint", "sendTurn"]);
+
+      // Codex accepts a message while its turn runs and folds it into that turn:
+      // the running turn keeps the snapshot it started with, so a second one
+      // would only ever be an orphan ref, or, keyed by count, the tree mid-turn.
+      harness.runtimeSessions[0] = {
+        ...harness.runtimeSessions[0]!,
+        activeTurnId: asTurnId("turn-1"),
+      };
+      yield* startTurn("user-message-follow-up", "cmd-turn-start-follow-up");
+      yield* Effect.promise(() => waitFor(() => harness.callOrder.length === 3));
+      expect(harness.callOrder).toEqual(["captureCheckpoint", "sendTurn", "sendTurn"]);
+    }),
+  );
+
+  effectIt.effect("sends the turn when the start snapshot fails", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() =>
+        createHarness({ captureCheckpointEffect: () => Effect.die(new Error("disk full")) }),
+      );
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-snapshot-fails"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-snapshot-fails"),
+          role: "user",
+          text: "edit a file",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      // The turn is the user's; a snapshot that cannot be taken costs the card
+      // its base (the completion diffs from the previous checkpoint), not the turn.
+      yield* Effect.promise(() => waitFor(() => harness.callOrder.length === 2));
+      expect(harness.callOrder).toEqual(["captureCheckpoint", "sendTurn"]);
+    }),
+  );
+
+  effectIt.effect("drops the start snapshot when the provider refuses the turn", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          sendTurnEffect: () =>
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: "codex",
+                method: "sendTurn",
+                detail: "refused",
+              }),
+            ),
+        }),
+      );
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-refused"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-refused"),
+          role: "user",
+          text: "edit a file",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      // No turn will complete and consume it; left behind it is an orphan ref.
+      yield* Effect.promise(() =>
+        waitFor(() => harness.deleteCheckpointRefs.mock.calls.length === 1),
+      );
+      expect(harness.deleteCheckpointRefs.mock.calls[0]?.[0]).toEqual({
+        cwd: "/tmp/provider-project",
+        checkpointRefs: [
+          pendingTurnStartCheckpointRef(
+            ThreadId.make("thread-1"),
+            asMessageId("user-message-refused"),
+          ),
+        ],
+      });
+    }),
+  );
 
   effectIt.effect("retains a turn dispatched immediately after start until activation", () =>
     Effect.gen(function* () {
