@@ -25,17 +25,35 @@ on:
     branches: [main]
 
 concurrency:
-  # CANCEL PR RUNS, NEVER MAIN. `group` keys on `github.ref`, which is
-  # `refs/heads/main` for EVERY merge, so a bare `cancel-in-progress: true`
-  # makes each merge cancel the one before it. That was survivable while the
-  # longest job here was 20 minutes; the sweep below runs to 24 (measured in
-  # CI), so merging a second PR inside that window would leave main with a
-  # sweep that never finishes — an exit code with no reader, which is the
-  # failure the sweep job exists to remove.
-  # Upstream's `ci.yml:12-14` is guarded twice: its group carries
-  # `github.sha` on a push, so merges never share a group, AND its
-  # cancel-in-progress is this same expression. One of the two is enough.
-  group: fork-ci-${{ github.ref }}
+  # TWO MECHANISMS, AND THEY DECIDE DIFFERENT THINGS. They were conflated here
+  # once, which is why this says which is which. Both are upstream's
+  # `ci.yml:12-14` verbatim but for the `fork-ci-` prefix.
+  #
+  #   `cancel-in-progress` decides what happens to an ALREADY-RUNNING run when
+  #   a newer one joins its group. It does NOT decide what happens to a run
+  #   that is merely PENDING: an existing pending run in the group is cancelled
+  #   and replaced whatever this says, because `queue` defaults to `single`.
+  #   `release.yml:35` is the one place in this repo that lifts that, with
+  #   `queue: max`. Here the value is false on push, which is the value that
+  #   never kills a verdict that is already being computed.
+  #
+  #   `group` decides whether two runs COMPETE AT ALL. Keying it on
+  #   `github.ref` put every merge in one group (`refs/heads/main`). Two merges
+  #   inside one sweep window meant the second WAITED. Three meant the second's
+  #   run was cancelled while still pending and its verdict never existed at
+  #   all — an exit code with no reader, which is the failure the sweep job
+  #   below exists to prevent.
+  #
+  # Upstream's expression fixes that: `pull_request` resolves to the PR number,
+  # so pushes to one PR still supersede each other exactly as the ref-based
+  # group did; a push falls through to `github.sha`, so two MERGES never share
+  # a group and main's runs proceed in parallel.
+  #
+  # Two push runs at ONE sha DO share a group, and that has happened on this
+  # repo — measured, see `t3_bot-bfhh`. So the push arm of `cancel-in-progress`
+  # is reached, and on those runs it is what decides between them. Asserted
+  # together with `group` because reverting either one alone breaks the pair.
+  group: fork-ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
