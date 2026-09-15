@@ -107,13 +107,13 @@ const layer = it.layer(
   OrchestrationEventStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
 );
 
-// Three tests that read the whole log, or poison it, get a block each. The
-// database behind a `layer(...)` block is shared by every test in it, so a
-// global read or a total count in one test sees the rows another test
-// appended, and an invalid-JSON row planted by one test fails every later
-// global read, so the block's outcome depended on the shuffle order (bead
-// t3_bot-cvg5 carries the seeds). Reading from 0 in a block of one is the
-// assertion that the database holds only the test's own rows.
+// Three tests that read the whole log, or poison it with an invalid-JSON row,
+// get a block each; the comment above the `unknown event type` block states
+// why a block is the unit of isolation, and bead t3_bot-cvg5 carries the
+// shuffle seeds. They keep the bare suite name instead of taking a descriptor
+// because a `layer(...)` name is the prefix of its tests' `fullName` and the
+// count gate compares that name, while the database is built per `layer(...)`
+// call, not per name, so same-named blocks still get a database each.
 layer("OrchestrationEventStore", (it) => {
   it.effect("stores json columns as strings and replays CLI-origin events", () =>
     Effect.gen(function* () {
