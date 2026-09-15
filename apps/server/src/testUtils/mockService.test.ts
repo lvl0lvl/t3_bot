@@ -12,6 +12,16 @@ class Probe extends Context.Service<
   }
 >()("t3/testUtils/mockService.test/Probe") {}
 
+const symMember: unique symbol = Symbol("t3/testUtils/mockService.test/symMember");
+
+class SymProbe extends Context.Service<
+  SymProbe,
+  {
+    readonly label: string;
+    readonly [symMember]: Effect.Effect<string>;
+  }
+>()("t3/testUtils/mockService.test/SymProbe") {}
+
 describe("mockService", () => {
   it.effect("a stubbed member answers and an unstubbed one dies with Layer.mock's message", () =>
     Effect.gen(function* () {
@@ -50,6 +60,50 @@ describe("mockService", () => {
   // unused (TS2578), which is a typecheck failure; the Layer.mock line is
   // the base behaviour, an omitted member compiling clean, that the helper
   // exists to replace.
+  it.effect("an impostor object carrying the sentinel's brand is dropped, not forwarded", () =>
+    Effect.gen(function* () {
+      // What a second instance of mockService.ts hands a stub: a different
+      // object with the same `Symbol.for` brand. Identity says "not the
+      // sentinel" and forwards it, and the caller yields a plain object.
+      const impostor = {
+        [Symbol.for("t3/testUtils/unstubbed")]: true,
+      } as unknown as typeof unstubbed;
+      const layer = mockService(Probe)({
+        label: "probe",
+        ping: Effect.succeed("pinged"),
+        pong: impostor,
+      });
+      const exit = yield* Effect.gen(function* () {
+        const probe = yield* Probe;
+        return yield* probe.pong(1);
+      }).pipe(Effect.provide(layer), Effect.exit);
+      assert.isTrue(Exit.isFailure(exit));
+      const defect = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
+      assert.instanceOf(defect, Error);
+      assert.equal(defect.name, "UnimplementedError");
+      assert.equal(
+        defect.message,
+        't3/testUtils/mockService.test/Probe: Unimplemented method "pong"',
+      );
+    }),
+  );
+
+  it.effect("a symbol-keyed member with a real implementation answers", () =>
+    Effect.gen(function* () {
+      // Object.entries sees string keys only, so a stub built from it drops
+      // this member and the read dies as unimplemented instead of answering.
+      const layer = mockService(SymProbe)({
+        label: "sym",
+        [symMember]: Effect.succeed("symbolic"),
+      });
+      const answered = yield* Effect.gen(function* () {
+        const probe = yield* SymProbe;
+        return yield* probe[symMember];
+      }).pipe(Effect.provide(layer));
+      assert.equal(answered, "symbolic");
+    }),
+  );
+
   it("names every member at typecheck, where Layer.mock does not", () => {
     // @ts-expect-error `pong` is missing: TotalStub names every member.
     const omitted = mockService(Probe)({ label: "probe", ping: Effect.succeed("") });

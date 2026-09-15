@@ -42,11 +42,21 @@ export type TotalStub<Shape> = {
   readonly [K in keyof Shape]: Shape[K] extends EffectfulMember ? Shape[K] | Unstubbed : Shape[K];
 };
 
+// By the brand, not by identity: a second instance of this module (a
+// duplicated copy under a different resolved path) mints a second
+// `unstubbed` object, and an identity comparison forwards it to Layer.mock,
+// which hands the caller an object where an Effect was expected.
+const isUnstubbed = (member: unknown): member is Unstubbed =>
+  typeof member === "object" && member !== null && UnstubbedId in member;
+
 export const mockService =
   <Id, Shape extends object>(service: Context.Key<Id, Shape>) =>
-  (stub: TotalStub<Shape>): Layer.Layer<Id> =>
-    Layer.mock(service)(
-      Object.fromEntries(
-        Object.entries(stub).filter(([, member]) => member !== unstubbed),
-      ) as Layer.PartialEffectful<Shape>,
-    );
+  (stub: TotalStub<Shape>): Layer.Layer<Id> => {
+    // Reflect.ownKeys, not Object.entries: a symbol-keyed member with a real
+    // implementation is dropped by Object.entries and dies as unimplemented.
+    const rest = { ...stub } as Record<PropertyKey, unknown>;
+    for (const key of Reflect.ownKeys(rest)) {
+      if (isUnstubbed(rest[key])) delete rest[key];
+    }
+    return Layer.mock(service)(rest as Layer.PartialEffectful<Shape>);
+  };
