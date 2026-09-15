@@ -516,7 +516,10 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         // A project rooted at a subdirectory of a repository. `add -A -- .`
         // only resolves the unmerged entries under it; a temp index carrying
         // the live index's unmerged entries outside it makes `write-tree`
-        // refuse the whole capture for as long as the conflict lasts.
+        // refuse the whole capture for as long as the conflict lasts. Drop
+        // the `-- .` pathspec and plain `add -A` resolves the unmerged entry
+        // outside the directory from the worktree, committing the conflict
+        // markers into the checkpoint tree.
         yield* initRepoWithCommit(tmp);
         yield* fileSystem.makeDirectory(NodePath.join(tmp, "proj"));
         yield* writeTextFile(NodePath.join(tmp, "proj", "p.txt"), "p\n");
@@ -540,6 +543,7 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         });
 
         expect(yield* git(tmp, ["show", `${checkpointRef}:proj/p.txt`])).toBe("edited");
+        expect(yield* git(tmp, ["show", `${checkpointRef}:other.txt`])).toBe("main");
       }),
     );
 
