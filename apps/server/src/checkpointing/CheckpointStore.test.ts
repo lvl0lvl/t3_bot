@@ -706,10 +706,11 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
           yield* initRepoWithCommit(tmp);
           const checkpointStore = yield* CheckpointStore.CheckpointStore;
           const checkpointRef = captureRef("checkpoint-capture-listing-cap");
-          // VcsProcess runs a command at 1,000,000 output bytes by default,
-          // truncating without a marker. A check that lists the index for
-          // flags sees the entries before the cut and passes on the ones
-          // after it. 4,200 entries of 252 bytes put the flagged one past it.
+          // The runner truncates a command's output at its default cap
+          // without a marker, so a check that lists the index for flags sees
+          // only the entries before the cut. The fixture is past the cap only
+          // if the default read is cut before the flagged entry, which the
+          // two reads below measure instead of assuming.
           const pad = "p".repeat(240);
           for (let index = 0; index < 4_200; index += 1) {
             yield* writeTextFile(
@@ -722,9 +723,13 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
           yield* git(tmp, ["commit", "-q", "-m", "pad the listing"]);
           yield* git(tmp, ["update-index", "--assume-unchanged", "zz-last.txt"]);
           yield* writeTextFile(NodePath.join(tmp, "zz-last.txt"), "edited by the turn\n");
-          const listing = yield* git(tmp, ["ls-files", "-v", "-z"], { maxOutputBytes: 8_000_000 });
-          expect(listing.length).toBeGreaterThan(1_000_000);
-          expect(listing.endsWith("h zz-last.txt\0")).toBe(true);
+          const uncapped = yield* git(tmp, ["ls-files", "-v", "-z"], {
+            maxOutputBytes: 8_000_000,
+          });
+          const atDefaultCap = yield* git(tmp, ["ls-files", "-v", "-z"]);
+          expect(uncapped.endsWith("h zz-last.txt\0")).toBe(true);
+          expect(atDefaultCap.length).toBeLessThan(uncapped.length);
+          expect(atDefaultCap.endsWith("h zz-last.txt\0")).toBe(false);
 
           yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
 
