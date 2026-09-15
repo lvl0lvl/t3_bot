@@ -14,6 +14,7 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { CursorDriver } from "./CursorDriver.ts";
 
@@ -23,7 +24,15 @@ const testLayer = ServerConfig.layerTest(process.cwd(), {
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(ServerSettingsService.layerTest()),
   Layer.provideMerge(
-    Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+    mockService(BackgroundPolicy.BackgroundPolicy)({
+      streamChanges: unstubbed,
+      subscribe: unstubbed,
+      hasDemand: unstubbed,
+      shouldRunOpportunisticWork: unstubbed,
+      reportClientActivity: unstubbed,
+      removeRpcClient: unstubbed,
+      reportHostPowerState: unstubbed,
+      snapshot: unstubbed,
       shouldRunScopeWork: () => Effect.succeed(false),
     }),
   ),

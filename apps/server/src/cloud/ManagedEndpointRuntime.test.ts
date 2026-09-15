@@ -14,6 +14,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as RelayClient from "@t3tools/shared/relayClient";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
 
 const relayClientAvailableLayer = Layer.succeed(
@@ -37,7 +38,11 @@ const runtimeDependencies = (
   Layer.mergeAll(
     Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
     relayClientLayer,
-    Layer.mock(ServerSecretStore.ServerSecretStore)({
+    mockService(ServerSecretStore.ServerSecretStore)({
+      set: unstubbed,
+      create: unstubbed,
+      getOrCreateRandom: unstubbed,
+      remove: unstubbed,
       get: () => Effect.succeed(Option.none()),
     }),
   );

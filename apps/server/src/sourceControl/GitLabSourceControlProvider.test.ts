@@ -1,16 +1,28 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as GitLabCli from "./GitLabCli.ts";
 import { parseGitLabAuthStatusHosts } from "./gitLabAuthStatus.ts";
 import * as GitLabSourceControlProvider from "./GitLabSourceControlProvider.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 function makeProvider(gitlab: Partial<GitLabCli.GitLabCli["Service"]>) {
   return GitLabSourceControlProvider.make.pipe(
-    Effect.provide(Layer.mock(GitLabCli.GitLabCli)(gitlab)),
+    Effect.provide(
+      mockService(GitLabCli.GitLabCli)({
+        checkoutMergeRequest: unstubbed,
+        createMergeRequest: unstubbed,
+        createRepository: unstubbed,
+        execute: unstubbed,
+        getDefaultBranch: unstubbed,
+        getMergeRequest: unstubbed,
+        getRepositoryCloneUrls: unstubbed,
+        listMergeRequests: unstubbed,
+        ...gitlab,
+      }),
+    ),
   );
 }
 

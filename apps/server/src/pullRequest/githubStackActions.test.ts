@@ -1,16 +1,30 @@
 import { expect, it } from "@effect/vitest";
-import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import { runGitHubStackAction as runStackAction } from "./githubStackActions.ts";
 
 const runGitHubStackAction = (
   execute: GitHubCli.GitHubCli["Service"]["execute"],
   input: Parameters<typeof runStackAction>[0],
-) => runStackAction(input).pipe(Effect.provide(Layer.mock(GitHubCli.GitHubCli)({ execute })));
+) =>
+  runStackAction(input).pipe(
+    Effect.provide(
+      mockService(GitHubCli.GitHubCli)({
+        createPullRequest: unstubbed,
+        getDefaultBranch: unstubbed,
+        checkoutPullRequest: unstubbed,
+        listOpenPullRequests: unstubbed,
+        getPullRequest: unstubbed,
+        getRepositoryCloneUrls: unstubbed,
+        createRepository: unstubbed,
+        execute,
+      }),
+    ),
+  );
 
 const stack = [
   {

@@ -12,6 +12,7 @@ import { McpSchema, McpServer } from "effect/unstable/ai";
 
 import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 
@@ -77,7 +78,16 @@ new DataView(png.buffer).setUint32(12, 0x49484452);
 new DataView(png.buffer).setUint32(16, 1206);
 new DataView(png.buffer).setUint32(20, 2622);
 
-const DeviceServiceMock = Layer.mock(DeviceService.DeviceService)({
+const DeviceServiceMock = mockService(DeviceService.DeviceService)({
+  action: unstubbed,
+  readiness: unstubbed,
+  readinessIfSupported: unstubbed,
+  agentReadinessIfSupported: unstubbed,
+  currentReadiness: unstubbed,
+  subscribe: unstubbed,
+  configure: unstubbed,
+  shutdown: unstubbed,
+  detail: unstubbed,
   state: Effect.succeed(state),
   list: Effect.succeed(state),
   open: (input) =>
@@ -138,7 +148,22 @@ it.effect("registers the device tools and returns the screenshot as image conten
 );
 
 it.effect("rejects unavailable agent access before booting or opening a device", () => {
-  const unavailable = Layer.mock(DeviceService.DeviceService)({
+  const unavailable = mockService(DeviceService.DeviceService)({
+    agentReadinessIfSupported: unstubbed,
+    currentReadiness: unstubbed,
+    sessionsForThread: unstubbed,
+    action: unstubbed,
+    screenshot: unstubbed,
+    readiness: unstubbed,
+    readinessIfSupported: unstubbed,
+    configure: unstubbed,
+    close: unstubbed,
+    shutdown: unstubbed,
+    detail: unstubbed,
+    agentCli: unstubbed,
+    testHost: unstubbed,
+    state: unstubbed,
+    subscribe: unstubbed,
     list: Effect.succeed(state),
     agentTarget: () =>
       Effect.fail(

@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 
 import { ServerConfig } from "../config.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as ReviewService from "./ReviewService.ts";
@@ -17,7 +18,7 @@ function makeLayer(input: {
 }) {
   return ReviewService.layer.pipe(
     Layer.provide(
-      Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+      mockService(VcsDriverRegistry.VcsDriverRegistry)({
         get: () => Effect.die("unexpected VCS registry get"),
         resolve: () => Effect.die("unexpected VCS registry resolve"),
         detect: (request) =>
@@ -27,7 +28,46 @@ function makeLayer(input: {
           }),
       }),
     ),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+    Layer.provide(
+      mockService(GitVcsDriver.GitVcsDriver)({
+        createRef: unstubbed,
+        switchRef: unstubbed,
+        initRepo: unstubbed,
+        listLocalBranchNames: unstubbed,
+        setBranchUpstream: unstubbed,
+        removeWorktree: unstubbed,
+        pruneWorktrees: unstubbed,
+        renameBranch: unstubbed,
+        remoteBranchExists: unstubbed,
+        resolveRemoteTrackingCommit: unstubbed,
+        fetchRemoteBranch: unstubbed,
+        fetchRemoteTrackingBranch: unstubbed,
+        resolvePrimaryRemoteName: unstubbed,
+        resolveDefaultBranchName: unstubbed,
+        fetchRemote: unstubbed,
+        remoteExists: unstubbed,
+        fetchPullRequestHeadCommit: unstubbed,
+        resolveCommit: unstubbed,
+        refreshCheckedOutBranch: unstubbed,
+        ensureRemote: unstubbed,
+        listRefs: unstubbed,
+        pullCurrentBranch: unstubbed,
+        createWorktree: unstubbed,
+        fetchPullRequestBranch: unstubbed,
+        readRangeContext: unstubbed,
+        getReviewDiffPreview: unstubbed,
+        getReviewDiffFileContents: unstubbed,
+        readConfigValue: unstubbed,
+        statusDetailsRemote: unstubbed,
+        prepareCommitContext: unstubbed,
+        commit: unstubbed,
+        pushCurrentBranch: unstubbed,
+        execute: unstubbed,
+        status: unstubbed,
+        statusDetails: unstubbed,
+        statusDetailsLocal: unstubbed,
+      }),
+    ),
     Layer.provide(ServerConfig.layerTest(input.workspaceRoot, input.baseDir)),
     Layer.provideMerge(NodeServices.layer),
   );

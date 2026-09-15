@@ -35,6 +35,7 @@ import {
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import { AntigravityDriver } from "./AntigravityDriver.ts";
+import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 
 const hostPlatform = HostProcessPlatform.defaultValue();
 const windowsHost = hostPlatform === "win32";
@@ -127,7 +128,13 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     handle: ChildProcessSpawner.ChildProcessHandle;
   }> = [];
 
-  const installation = Layer.mock(AntigravityInstallation)({
+  const installation = mockService(AntigravityInstallation)({
+    changes: unstubbed,
+    remove: unstubbed,
+    resolve: unstubbed,
+    start: unstubbed,
+    cancel: unstubbed,
+    state: unstubbed,
     managedDirectory: root,
     acquire: (binaryPath, environment) =>
       Effect.gen(function* () {
@@ -233,7 +240,15 @@ const testLayer = ServerConfig.layerTest(process.cwd(), {
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(ServerSettingsService.layerTest()),
   Layer.provideMerge(
-    Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+    mockService(BackgroundPolicy.BackgroundPolicy)({
+      streamChanges: unstubbed,
+      subscribe: unstubbed,
+      hasDemand: unstubbed,
+      shouldRunOpportunisticWork: unstubbed,
+      reportClientActivity: unstubbed,
+      removeRpcClient: unstubbed,
+      reportHostPowerState: unstubbed,
+      snapshot: unstubbed,
       shouldRunScopeWork: () => Effect.succeed(false),
     }),
   ),

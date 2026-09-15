@@ -7,6 +7,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import * as VcsProcess from "./VcsProcess.ts";
 import * as VcsProjectConfig from "./VcsProjectConfig.ts";
 import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
+import { mockService } from "../testUtils/mockService.ts";
 
 const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
   exitCode: ChildProcessSpawner.ExitCode(0),
@@ -24,12 +25,12 @@ describe("VcsDriverRegistry", () => {
     const layer = Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
       Layer.provide(NodeServices.layer),
       Layer.provide(
-        Layer.mock(VcsProjectConfig.VcsProjectConfig)({
+        mockService(VcsProjectConfig.VcsProjectConfig)({
           resolveKind: (input) => Effect.succeed(input.requestedKind ?? "auto"),
         }),
       ),
       Layer.provide(
-        Layer.mock(VcsProcess.VcsProcess)({
+        mockService(VcsProcess.VcsProcess)({
           run: () => Effect.succeed(processOutput("")),
         }),
       ),
@@ -48,12 +49,12 @@ describe("VcsDriverRegistry", () => {
     const layer = Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
       Layer.provide(NodeServices.layer),
       Layer.provide(
-        Layer.mock(VcsProjectConfig.VcsProjectConfig)({
+        mockService(VcsProjectConfig.VcsProjectConfig)({
           resolveKind: (input) => Effect.succeed(input.requestedKind ?? "auto"),
         }),
       ),
       Layer.provide(
-        Layer.mock(VcsProcess.VcsProcess)({
+        mockService(VcsProcess.VcsProcess)({
           run: (input) =>
             Effect.sync(() => {
               calls.push(input);
@@ -98,12 +99,12 @@ describe("VcsDriverRegistry", () => {
     const layer = Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
       Layer.provide(NodeServices.layer),
       Layer.provide(
-        Layer.mock(VcsProjectConfig.VcsProjectConfig)({
+        mockService(VcsProjectConfig.VcsProjectConfig)({
           resolveKind: (input) => Effect.succeed(input.requestedKind ?? "auto"),
         }),
       ),
       Layer.provide(
-        Layer.mock(VcsProcess.VcsProcess)({
+        mockService(VcsProcess.VcsProcess)({
           run: (input) =>
             Effect.sync(() => {
               const command = normalizeGitArgs(input.args).join(" ");

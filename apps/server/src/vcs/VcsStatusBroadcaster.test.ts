@@ -28,6 +28,31 @@ import * as VcsStatusBroadcaster from "./VcsStatusBroadcaster.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+import { mockService, type TotalStub, unstubbed } from "../testUtils/mockService.ts";
+
+const gitWorkflowServiceUnstubbed = {
+  pruneWorktrees: unstubbed,
+  createRef: unstubbed,
+  switchRef: unstubbed,
+  renameBranch: unstubbed,
+  remoteExists: unstubbed,
+  remoteBranchExists: unstubbed,
+  resolveRemoteTrackingCommit: unstubbed,
+  removeWorktree: unstubbed,
+  preparePullRequestThread: unstubbed,
+  listRefs: unstubbed,
+  createWorktree: unstubbed,
+  fetchRemote: unstubbed,
+  status: unstubbed,
+  pullCurrentBranch: unstubbed,
+  runStackedAction: unstubbed,
+  resolvePullRequest: unstubbed,
+  localStatus: unstubbed,
+  remoteStatus: unstubbed,
+  invalidateLocalStatus: unstubbed,
+  invalidateRemoteStatus: unstubbed,
+  invalidateStatus: unstubbed,
+} satisfies TotalStub<GitWorkflowService.GitWorkflowService["Service"]>;
 
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 
@@ -83,7 +108,8 @@ function makeTestLayer(state: {
     Layer.provideMerge(NodeServices.layer),
     Layer.provide(makeBackgroundPolicyLayer(() => state.backgroundWorkEnabled !== false)),
     Layer.provide(
-      Layer.mock(GitWorkflowService.GitWorkflowService)({
+      mockService(GitWorkflowService.GitWorkflowService)({
+        ...gitWorkflowServiceUnstubbed,
         localStatus: () =>
           Effect.sync(() => {
             state.localStatusCalls += 1;
@@ -114,7 +140,8 @@ function makeTestLayer(state: {
 }
 
 function makeBackgroundPolicyLayer(shouldRunScopeWork: (scope: BackgroundScope) => boolean) {
-  return Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+  return mockService(BackgroundPolicy.BackgroundPolicy)({
+    subscribe: unstubbed,
     reportClientActivity: () => Effect.void,
     removeRpcClient: () => Effect.void,
     reportHostPowerState: () => Effect.void,
@@ -165,7 +192,8 @@ describe("VcsStatusBroadcaster", () => {
           }),
         ),
         Layer.provide(
-          Layer.mock(GitWorkflowService.GitWorkflowService)({
+          mockService(GitWorkflowService.GitWorkflowService)({
+            ...gitWorkflowServiceUnstubbed,
             localStatus: () => Effect.succeed(localStatus),
             remoteStatus: () => Effect.succeed(remoteStatus),
             invalidateLocalStatus: () => Effect.void,
@@ -276,7 +304,8 @@ describe("VcsStatusBroadcaster", () => {
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(makeBackgroundPolicyLayer(() => true)),
       Layer.provide(
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
+        mockService(GitWorkflowService.GitWorkflowService)({
+          ...gitWorkflowServiceUnstubbed,
           localStatus: () => Effect.succeed(baseLocalStatus),
           remoteStatus: () =>
             Effect.gen(function* () {
@@ -322,7 +351,8 @@ describe("VcsStatusBroadcaster", () => {
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(makeBackgroundPolicyLayer(() => true)),
       Layer.provide(
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
+        mockService(GitWorkflowService.GitWorkflowService)({
+          ...gitWorkflowServiceUnstubbed,
           localStatus: () => Effect.succeed(baseLocalStatus),
           remoteStatus: () =>
             Effect.gen(function* () {
@@ -429,7 +459,8 @@ describe("VcsStatusBroadcaster", () => {
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(makeBackgroundPolicyLayer(() => true)),
       Layer.provide(
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
+        mockService(GitWorkflowService.GitWorkflowService)({
+          ...gitWorkflowServiceUnstubbed,
           localStatus: () =>
             Effect.sync(() => {
               state.localStatusCalls += 1;
@@ -539,7 +570,8 @@ describe("VcsStatusBroadcaster", () => {
         Layer.provideMerge(NodeServices.layer),
         Layer.provide(makeBackgroundPolicyLayer(() => true)),
         Layer.provide(
-          Layer.mock(GitWorkflowService.GitWorkflowService)({
+          mockService(GitWorkflowService.GitWorkflowService)({
+            ...gitWorkflowServiceUnstubbed,
             localStatus: (input) =>
               Effect.sync(() => {
                 seenCwds.push(input.cwd);
@@ -560,7 +592,7 @@ describe("VcsStatusBroadcaster", () => {
               Effect.sync(() => {
                 state.remoteInvalidationCalls += 1;
               }),
-          } satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>),
+          }),
         ),
       );
 
@@ -704,7 +736,8 @@ describe("VcsStatusBroadcaster", () => {
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(makeBackgroundPolicyLayer(() => true)),
       Layer.provide(
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
+        mockService(GitWorkflowService.GitWorkflowService)({
+          ...gitWorkflowServiceUnstubbed,
           localStatus: () =>
             Effect.sync(() => {
               state.localStatusCalls += 1;
@@ -904,7 +937,8 @@ describe("VcsStatusBroadcaster", () => {
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(makeBackgroundPolicyLayer(() => false)),
       Layer.provide(
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
+        mockService(GitWorkflowService.GitWorkflowService)({
+          ...gitWorkflowServiceUnstubbed,
           localStatus: () =>
             Effect.sync(() => {
               state.localStatusCalls += 1;
@@ -923,7 +957,7 @@ describe("VcsStatusBroadcaster", () => {
             Effect.sync(() => {
               state.remoteInvalidationCalls += 1;
             }),
-        } satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>),
+        }),
       ),
     );
 
@@ -957,7 +991,8 @@ describe("VcsStatusBroadcaster", () => {
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(makeBackgroundPolicyLayer(() => true)),
       Layer.provide(
-        Layer.mock(GitWorkflowService.GitWorkflowService)({
+        mockService(GitWorkflowService.GitWorkflowService)({
+          ...gitWorkflowServiceUnstubbed,
           localStatus: () =>
             Effect.sync(() => {
               state.localStatusCalls += 1;
@@ -987,7 +1022,7 @@ describe("VcsStatusBroadcaster", () => {
             Effect.sync(() => {
               state.remoteInvalidationCalls += 1;
             }),
-        } satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>),
+        }),
       ),
     );
 

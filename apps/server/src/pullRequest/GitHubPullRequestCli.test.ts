@@ -7,6 +7,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
 import * as GitHubGraphQlBudget from "../sourceControl/githubGraphQlBudget.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import * as GitHubPullRequestCli from "./GitHubPullRequestCli.ts";
 import { BASE_COMPARISON_GRAPHQL_QUERY } from "./gitHubPullRequestJson.ts";
 
@@ -21,7 +22,13 @@ const mockedGetPullRequest = vi.fn<GitHubCli.GitHubCli["Service"]["getPullReques
 const layer = it.layer(
   GitHubPullRequestCli.layer.pipe(
     Layer.provide(
-      Layer.mock(GitHubCli.GitHubCli)({
+      mockService(GitHubCli.GitHubCli)({
+        getDefaultBranch: unstubbed,
+        checkoutPullRequest: unstubbed,
+        listOpenPullRequests: unstubbed,
+        getRepositoryCloneUrls: unstubbed,
+        createRepository: unstubbed,
+        createPullRequest: unstubbed,
         execute: (input) =>
           input.args.some((arg) => arg.includes("query PullRequestStackMemberships"))
             ? mockedStackMemberships(input)

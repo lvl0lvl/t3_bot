@@ -18,6 +18,7 @@ import type { ProviderInstance } from "./ProviderDriver.ts";
 import { makeProviderInstallation } from "./providerInstallation.ts";
 import { ProviderInstanceRegistry } from "./Services/ProviderInstanceRegistry.ts";
 import { ProviderRegistry } from "./Services/ProviderRegistry.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const instanceId = ProviderInstanceId.make("antigravity");
 const driver = ProviderDriverKind.make("antigravity");
@@ -65,19 +66,30 @@ const makeHarness = Effect.fn("providerInstallation.test.makeHarness")(function*
     Effect.provide(
       Layer.mergeAll(
         settingsLayerTest(input.settings),
-        Layer.mock(ProviderInstanceRegistry)({
+        mockService(ProviderInstanceRegistry)({
+          listUnavailable: unstubbed,
+          streamChanges: unstubbed,
+          subscribeChanges: unstubbed,
           getInstance: (id) =>
             Effect.succeed(id === configured.instanceId ? configured : undefined),
           listInstances: Effect.succeed([configured]),
         }),
-        Layer.mock(ProviderRegistry)({
+        mockService(ProviderRegistry)({
+          setProviderMaintenanceActionState: unstubbed,
+          streamChanges: unstubbed,
+          getProviders: unstubbed,
+          refresh: unstubbed,
+          refreshWorkspaceSnapshot: unstubbed,
+          getProviderMaintenanceCapabilitiesForInstance: unstubbed,
           refreshInstance: () =>
             Effect.sync(() => {
               calls.push("refresh");
               return [];
             }),
         }),
-        Layer.mock(AntigravityInstallation)({
+        mockService(AntigravityInstallation)({
+          resolve: unstubbed,
+          acquire: unstubbed,
           managedDirectory: "/unused-managed-runtime",
           start: Effect.sync(() => {
             calls.push("start");

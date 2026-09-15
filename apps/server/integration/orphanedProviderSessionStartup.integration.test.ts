@@ -44,6 +44,7 @@ import * as ServerRuntimeStartup from "../src/serverRuntimeStartup.ts";
 import * as ServerSettings from "../src/serverSettings.ts";
 import * as AnalyticsService from "../src/telemetry/AnalyticsService.ts";
 import * as GitVcsDriver from "../src/vcs/GitVcsDriver.ts";
+import { mockService, unstubbed } from "../src/testUtils/mockService.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const projectId = ProjectId.make("project-startup-orphan");
@@ -69,7 +70,14 @@ const makePersistedRuntimeLayer = (dbPath: string) => {
 };
 
 const startupDependencies = Layer.mergeAll(
-  Layer.mock(Keybindings.Keybindings)({
+  mockService(Keybindings.Keybindings)({
+    streamChanges: unstubbed,
+    upsertKeybindingRule: unstubbed,
+    removeKeybindingRule: unstubbed,
+    ready: unstubbed,
+    syncDefaultKeybindingsOnStartup: unstubbed,
+    loadConfigState: unstubbed,
+    getSnapshot: unstubbed,
     start: Effect.void,
   }),
   ServerSettings.layerTest(),
@@ -90,10 +98,32 @@ const startupDependencies = Layer.mergeAll(
       capabilities: {},
     } as never),
   }),
-  Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+  mockService(EnvironmentAuth.EnvironmentAuth)({
+    authenticateHttpRequest: unstubbed,
+    authenticateWebSocketUpgrade: unstubbed,
+    issueWebSocketTicket: unstubbed,
+    revokeOtherSessionsExcept: unstubbed,
+    listClientSessions: unstubbed,
+    revokeClientSession: unstubbed,
+    revokeOtherClientSessions: unstubbed,
+    revokePairingLink: unstubbed,
+    issueSession: unstubbed,
+    listSessions: unstubbed,
+    revokeSession: unstubbed,
+    createPairingLink: unstubbed,
+    issuePairingCredential: unstubbed,
+    issueStartupPairingCredential: unstubbed,
+    listPairingLinks: unstubbed,
+    getDescriptor: unstubbed,
+    getSessionState: unstubbed,
+    createBrowserSession: unstubbed,
+    exchangeBootstrapCredentialForAccessToken: unstubbed,
     issueStartupPairingUrl: (baseUrl: string) => Effect.succeed(`${baseUrl}/pair`),
   }),
-  Layer.mock(ExternalLauncher.ExternalLauncher)({
+  mockService(ExternalLauncher.ExternalLauncher)({
+    resolveAvailableEditors: unstubbed,
+    resolveFileManagerRevealKind: unstubbed,
+    launchEditor: unstubbed,
     launchBrowser: () => Effect.void,
   }),
   Layer.succeed(ServiceLauncherClient.ServiceLauncherClient, {
@@ -109,7 +139,44 @@ const startupDependencies = Layer.mergeAll(
     }),
   ),
   AnalyticsService.layerTest,
-  Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+  mockService(GitVcsDriver.GitVcsDriver)({
+    createRef: unstubbed,
+    switchRef: unstubbed,
+    initRepo: unstubbed,
+    listLocalBranchNames: unstubbed,
+    setBranchUpstream: unstubbed,
+    removeWorktree: unstubbed,
+    pruneWorktrees: unstubbed,
+    renameBranch: unstubbed,
+    remoteBranchExists: unstubbed,
+    resolveRemoteTrackingCommit: unstubbed,
+    fetchRemoteBranch: unstubbed,
+    fetchRemoteTrackingBranch: unstubbed,
+    resolvePrimaryRemoteName: unstubbed,
+    resolveDefaultBranchName: unstubbed,
+    fetchRemote: unstubbed,
+    remoteExists: unstubbed,
+    fetchPullRequestHeadCommit: unstubbed,
+    resolveCommit: unstubbed,
+    refreshCheckedOutBranch: unstubbed,
+    ensureRemote: unstubbed,
+    listRefs: unstubbed,
+    pullCurrentBranch: unstubbed,
+    createWorktree: unstubbed,
+    fetchPullRequestBranch: unstubbed,
+    readRangeContext: unstubbed,
+    getReviewDiffPreview: unstubbed,
+    getReviewDiffFileContents: unstubbed,
+    readConfigValue: unstubbed,
+    statusDetailsRemote: unstubbed,
+    prepareCommitContext: unstubbed,
+    commit: unstubbed,
+    pushCurrentBranch: unstubbed,
+    execute: unstubbed,
+    status: unstubbed,
+    statusDetails: unstubbed,
+    statusDetailsLocal: unstubbed,
+  }),
   Layer.succeed(ProviderService.ProviderService, {
     startSession: () => Effect.die("unused"),
     sendTurn: () => Effect.die("unused"),

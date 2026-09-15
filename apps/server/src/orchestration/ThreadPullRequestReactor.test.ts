@@ -34,6 +34,7 @@ import { ServerActivation } from "../serverActivation.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 import * as ThreadPullRequestReactor from "./ThreadPullRequestReactor.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const NOW = "2026-09-01T12:00:00.000Z";
 const PROJECT_ID = ProjectId.make("project");
@@ -151,11 +152,39 @@ const makeHarness = Effect.fn("makeThreadPullRequestHarness")(function* (options
   const summaryCalls = yield* Ref.make<ReadonlyArray<PullRequestRef>>([]);
   let uuid = 0;
   const dependencies = Layer.mergeAll(
-    Layer.mock(ProjectionSnapshotQuery)({
+    mockService(ProjectionSnapshotQuery)({
+      getTurnStartMessage: unstubbed,
+      getThreadDetailById: unstubbed,
+      getThreadDetailSnapshot: unstubbed,
+      getThreadCheckpointContext: unstubbed,
+      getFullThreadDiffContext: unstubbed,
+      getThreadShellById: unstubbed,
+      getThreadRuntimeContext: unstubbed,
+      getActiveProjectByWorkspaceRoot: unstubbed,
+      getProjectShellById: unstubbed,
+      getFirstActiveThreadIdByProjectId: unstubbed,
+      getImportedAgentSessionSources: unstubbed,
+      searchThreads: unstubbed,
+      getSnapshotSequence: unstubbed,
+      getCounts: unstubbed,
+      getEventReplayStats: unstubbed,
+      getUserInputActivity: unstubbed,
+      getCommandReadModel: unstubbed,
+      getSnapshot: unstubbed,
+      getArchivedShellSnapshot: unstubbed,
       getShellSnapshot: () =>
         Ref.get(snapshots).pipe(Effect.tap(() => Queue.offer(reads, undefined))),
     }),
-    Layer.mock(GitManager)({
+    mockService(GitManager)({
+      invalidateRemoteStatus: unstubbed,
+      invalidateStatus: unstubbed,
+      resolvePullRequest: unstubbed,
+      preparePullRequestThread: unstubbed,
+      runStackedAction: unstubbed,
+      status: unstubbed,
+      localStatus: unstubbed,
+      remoteStatus: unstubbed,
+      invalidateLocalStatus: unstubbed,
       branchPullRequest: (input, readOptions) =>
         Ref.update(branchCalls, (calls) => [
           ...calls,
@@ -164,7 +193,31 @@ const makeHarness = Effect.fn("makeThreadPullRequestHarness")(function* (options
           Effect.andThen(options.branchPullRequest?.(input, readOptions) ?? Effect.succeed(null)),
         ),
     }),
-    Layer.mock(PullRequestService)({
+    mockService(PullRequestService)({
+      requestReviewers: unstubbed,
+      labelCandidates: unstubbed,
+      setLabels: unstubbed,
+      invalidate: unstubbed,
+      replyToThread: unstubbed,
+      setThreadResolution: unstubbed,
+      setReaction: unstubbed,
+      reviewerCandidates: unstubbed,
+      update: unstubbed,
+      comment: unstubbed,
+      updateComment: unstubbed,
+      submitReview: unstubbed,
+      threadComments: unstubbed,
+      diff: unstubbed,
+      diffFileContents: unstubbed,
+      runAction: unstubbed,
+      subscribeRefreshes: unstubbed,
+      refreshAfterTurn: unstubbed,
+      detail: unstubbed,
+      activity: unstubbed,
+      list: unstubbed,
+      listStats: unstubbed,
+      stack: unstubbed,
+      subscribeMerges: unstubbed,
       summary: (input, readOptions) =>
         Ref.update(summaryCalls, (calls) => [...calls, input]).pipe(
           Effect.andThen(
@@ -172,12 +225,17 @@ const makeHarness = Effect.fn("makeThreadPullRequestHarness")(function* (options
           ),
         ),
     }),
-    Layer.mock(RepositoryIdentityResolver)({
+    mockService(RepositoryIdentityResolver)({
       resolve:
         options.resolveRepositoryIdentity ??
         (() => Effect.succeed(options.project?.repositoryIdentity ?? project.repositoryIdentity)),
     }),
-    Layer.mock(OrchestrationEngineService)({
+    mockService(OrchestrationEngineService)({
+      readEvents: unstubbed,
+      readThreadEvents: unstubbed,
+      getThreadReplayStats: unstubbed,
+      streamDomainEvents: unstubbed,
+      latestSequence: unstubbed,
       subscribeDomainEvents: PubSub.subscribe(events).pipe(
         Effect.map((subscription) => Stream.fromSubscription(subscription)),
       ),

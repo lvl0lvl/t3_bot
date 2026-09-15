@@ -1,14 +1,27 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import * as BitbucketApi from "./BitbucketApi.ts";
 import * as BitbucketSourceControlProvider from "./BitbucketSourceControlProvider.ts";
 
 function makeProvider(bitbucket: Partial<BitbucketApi.BitbucketApi["Service"]>) {
   return BitbucketSourceControlProvider.make.pipe(
-    Effect.provide(Layer.mock(BitbucketApi.BitbucketApi)(bitbucket)),
+    Effect.provide(
+      mockService(BitbucketApi.BitbucketApi)({
+        checkoutPullRequest: unstubbed,
+        createPullRequest: unstubbed,
+        createRepository: unstubbed,
+        getDefaultBranch: unstubbed,
+        getPullRequest: unstubbed,
+        getRepositoryCloneUrls: unstubbed,
+        listPullRequests: unstubbed,
+        probeAuth: unstubbed,
+        request: unstubbed,
+        ...bitbucket,
+      }),
+    ),
   );
 }
 

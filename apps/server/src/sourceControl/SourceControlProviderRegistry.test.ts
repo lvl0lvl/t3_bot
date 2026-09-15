@@ -8,6 +8,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { VcsRepositoryDetectionError } from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import type * as VcsDriver from "../vcs/VcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -57,7 +58,8 @@ function makeRegistry(input: {
       }),
   } satisfies Partial<VcsDriver.VcsDriver["Service"]>;
 
-  const registryLayer = Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+  const registryLayer = mockService(VcsDriverRegistry.VcsDriverRegistry)({
+    detect: unstubbed,
     get: () => Effect.succeed(driver as unknown as VcsDriver.VcsDriver["Service"]),
     resolve:
       input.resolve ??
@@ -78,7 +80,7 @@ function makeRegistry(input: {
         })),
   });
 
-  const processLayer = Layer.mock(VcsProcess.VcsProcess)({
+  const processLayer = mockService(VcsProcess.VcsProcess)({
     run: () => Effect.succeed(processOutput("")),
     ...input.process,
   });
@@ -88,10 +90,47 @@ function makeRegistry(input: {
       Layer.mergeAll(
         registryLayer,
         processLayer,
-        Layer.mock(AzureDevOpsCli.AzureDevOpsCli)({}),
-        Layer.mock(BitbucketApi.BitbucketApi)({}),
-        Layer.mock(GitHubCli.GitHubCli)({}),
-        Layer.mock(GitLabCli.GitLabCli)({}),
+        mockService(AzureDevOpsCli.AzureDevOpsCli)({
+          createRepository: unstubbed,
+          createPullRequest: unstubbed,
+          getDefaultBranch: unstubbed,
+          checkoutPullRequest: unstubbed,
+          execute: unstubbed,
+          listPullRequests: unstubbed,
+          getPullRequest: unstubbed,
+          getRepositoryCloneUrls: unstubbed,
+        }),
+        mockService(BitbucketApi.BitbucketApi)({
+          getRepositoryCloneUrls: unstubbed,
+          createRepository: unstubbed,
+          createPullRequest: unstubbed,
+          getDefaultBranch: unstubbed,
+          checkoutPullRequest: unstubbed,
+          probeAuth: unstubbed,
+          request: unstubbed,
+          listPullRequests: unstubbed,
+          getPullRequest: unstubbed,
+        }),
+        mockService(GitHubCli.GitHubCli)({
+          createRepository: unstubbed,
+          createPullRequest: unstubbed,
+          getDefaultBranch: unstubbed,
+          checkoutPullRequest: unstubbed,
+          execute: unstubbed,
+          listOpenPullRequests: unstubbed,
+          getPullRequest: unstubbed,
+          getRepositoryCloneUrls: unstubbed,
+        }),
+        mockService(GitLabCli.GitLabCli)({
+          createRepository: unstubbed,
+          createMergeRequest: unstubbed,
+          getDefaultBranch: unstubbed,
+          checkoutMergeRequest: unstubbed,
+          execute: unstubbed,
+          listMergeRequests: unstubbed,
+          getMergeRequest: unstubbed,
+          getRepositoryCloneUrls: unstubbed,
+        }),
         ServerConfig.layerTest(process.cwd(), {
           prefix: "t3-source-control-registry-test-",
         }).pipe(Layer.provide(NodeServices.layer)),

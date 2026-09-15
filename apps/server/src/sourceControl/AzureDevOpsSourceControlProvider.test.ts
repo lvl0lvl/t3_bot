@@ -1,14 +1,26 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import * as AzureDevOpsCli from "./AzureDevOpsCli.ts";
 import * as AzureDevOpsSourceControlProvider from "./AzureDevOpsSourceControlProvider.ts";
 
 function makeProvider(azure: Partial<AzureDevOpsCli.AzureDevOpsCli["Service"]>) {
   return AzureDevOpsSourceControlProvider.make.pipe(
-    Effect.provide(Layer.mock(AzureDevOpsCli.AzureDevOpsCli)(azure)),
+    Effect.provide(
+      mockService(AzureDevOpsCli.AzureDevOpsCli)({
+        checkoutPullRequest: unstubbed,
+        createPullRequest: unstubbed,
+        createRepository: unstubbed,
+        execute: unstubbed,
+        getDefaultBranch: unstubbed,
+        getPullRequest: unstubbed,
+        getRepositoryCloneUrls: unstubbed,
+        listPullRequests: unstubbed,
+        ...azure,
+      }),
+    ),
   );
 }
 

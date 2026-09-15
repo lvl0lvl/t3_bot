@@ -66,6 +66,7 @@ import { ServerConfig } from "../../config.ts";
 import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
+import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
@@ -367,7 +368,35 @@ describe("CheckpointReactor", () => {
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(RuntimeReceiptBusTest),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
-      Layer.provideMerge(Layer.mock(PullRequestService)({ refreshAfterTurn })),
+      Layer.provideMerge(
+        mockService(PullRequestService)({
+          requestReviewers: unstubbed,
+          labelCandidates: unstubbed,
+          setLabels: unstubbed,
+          invalidate: unstubbed,
+          replyToThread: unstubbed,
+          setThreadResolution: unstubbed,
+          setReaction: unstubbed,
+          reviewerCandidates: unstubbed,
+          update: unstubbed,
+          comment: unstubbed,
+          updateComment: unstubbed,
+          submitReview: unstubbed,
+          threadComments: unstubbed,
+          diff: unstubbed,
+          diffFileContents: unstubbed,
+          runAction: unstubbed,
+          subscribeMerges: unstubbed,
+          subscribeRefreshes: unstubbed,
+          detail: unstubbed,
+          activity: unstubbed,
+          list: unstubbed,
+          listStats: unstubbed,
+          summary: unstubbed,
+          stack: unstubbed,
+          refreshAfterTurn,
+        }),
+      ),
       Layer.provideMerge(vcsStatusBroadcasterLayer),
       Layer.provideMerge(CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistry.layer))),
       Layer.provideMerge(

@@ -5,6 +5,7 @@ import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
 
+import { mockService } from "../testUtils/mockService.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitHubCli from "./GitHubCli.ts";
 
@@ -20,7 +21,7 @@ const mockRun = vi.fn<VcsProcess.VcsProcess["Service"]["run"]>();
 
 const layer = GitHubCli.layer.pipe(
   Layer.provide(
-    Layer.mock(VcsProcess.VcsProcess)({
+    mockService(VcsProcess.VcsProcess)({
       run: mockRun,
     }),
   ),

@@ -19,6 +19,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 import type { AcpSessionRuntimeStartResult } from "../acp/AcpSessionRuntime.ts";
 import {
   buildAntigravityModelsFromSession,
@@ -102,7 +103,15 @@ const commands = [
 ] satisfies ReadonlyArray<EffectAcpSchema.AvailableCommand>;
 
 const testLayer = Layer.merge(
-  Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+  mockService(BackgroundPolicy.BackgroundPolicy)({
+    streamChanges: unstubbed,
+    subscribe: unstubbed,
+    hasDemand: unstubbed,
+    shouldRunOpportunisticWork: unstubbed,
+    reportClientActivity: unstubbed,
+    removeRpcClient: unstubbed,
+    reportHostPowerState: unstubbed,
+    snapshot: unstubbed,
     shouldRunScopeWork: () => Effect.succeed(false),
   }),
   ServerSettingsService.layerTest(),

@@ -1,19 +1,52 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import type { PullRequestReaction } from "@t3tools/contracts";
 
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
+import { mockService, type TotalStub, unstubbed } from "../testUtils/mockService.ts";
 import * as GitHubPullRequestCli from "./GitHubPullRequestCli.ts";
 import { gitHubViewerPermissions, loginAvatarUrl, make } from "./GitHubPullRequestProvider.ts";
 import type { GitHubReviewThreadComments } from "./gitHubPullRequestJson.ts";
+
+const gitHubPullRequestCliUnstubbed = {
+  setReviewThreadResolution: unstubbed,
+  setReaction: unstubbed,
+  updatePullRequest: unstubbed,
+  updateComment: unstubbed,
+  runPullRequestAction: unstubbed,
+  commentOnPullRequest: unstubbed,
+  submitReview: unstubbed,
+  replyToReviewThread: unstubbed,
+  listReviewerCandidates: unstubbed,
+  setReviewerRequest: unstubbed,
+  listLabelCandidates: unstubbed,
+  setLabels: unstubbed,
+  listActorAvatars: unstubbed,
+  getReviewThreadComments: unstubbed,
+  getRepositoryAccess: unstubbed,
+  getViewerAccess: unstubbed,
+  getPullRequestActivity: unstubbed,
+  getPullRequestDiff: unstubbed,
+  getPullRequestDiffFileContents: unstubbed,
+  listReviewThreadComments: unstubbed,
+  getPullRequestDetail: unstubbed,
+  listWorkflowRunsRequiringApproval: unstubbed,
+  getPullRequestStack: unstubbed,
+  getPullRequestBaseComparison: unstubbed,
+  getViewerLogin: unstubbed,
+  listPullRequests: unstubbed,
+  searchPullRequests: unstubbed,
+  listPullRequestStats: unstubbed,
+  getPullRequestSummary: unstubbed,
+} satisfies TotalStub<GitHubPullRequestCli.GitHubPullRequestCli["Service"]>;
 
 it.effect("uses one narrow read for a linked pull request summary", () =>
   Effect.gen(function* () {
     let summaryReads = 0;
     const provider = yield* make.pipe(
       Effect.provide(
-        Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+        mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+          ...gitHubPullRequestCliUnstubbed,
           getPullRequestSummary: () =>
             Effect.sync(() => {
               summaryReads += 1;
@@ -62,7 +95,8 @@ it.effect("declares host-native stacks and passes the one the CLI reads through"
     };
     const provider = yield* make.pipe(
       Effect.provide(
-        Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+        mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+          ...gitHubPullRequestCliUnstubbed,
           getPullRequestStack: (input) => Effect.succeed(input.number === 7 ? stack : null),
         }),
       ),
@@ -81,7 +115,8 @@ it.effect("reports a failed stack read against its own operation", () =>
   Effect.gen(function* () {
     const provider = yield* make.pipe(
       Effect.provide(
-        Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+        mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+          ...gitHubPullRequestCliUnstubbed,
           getPullRequestStack: () =>
             Effect.fail(
               new GitHubPullRequestCli.GitHubPullRequestReadError({
@@ -217,7 +252,8 @@ describe("gitHubViewerPermissions", () => {
       });
     }).pipe(
       Effect.provide(
-        Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+        mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+          ...gitHubPullRequestCliUnstubbed,
           getPullRequestDetail: () =>
             Effect.succeed({
               authorId: null,
@@ -299,7 +335,8 @@ describe("gitHubViewerPermissions", () => {
       ]);
     }).pipe(
       Effect.provide(
-        Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+        mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+          ...gitHubPullRequestCliUnstubbed,
           getPullRequestDetail: () =>
             Effect.succeed({
               authorId: null,
@@ -409,7 +446,8 @@ it.effect("does not classify same-repository gates as fork workflow approvals", 
     expect(detail.checks).toEqual([]);
   }).pipe(
     Effect.provide(
-      Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+      mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+        ...gitHubPullRequestCliUnstubbed,
         getPullRequestDetail: () => Effect.succeed({ ...openDetail, isCrossRepository: false }),
         getPullRequestBaseComparison: () => Effect.succeed({ behindBy: 0, viewerCanUpdate: true }),
         listWorkflowRunsRequiringApproval: () =>
@@ -447,7 +485,8 @@ it.effect("keeps an unsafe workflow approval scope visible as unknown", () =>
     ]);
   }).pipe(
     Effect.provide(
-      Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+      mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+        ...gitHubPullRequestCliUnstubbed,
         getPullRequestDetail: () => Effect.succeed(openDetail),
         getPullRequestBaseComparison: () => Effect.succeed({ behindBy: 0, viewerCanUpdate: true }),
         listWorkflowRunsRequiringApproval: () =>
@@ -489,7 +528,8 @@ it.effect("propagates workflow discovery rate limits", () =>
     expect(error.reason).toBe("rate-limited");
   }).pipe(
     Effect.provide(
-      Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+      mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+        ...gitHubPullRequestCliUnstubbed,
         getPullRequestDetail: () => Effect.succeed(openDetail),
         getPullRequestBaseComparison: () => Effect.succeed({ behindBy: 0, viewerCanUpdate: true }),
         listWorkflowRunsRequiringApproval: () =>
@@ -519,7 +559,8 @@ describe("getViewerPermissions", () => {
       readonly viewerCanUpdate: boolean;
     }>,
   ) =>
-    Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+    mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+      ...gitHubPullRequestCliUnstubbed,
       getPullRequestDetail: () => Effect.succeed(openDetail),
       getPullRequestBaseComparison: () => comparison,
       getViewerAccess: () =>
@@ -559,7 +600,8 @@ describe("getViewerPermissions", () => {
       expect(comparisonAllowReserve).toBe(true);
     }).pipe(
       Effect.provide(
-        Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+        mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+          ...gitHubPullRequestCliUnstubbed,
           getPullRequestDetail: () => Effect.succeed(openDetail),
           getPullRequestBaseComparison: (input) =>
             Effect.sync(() => {
@@ -592,7 +634,8 @@ describe("getViewerPermissions", () => {
       expect(permissions.actions).toContain("merge");
     }).pipe(
       Effect.provide(
-        Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+        mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+          ...gitHubPullRequestCliUnstubbed,
           getPullRequestDetail: () => Effect.succeed(openDetail),
           getPullRequestBaseComparison: () =>
             Effect.fail(
@@ -654,7 +697,8 @@ describe("getChangeRequest commits", () => {
   };
 
   const layerWith = (commits: GitHubReviewThreadComments["commits"]) =>
-    Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+    mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+      ...gitHubPullRequestCliUnstubbed,
       getPullRequestActivity: () =>
         Effect.succeed({
           author: baseDetail.author,
@@ -737,7 +781,8 @@ describe("getChangeRequestActivity dismissed reviews", () => {
     viewer: { canUpdate: true, didAuthor: false },
   };
   const layerFor = (body: string) =>
-    Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+    mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+      ...gitHubPullRequestCliUnstubbed,
       getPullRequestActivity: () =>
         Effect.succeed({ author: null, comments: [dismissedReview(body)], commits: [] }),
       listReviewThreadComments: () => Effect.succeed(threadComments),
@@ -818,7 +863,8 @@ describe("editing", () => {
       ]);
     }).pipe(
       Effect.provide(
-        Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+        mockService(GitHubPullRequestCli.GitHubPullRequestCli)({
+          ...gitHubPullRequestCliUnstubbed,
           updatePullRequest: (input) => Effect.sync(() => void rewrites.push(input)),
           updateComment: (input) => Effect.sync(() => void rewrites.push(input)),
         }),

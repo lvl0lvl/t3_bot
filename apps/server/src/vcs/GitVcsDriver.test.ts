@@ -9,6 +9,7 @@ import { assert, it } from "@effect/vitest";
 
 import { GitCommandError } from "@t3tools/contracts";
 import * as ServerConfig from "../config.ts";
+import { mockService } from "../testUtils/mockService.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 import { runVcsDriverContractSuite } from "./testing/VcsDriverContractHarness.ts";
@@ -93,7 +94,7 @@ it.effect("GitVcsDriver forwards execute env to the VCS process", () => {
     Effect.provide(
       Layer.mergeAll(
         NodeServices.layer,
-        Layer.mock(VcsProcess.VcsProcess)({
+        mockService(VcsProcess.VcsProcess)({
           run: (input) =>
             Effect.sync(() => {
               observedEnv = input.env;

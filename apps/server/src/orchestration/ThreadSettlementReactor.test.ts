@@ -32,6 +32,7 @@ import {
 } from "../pullRequest/PullRequestService.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
   OrchestrationEngineService,
@@ -237,24 +238,77 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   });
 
   const dependencies = Layer.mergeAll(
-    Layer.mock(ProjectionSnapshotQuery)({
+    mockService(ProjectionSnapshotQuery)({
+      getTurnStartMessage: unstubbed,
+      getThreadDetailById: unstubbed,
+      getThreadDetailSnapshot: unstubbed,
+      getThreadCheckpointContext: unstubbed,
+      getFullThreadDiffContext: unstubbed,
+      getThreadShellById: unstubbed,
+      getThreadRuntimeContext: unstubbed,
+      getActiveProjectByWorkspaceRoot: unstubbed,
+      getProjectShellById: unstubbed,
+      getFirstActiveThreadIdByProjectId: unstubbed,
+      getImportedAgentSessionSources: unstubbed,
+      searchThreads: unstubbed,
+      getSnapshotSequence: unstubbed,
+      getCounts: unstubbed,
+      getEventReplayStats: unstubbed,
+      getUserInputActivity: unstubbed,
+      getCommandReadModel: unstubbed,
+      getSnapshot: unstubbed,
+      getArchivedShellSnapshot: unstubbed,
       getShellSnapshot: () =>
         Ref.updateAndGet(snapshotReadCount, (count) => count + 1).pipe(
           Effect.tap((count) => Queue.offer(snapshotReads, count)),
           Effect.andThen(Ref.get(snapshots)),
         ),
     }),
-    Layer.mock(GitManager)({
+    mockService(GitManager)({
+      invalidateRemoteStatus: unstubbed,
+      resolvePullRequest: unstubbed,
+      preparePullRequestThread: unstubbed,
+      runStackedAction: unstubbed,
+      status: unstubbed,
+      localStatus: unstubbed,
+      remoteStatus: unstubbed,
+      invalidateLocalStatus: unstubbed,
       branchPullRequest,
       invalidateStatus: (cwd) => Ref.update(invalidatedCwds, (cwds) => [...cwds, cwd]),
     }),
-    Layer.mock(PullRequestService)({
+    mockService(PullRequestService)({
+      labelCandidates: unstubbed,
+      setLabels: unstubbed,
+      invalidate: unstubbed,
+      setThreadResolution: unstubbed,
+      setReaction: unstubbed,
+      reviewerCandidates: unstubbed,
+      requestReviewers: unstubbed,
+      comment: unstubbed,
+      updateComment: unstubbed,
+      submitReview: unstubbed,
+      replyToThread: unstubbed,
+      diff: unstubbed,
+      diffFileContents: unstubbed,
+      runAction: unstubbed,
+      update: unstubbed,
+      refreshAfterTurn: unstubbed,
+      detail: unstubbed,
+      activity: unstubbed,
+      threadComments: unstubbed,
+      list: unstubbed,
+      listStats: unstubbed,
+      stack: unstubbed,
+      subscribeRefreshes: unstubbed,
       summary: pullRequestSummary,
       subscribeMerges: PubSub.subscribe(mergedPullRequests).pipe(
         Effect.map((subscription) => Stream.fromSubscription(subscription)),
       ),
     }),
-    Layer.mock(OrchestrationEngineService)({
+    mockService(OrchestrationEngineService)({
+      readThreadEvents: unstubbed,
+      getThreadReplayStats: unstubbed,
+      subscribeDomainEvents: unstubbed,
       readEvents: () => Stream.empty,
       dispatch,
       streamDomainEvents: Stream.empty,

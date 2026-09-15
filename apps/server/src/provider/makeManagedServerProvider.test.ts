@@ -19,6 +19,7 @@ import { TestClock } from "effect/testing";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import { makeManagedServerProvider } from "./makeManagedServerProvider.ts";
 
 const emptyCapabilities = createModelCapabilities({ optionDescriptors: [] });
@@ -100,7 +101,8 @@ const refreshedSnapshotSecond: ServerProvider = {
 };
 
 function makeBackgroundPolicyLayer(shouldRunScopeWork: boolean) {
-  return Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+  return mockService(BackgroundPolicy.BackgroundPolicy)({
+    subscribe: unstubbed,
     reportClientActivity: () => Effect.void,
     removeRpcClient: () => Effect.void,
     reportHostPowerState: () => Effect.void,

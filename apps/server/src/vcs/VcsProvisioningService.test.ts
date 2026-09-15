@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./VcsProvisioningService.ts";
@@ -63,7 +64,9 @@ it.effect("routes repository initialization through an explicit VCS driver kind"
   const driver = makeDriver(calls);
   const testLayer = VcsProvisioningService.layer.pipe(
     Layer.provide(
-      Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+      mockService(VcsDriverRegistry.VcsDriverRegistry)({
+        detect: unstubbed,
+        resolve: unstubbed,
         get: (kind) => (kind === "git" ? Effect.succeed(driver) : Effect.die("unexpected kind")),
       }),
     ),
@@ -82,7 +85,9 @@ it.effect("defaults repository initialization to Git until callers choose a VCS 
   const driver = makeDriver(calls);
   const testLayer = VcsProvisioningService.layer.pipe(
     Layer.provide(
-      Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+      mockService(VcsDriverRegistry.VcsDriverRegistry)({
+        detect: unstubbed,
+        resolve: unstubbed,
         get: (kind) => (kind === "git" ? Effect.succeed(driver) : Effect.die("unexpected kind")),
       }),
     ),
