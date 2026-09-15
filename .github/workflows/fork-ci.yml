@@ -70,7 +70,7 @@ jobs:
       # THE SCRIPTS PACKAGE, because the test-count gate's own proofs live in it
       # and ran in NO job on this fork: `test_server` filters to `t3`, and the
       # upstream job that would cover `@t3tools/scripts` sits queued forever on
-      # runners we do not have. Six tests that never run are six tests that rot,
+      # runners we do not have. Tests that never run are tests that rot,
       # and the gate cannot measure its own file.
       #
       # This is the narrow widening the header asks for — something in scope
@@ -90,10 +90,12 @@ jobs:
     # reader is not a gate. Nothing was silent and nothing about the tool was
     # broken; it simply ran nowhere. This job is the reader (`t3_bot-2ij`).
     #
-    # ONE CONFIG PER JOB rather than six in sequence: the runner-minutes are the
-    # same either way, the slowest single config fits this file's timeout budget
-    # where the serial total does not, and a red job NAMES the config that broke
-    # in the run summary without anyone opening a log.
+    # ONE CONFIG PER JOB rather than six in sequence: the slowest single config
+    # fits this file's timeout budget where the 61-minute serial total does not,
+    # and a red job NAMES the config that broke in the run summary without anyone
+    # opening a log. It is not free — six jobs pay six checkouts and six installs
+    # where one would pay one — but the sweeps themselves dominate and the wall
+    # clock is what the gate waits on.
     #
     # NO PATH FILTER, deliberately. Filtering this job alone would need either a
     # second workflow file or a job-level paths action, and this repo has no
@@ -114,7 +116,8 @@ jobs:
     #
     # `channel-invariants` is slow because its testCommand is the whole
     # `apps/server/src/orchestration` directory — 51 test files today — re-run
-    # per mutant, 36 times. Narrowing it is `t3_bot-2ij`'s own follow-up, not a
+    # per mutant: 18 rows x (one mutant run + one confirming run) = 36 suite runs,
+    # plus the baseline. Narrowing it is `t3_bot-2ij`'s own follow-up, not a
     # timeout problem.
     timeout-minutes: 40
     strategy:
@@ -151,7 +154,13 @@ jobs:
       # this the sweep dies at setup with
       # `NotFound: ChildProcess.spawn (pnpm install --frozen-lockfile)` — which
       # is what the first run of this job did, in every config, in under 90s.
-      # Same step as `mobile-showcase-screenshots.yml`, including its closing
+      # Copied from `mobile-showcase-screenshots.yml`, WITH ONE DIFFERENCE THAT MATTERS:
+      # that workflow is `workflow_dispatch`-only, so its `package.json` is always a
+      # maintainer's. This one runs on `pull_request`, so `packageManager` is whatever
+      # the PR says. It buys an attacker nothing here — `setup-vp` has already run the
+      # PR's own `prepare` script by this line, and the closing `--version` fails on a
+      # malformed path — but the sameness is not total and the next reader should not
+      # infer it is. Same step, including its closing
       # `pnpm --version`: a PATH edit that silently did not take would otherwise
       # surface as six confusing setup failures rather than one clear one.
       - name: Expose pnpm
@@ -166,6 +175,15 @@ jobs:
       # status and a sweep that exited 1 goes GREEN. Proof, both shells:
       #   bash -e            -c 'false | tee /dev/null; echo $?'  -> 0
       #   bash -e -o pipefail -c 'false | tee /dev/null; echo $?'  -> step fails
+      # That default is the PREMISE, not a detail: an explicit `shell: bash` sets
+      # `-eo pipefail`, and this file declares no `shell:` or `defaults:` anywhere.
+      #
+      # A RED HERE IS THREE DIFFERENT PROBLEMS AND DOES NOT SAY WHICH, because a
+      # step fails on any non-zero: 2 = a guard came unpinned (act on the guard),
+      # 3 = a row was not measured at all, 1 = the tool or this config failed —
+      # which is what #68 actually was, a whole-config refusal on a drifted
+      # anchor. The codes are in `exitCodeFor`; the report naming the rows is the
+      # last thing in this step's log.
       # stdout is already captured in the run log, so a pipe buys nothing here
       # and costs the verdict. `scripts/guard-sweep.ci-step.test.ts` reds if this
       # line ever grows one.

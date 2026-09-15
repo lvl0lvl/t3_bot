@@ -1,7 +1,9 @@
 /**
  * FOUR CLAIMS ABOUT THE CI STEP THAT RUNS THE SWEEP, all of which fail SILENTLY when broken.
  *
- * This bead (`t3_bot-2ij`) exists because on #68 the sweep's exit code had no reader: the tool
+ * The bead (`t3_bot-2ij`, opened 2026-09-12 from qa29's F7 on PR #29) is about the sweep not
+ * being in CI at all. #68, two days later, is the instance that showed what that costs and is why
+ * it went P2: the tool
  * refused the whole config and exited 1, and the config sat inert for a day. Putting the sweep in
  * CI gives the exit code a reader — but only while the step still reports it, and only while the
  * matrix still covers every config. Both of those are one careless edit away, and neither edit
