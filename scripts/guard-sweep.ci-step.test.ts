@@ -234,7 +234,7 @@ describe("the CI job that runs the guard sweep, and the workflow around it", () 
     expect(doc["cancel-in-progress"]).toBe("${{ github.event_name == 'pull_request' }}");
   });
 
-  it("restricts the push trigger to main, so the per-sha group cannot fan out over branches", () => {
+  it("lets the push trigger reach the sha arm from main and nothing else, tags included", () => {
     // CLAIM 5's precondition. The sha arm of that expression is reached by any push, so widening
     // this trigger turns "main's merges run in parallel" into "every push runs, unbounded and
     // uncancelled", six sweeps at a time. The comment above the group says this; a comment is not
