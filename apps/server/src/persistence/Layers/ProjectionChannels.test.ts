@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Statement from "effect/unstable/sql/Statement";
 
 import { ProjectionChannelRepositoryLive } from "./ProjectionChannels.ts";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
@@ -613,6 +614,68 @@ layer("ProjectionChannelRepository", (it) => {
         withoutRoster,
         withRoster.map(({ members: _members, ...rest }) => rest),
       );
+    }),
+  );
+
+  it.effect("issues the same number of statements however many channels come back", () =>
+    Effect.gen(function* () {
+      // THE PROPERTY THIS CHANGE EXISTS FOR, and the only test here that reds if
+      // the per-row roster fetch comes back. Everything else in this file is
+      // satisfied by a roster-carrying implementation: the rows are the same
+      // rows, in the same order, refused for the same members. An N+1 is
+      // invisible to every assertion about WHAT came back, so it has to be
+      // asserted about HOW.
+      //
+      // A COUNT, NOT A TIMING. `Statement.CurrentTransformer` sees every
+      // statement the repository issues, so this is deterministic and needs no
+      // benchmark, no clock and no machinery.
+      const repo = yield* ProjectionChannelRepository;
+      const few = unsafeRefForTest("human", "count-few");
+      const many = unsafeRefForTest("human", "count-many");
+      yield* Effect.forEach([0, 1], (n) =>
+        repo.upsertChannel(
+          channelWithMembers(ChannelId.make(`count-few-${n}`), `count-few-${n}`, [
+            { handle: "walt", ...few },
+          ]),
+        ),
+      );
+      yield* Effect.forEach([0, 1, 2, 3, 4], (n) =>
+        repo.upsertChannel(
+          channelWithMembers(ChannelId.make(`count-many-${n}`), `count-many-${n}`, [
+            { handle: "walt", ...many },
+          ]),
+        ),
+      );
+
+      const countStatements = <A>(effect: Effect.Effect<A, unknown, never>) =>
+        Effect.gen(function* () {
+          const seen: Array<Statement.Statement<unknown>> = [];
+          yield* effect.pipe(
+            Effect.provideService(Statement.CurrentTransformer, (statement) => {
+              seen.push(statement);
+              return Effect.succeed(statement);
+            }),
+          );
+          return seen.length;
+        });
+
+      const twoChannels = yield* countStatements(repo.listChannelActivityForMember(few));
+      const fiveChannels = yield* countStatements(repo.listChannelActivityForMember(many));
+
+      // FLAT IN N is the claim. Two channels and five cost the same.
+      assert.strictEqual(twoChannels, fiveChannels);
+      assert.strictEqual(twoChannels, 1);
+
+      // THE CONTROL, and it is what stops this test being vacuous: a counter
+      // that always reported 1 — a transformer that never fired, an effect that
+      // never ran — would pass the two assertions above no matter what the
+      // method did. The roster-carrying sibling over the SAME fixtures must
+      // grow with N, and does: one statement plus one per channel.
+      const rosterTwo = yield* countStatements(repo.listChannelsForMember(few));
+      const rosterFive = yield* countStatements(repo.listChannelsForMember(many));
+      assert.strictEqual(rosterTwo, 3);
+      assert.strictEqual(rosterFive, 6);
+      assert.ok(rosterFive > rosterTwo);
     }),
   );
 
