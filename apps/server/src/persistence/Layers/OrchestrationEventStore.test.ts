@@ -466,9 +466,10 @@ layer("OrchestrationEventStore unknown event type", (it) => {
         );
       assert.deepEqual(ranged, [first.eventId, last.eventId]);
 
-      // readAll is the projection bootstrap's reader. It takes no limit, so a
-      // reader that decoded each row on its own instead of going through the
-      // skip fails the whole replay on this row and the server cannot start.
+      // readAll has no production caller in this build (its one reference is
+      // the service doc's example); it is on the interface, and it takes no
+      // limit, so a reader that decoded each row on its own instead of going
+      // through the skip fails the whole read on this row.
       const all = yield* Stream.runCollect(eventStore.readAll()).pipe(
         Effect.map((chunk) => Array.from(chunk, (event) => event.eventId)),
       );
