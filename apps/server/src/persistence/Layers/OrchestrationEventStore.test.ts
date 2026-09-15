@@ -472,6 +472,78 @@ layer("OrchestrationEventStore", (it) => {
     }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
   });
 
+  it.effect("keeps reading when a whole page decodes to zero events", () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const projectId = ProjectId.make("project-empty-page");
+      const projectCreated = (
+        eventId: string,
+        commandId: string,
+      ): Omit<OrchestrationEvent, "sequence"> => ({
+        type: "project.created",
+        eventId: EventId.make(eventId),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        occurredAt: now,
+        commandId: CommandId.make(commandId),
+        causationEventId: null,
+        correlationId: CommandId.make(commandId),
+        metadata: {},
+        payload: {
+          projectId,
+          title: "Empty Page Project",
+          workspaceRoot: "/tmp/project-empty-page",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      const first = yield* eventStore.append(
+        projectCreated("evt-empty-page-first", "cmd-empty-page-first"),
+      );
+      // Two unknown rows wide enough to fill a page on their own. A read that
+      // stops when a page yields no events never reaches the known row after
+      // them, and the server starts on a log missing everything past here.
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          actor_kind, payload_json, metadata_json
+        ) VALUES (
+          ${EventId.make("evt-empty-page-one")}, ${"project"}, ${projectId}, ${1},
+          ${"project.future-one"}, ${now}, ${"server"}, ${'{"future":true}'}, ${"{}"}
+        ), (
+          ${EventId.make("evt-empty-page-two")}, ${"project"}, ${projectId}, ${2},
+          ${"project.future-two"}, ${now}, ${"server"}, ${'{"future":true}'}, ${"{}"}
+        )
+      `;
+      const last = yield* eventStore.append(
+        projectCreated("evt-empty-page-last", "cmd-empty-page-last"),
+      );
+
+      const paged = yield* Stream.runCollect(eventStore.readFromSequence(first.sequence, 2)).pipe(
+        Effect.map((chunk) => Array.from(chunk, (event) => event.eventId)),
+      );
+      assert.deepEqual(paged, [last.eventId]);
+
+      const ranged = yield* eventStore
+        .readAggregateRange({
+          aggregateKind: "project",
+          aggregateId: projectId,
+          fromSequenceExclusive: first.sequence,
+          toSequenceInclusive: last.sequence,
+          limit: 2,
+        })
+        .pipe(
+          Stream.runCollect,
+          Effect.map((chunk) => Array.from(chunk, (event) => event.eventId)),
+        );
+      assert.deepEqual(ranged, [last.eventId]);
+    }),
+  );
+
   it.effect("keeps failing when a known type carries a payload its schema refuses", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;

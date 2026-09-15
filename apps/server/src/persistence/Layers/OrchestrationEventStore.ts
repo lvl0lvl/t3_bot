@@ -446,6 +446,9 @@ const makeEventStore = Effect.gen(function* () {
               "OrchestrationEventStore.readAggregateRange:rowToEvent",
             ).pipe(
               Effect.map((events) => {
+                // A page whose rows were all skipped yields no events and must
+                // still advance: the input is a page filled by unknown rows
+                // with a known row after them.
                 const lastRow = rows.at(-1);
                 const nextRemaining = remaining - events.length;
                 return [
