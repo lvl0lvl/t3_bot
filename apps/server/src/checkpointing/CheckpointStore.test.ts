@@ -503,5 +503,31 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         expect(yield* git(tmp, ["ls-files", "-v"])).toBe("h README.md");
       }),
     );
+
+    it.effect("records an absent assume-unchanged file as deleted", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const fileSystem = yield* FileSystem.FileSystem;
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const checkpointRef = checkpointRefForThreadTurn(
+          ThreadId.make("checkpoint-capture-assume-unchanged-absent"),
+          0,
+        );
+        // assume-unchanged says the index is stale, not that the file is absent on
+        // purpose: a turn that then deletes it must be able to show the deletion,
+        // and the tree the next turn finds really has no README.md. Kept like a
+        // sparse entry, the snapshot would hold the file and the deletion would
+        // land on the next turn's card instead of this one's.
+        yield* git(tmp, ["update-index", "--assume-unchanged", "README.md"]);
+        yield* fileSystem.remove(NodePath.join(tmp, "README.md"));
+        yield* writeTextFile(NodePath.join(tmp, "kept.txt"), "kept\n");
+
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+
+        expect(yield* git(tmp, ["ls-tree", "--name-only", checkpointRef])).toBe("kept.txt");
+        expect(yield* git(tmp, ["ls-files", "-v"])).toBe("h README.md");
+      }),
+    );
   });
 });

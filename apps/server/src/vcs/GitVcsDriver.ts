@@ -769,10 +769,12 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           // The copied index carries the user's assume-unchanged and skip-worktree
           // bits, and `add -A` trusts them: a turn's edit to a flagged file would
           // drop out of its card. Drop those entries from the temp index so `add -A`
-          // reads the files afresh (clearing the bit instead refreshes the entry's
-          // stat cache from the edited file and the old blob survives). A
-          // skip-worktree path that is absent is a sparse checkout's and keeps its
-          // entry instead of reading as deleted.
+          // hashes the files instead of comparing stat: a cleared bit leaves the
+          // entry's stat cache in place, and an edit that keeps size and mtime is
+          // then trusted as unchanged. A skip-worktree path that is absent is a
+          // sparse checkout's and keeps its entry instead of reading as deleted; an
+          // absent assume-unchanged path reads as deleted, which is what the tree
+          // the turn found looks like.
           const listed = yield* execute({
             operation,
             cwd: input.cwd,
