@@ -1,6 +1,5 @@
 import { assert, describe, expect, it, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 
 import * as GitLabPullRequestCli from "./GitLabPullRequestCli.ts";
 import { gitLabViewerPermissions, make } from "./GitLabPullRequestProvider.ts";

@@ -7,7 +7,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import * as VcsProcess from "./VcsProcess.ts";
 import * as VcsProjectConfig from "./VcsProjectConfig.ts";
 import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
-import { mockService, unstubbed } from "../testUtils/mockService.ts";
+import { mockService } from "../testUtils/mockService.ts";
 
 const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
   exitCode: ChildProcessSpawner.ExitCode(0),
