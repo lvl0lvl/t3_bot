@@ -64,9 +64,10 @@ jobs:
       # and the gate cannot measure its own file.
       #
       # This is the narrow widening the header asks for — something in scope
-      # HAS broken (nothing was verifying it) — and it is cheap: 21 files, 296
-      # tests, 2.4s, no Electron and no libsecret, which is why the broader
-      # `test` job is still excluded.
+      # HAS broken (nothing was verifying it) — and it is cheap: 26 files, 392
+      # tests, 4.8s (measured 2026-09-15; it was 21/296 when this job was
+      # written, and this PR adds one of the files), no Electron and no
+      # libsecret, which is why the broader `test` job is still excluded.
       - name: Test scripts
         run: vp run --filter @t3tools/scripts test
 
