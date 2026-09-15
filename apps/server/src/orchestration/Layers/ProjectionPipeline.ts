@@ -93,7 +93,10 @@ type ProjectorName =
 // them in one transaction and then runs the same replay a fresh database
 // runs, so the rebuilt state is the fresh-install state by construction. The
 // input that breaks this list: a projector that writes a table not named
-// here, whose stale rows would survive the rebuild.
+// here, whose stale rows would survive the rebuild (or, for a plain INSERT
+// like channel_post_wake's, collide with the replay). Measure it with
+// `rg -o "(INSERT INTO|UPDATE|DELETE FROM) [a-z_]+"` over the repositories
+// the pipeline provides, and compare against this list.
 export const PROJECTION_TABLES = [
   "projection_projects",
   "projection_threads",
@@ -107,6 +110,7 @@ export const PROJECTION_TABLES = [
   "projection_channel_members",
   "projection_channel_posts",
   "projection_thread_pull_requests",
+  "channel_post_wake",
   "projection_state",
 ] as const;
 

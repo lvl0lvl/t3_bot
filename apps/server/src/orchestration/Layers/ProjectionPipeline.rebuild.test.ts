@@ -374,3 +374,52 @@ layer("OrchestrationProjectionPipeline downgrade then upgrade", (it) => {
     }),
   );
 });
+
+layer("OrchestrationProjectionPipeline earlier epoch applied", (it) => {
+  it.effect("does not rebuild for a row an earlier epoch applied before the older build ran", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const decoder = yield* ProjectionDecoderRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-applied");
+      const threadId = ThreadId.make("thread-applied");
+
+      // Epoch 1, this build: 1 project, 2 thread.created, applied.
+      yield* eventStore.append(projectCreated(projectId, "evt-applied-project"));
+      const applied = yield* eventStore.append(
+        threadCreated(projectId, threadId, "evt-applied-thread"),
+      );
+      yield* pipeline.bootstrap;
+
+      // Epoch 2, an older build that lacks thread.created, applied only a
+      // known 3 over (2, 3]: no row of the missing type inside its range.
+      const known = yield* eventStore.append(
+        projectCreated(ProjectId.make("project-applied-2"), "evt-applied-project-2"),
+      );
+      yield* decoder.appendEpoch({
+        eventTypes: OrchestrationEventType.literals.filter((type) => type !== "thread.created"),
+        aggregateKinds: ["project", "thread", "channel"],
+        startedAtSequence: applied.sequence,
+        endedAtSequence: known.sequence,
+      });
+      yield* (yield* ProjectionStateRepository).upsertMany(
+        Object.values(ORCHESTRATION_PROJECTOR_NAMES).map((projector) => ({
+          projector,
+          lastAppliedSequence: known.sequence,
+          updatedAt: now,
+        })),
+      );
+      yield* plantMarkerProject;
+
+      yield* pipeline.bootstrap;
+
+      // The thread.created at 2 was applied by epoch 1, before the older
+      // build ran; a scan that ignored the epoch's start would rebuild for
+      // it. The marker stands, so nothing was emptied.
+      assert.isTrue(yield* markerProjectStands(sql));
+      assert.deepEqual(yield* projectedThreadIds(sql), [threadId]);
+      assert.equal((yield* decoder.listEpochs()).length, 3);
+    }),
+  );
+});
