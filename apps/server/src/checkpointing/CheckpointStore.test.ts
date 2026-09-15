@@ -630,12 +630,12 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         yield* git(tmp, ["config", "splitIndex.sharedIndexExpire", "now"]);
         yield* git(tmp, ["update-index", "--split-index"]);
         yield* writeTextFile(NodePath.join(tmp, "untracked.txt"), "new\n");
-        const sharedIndexFiles = fileSystem
+        const readSharedIndexFiles = fileSystem
           .readDirectory(NodePath.join(tmp, ".git"))
           .pipe(
             Effect.map((names) => names.filter((name) => name.startsWith("sharedindex.")).sort()),
           );
-        const before = yield* sharedIndexFiles;
+        const before = yield* readSharedIndexFiles;
         expect(before.length).toBe(1);
 
         const threadId = ThreadId.make("checkpoint-capture-split");
@@ -652,7 +652,7 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
             checkpointRef: checkpointRefForThreadTurn(threadId, 2),
           }),
         ).toBe(true);
-        expect(yield* sharedIndexFiles).toEqual(before);
+        expect(yield* readSharedIndexFiles).toEqual(before);
         expect(yield* git(tmp, ["status", "--porcelain"])).toBe("?? untracked.txt");
       }),
     );
@@ -672,12 +672,12 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         yield* git(tmp, ["config", "core.splitIndex", "true"]);
         yield* git(tmp, ["update-index", "--split-index"]);
         const gitDir = NodePath.join(tmp, ".git");
-        const sharedIndexFiles = fileSystem
+        const readSharedIndexFiles = fileSystem
           .readDirectory(gitDir)
           .pipe(
             Effect.map((names) => names.filter((name) => name.startsWith("sharedindex.")).sort()),
           );
-        const before = yield* sharedIndexFiles;
+        const before = yield* readSharedIndexFiles;
         expect(before.length).toBe(1);
         // git ages the shared index against the filesystem clock, so the stamp
         // is taken from the file git just wrote rather than from Effect's
@@ -699,7 +699,7 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
 
         expect(yield* checkpointStore.hasCheckpointRef({ cwd: tmp, checkpointRef })).toBe(true);
-        expect(yield* sharedIndexFiles).toEqual(before);
+        expect(yield* readSharedIndexFiles).toEqual(before);
         expect(yield* git(tmp, ["status", "--porcelain"])).toBe("?? untracked.txt");
       }),
     );
@@ -722,12 +722,12 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         yield* git(worktree, ["update-index", "--split-index"]);
         const reportedGitDir = yield* git(worktree, ["rev-parse", "--git-dir"]);
         const gitDir = NodePath.resolve(worktree, reportedGitDir);
-        const sharedIndexFiles = fileSystem
+        const readSharedIndexFiles = fileSystem
           .readDirectory(gitDir)
           .pipe(
             Effect.map((names) => names.filter((name) => name.startsWith("sharedindex.")).sort()),
           );
-        const before = yield* sharedIndexFiles;
+        const before = yield* readSharedIndexFiles;
         expect(before.length).toBe(1);
         const sharedIndexPath = NodePath.join(gitDir, before[0]!);
         const writtenMillis = Option.getOrThrow(
@@ -746,7 +746,7 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         expect(yield* checkpointStore.hasCheckpointRef({ cwd: worktree, checkpointRef })).toBe(
           true,
         );
-        expect(yield* sharedIndexFiles).toEqual(before);
+        expect(yield* readSharedIndexFiles).toEqual(before);
         expect(yield* git(worktree, ["status", "--porcelain"])).toBe("?? untracked.txt");
       }),
     );
