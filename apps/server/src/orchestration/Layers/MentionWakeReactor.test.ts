@@ -70,6 +70,7 @@ import {
   COLLIDING_CHANNEL_NAME,
   COLLIDING_HUMAN_HANDLE,
   COLLIDING_HUMAN_ISSUER,
+  COLLIDING_HUMAN_MEMBER,
   COLLIDING_THREAD_HANDLE,
   COLLIDING_THREAD_ID,
   COLLIDING_THREAD_ISSUER,
@@ -326,6 +327,7 @@ const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
   const sql = await runtime.runPromise(Effect.service(SqlClient.SqlClient));
   const budget = await runtime.runPromise(Effect.service(MentionWakeBudgetRepository));
   const wakes = await runtime.runPromise(Effect.service(ChannelPostWakeRepository));
+  const channels = await runtime.runPromise(Effect.service(ProjectionChannelRepository));
   const scope = await runtime.runPromise(Scope.make());
   return {
     engine,
@@ -337,6 +339,7 @@ const makeSystem = async (databasePath: string, overrides: Overrides = {}) => {
     sql,
     budget,
     wakes,
+    channels,
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     startReactor: () =>
       runtime.runPromise(Scope.provide(reactor.start(), scope) as Effect.Effect<void>),
@@ -1216,13 +1219,14 @@ describe("MentionWakeReactor", () => {
       );
       await system.dispose();
 
-      // THE REACTOR RUNS ONCE FIRST so it owns a cursor, then goes down. A raw
-      // append does not move `latestSequence` — that reads the engine's
-      // in-memory read model, which only `dispatch` advances — so an event
-      // appended beside a live reactor is never drained through. Landing it
-      // while the reactor is DOWN and restarting is the shape the first test in
-      // this file uses, and it is the only way a hand-written event reaches the
-      // reactor at all.
+      // THE REACTOR RUNS ONCE FIRST so it owns a cursor, then goes down. Delete
+      // this start/dispose and the test asserts nothing: `resumeFrom` seeds a
+      // cursorless reactor at `engine.latestSequence`, and a restarted engine
+      // loads the appended event into its read model, so the reactor resumes
+      // PAST the event and skips it — the absence below is then satisfied by
+      // nothing having run. A raw append does not move `latestSequence` on the
+      // engine that is RUNNING when it lands, which is why the event goes in
+      // while the reactor is down and is drained after a restart.
       system = await makeSystem(databasePath);
       await system.startReactor();
       await system.dispose();
@@ -1231,15 +1235,12 @@ describe("MentionWakeReactor", () => {
 
       // THE LEGACY SHAPE, appended as an EVENT because the decider cannot
       // produce it any more: since `mentionRefs` landed, every post it writes
-      // carries refs, and the refs branch of `mentioned` compares memberKind
-      // ITSELF. So on a post with refs the `memberKind === "thread"` guard is
-      // redundant, and a sweep found it deletable with the whole suite green.
+      // carries refs. An event written before the field existed carries none
+      // and is matched by HANDLE alone; the contract says those replay forever
+      // and the reactor keeps the branch for them. This fixture is that branch.
       //
-      // The guard is still load-bearing on the OTHER branch. An event written
-      // before the field existed carries no refs and is matched by HANDLE
-      // alone — the contract says those replay forever and the reactor keeps
-      // the branch for them — and there the kind test is the only thing between
-      // a human member and a wake.
+      // The kind guard is load-bearing HERE and on the refs branch too — the
+      // companion test below pins the refs branch, so neither is left to prose.
       //
       // THE AUTHOR IS THE HUMAN, and that is not incidental. If the twin THREAD
       // posted, the author exclusion (`!(author is thread && author.memberId ===
@@ -1278,11 +1279,121 @@ describe("MentionWakeReactor", () => {
         system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
       );
 
+      // THE SUBJECT IS PRESENT, asserted before the absence because without it
+      // this test passes while mentioning NOBODY: swap the mention for a handle
+      // no member holds and the expectation below is still satisfied. It is the
+      // only test that kills `wake-filter-ignores-kind`, so a rename inside
+      // `appendCollidingRoster` would disarm the sweep row in silence.
+      const roster = await system.run(system.channels.getChannelById(COLLIDING_CHANNEL_ID));
+      expect(Option.isSome(roster)).toBe(true);
+      expect(Option.getOrThrow(roster).members).toContainEqual(COLLIDING_HUMAN_MEMBER);
+
       // NOT WOKEN, and the thread it would be woken as EXISTS — the colliding
       // roster seats a real thread under the human's id. So an empty result
       // here is the guard refusing, not the id failing to resolve; asserted
       // against a thread that is absent, this would pass either way.
       expect(await wakeMessages(system, COLLIDING_THREAD_ID)).toHaveLength(0);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("does not wake a HUMAN member whose handle a post with refs mentions", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    let system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.run(
+        appendCollidingRoster({ events: system.events, projectId: PROJECT_ID, now: NOW }),
+      );
+      await system.dispose();
+      system = await makeSystem(databasePath);
+      await system.startReactor();
+
+      // THE REFS BRANCH, which is the branch every post written today takes.
+      // The decider stamps a ref for EVERY member whose handle matches, human
+      // members included, so this post carries a ref of kind "human". The refs
+      // branch of `mentioned` compares memberKind and matches the HUMAN row —
+      // and the wake target is then `ThreadId.make(member.memberId)`, which
+      // DROPS the kind it just compared. On this roster that id is the twin
+      // THREAD's. So the kind guard is what refuses this, on the refs branch as
+      // much as on the legacy one, and the test above pins only the legacy one.
+      //
+      // THE AUTHOR IS THE HUMAN mentioning their own handle: the author
+      // exclusion only drops THREAD authors, so it cannot account for the zero.
+      await post(system, {
+        id: "post-mentioning-the-human",
+        mentions: [COLLIDING_HUMAN_HANDLE],
+        channelId: COLLIDING_CHANNEL_ID,
+        issuer: COLLIDING_HUMAN_ISSUER,
+      });
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      expect(await wakeMessages(system, COLLIDING_THREAD_ID)).toHaveLength(0);
+    } finally {
+      await system.dispose();
+      await removeDirectory(directory);
+    }
+  }, 30_000);
+
+  it("wakes the THREAD twin from a legacy post that mentions its handle", async () => {
+    const { directory, databasePath } = await makeDatabasePath();
+    let system = await makeSystem(databasePath);
+    try {
+      await seedChannel(system);
+      await system.run(
+        appendCollidingRoster({ events: system.events, projectId: PROJECT_ID, now: NOW }),
+      );
+      await system.dispose();
+
+      system = await makeSystem(databasePath);
+      await system.startReactor();
+      await system.dispose();
+
+      system = await makeSystem(databasePath);
+
+      // THE PRESENCE COMPANION the docstring rule demands, and the reason the
+      // absence above is not satisfied by nothing having run: same roster, same
+      // legacy shape, same four phases, mentioning the THREAD half instead of
+      // the human one. Delete the first start/dispose and this goes to 0 wakes
+      // while the absence test stays green — which is the failure the companion
+      // exists to make loud.
+      await system.run(
+        system.events.append({
+          eventId: EventId.make("event-legacy-mention-twin"),
+          aggregateKind: "channel",
+          aggregateId: COLLIDING_CHANNEL_ID,
+          occurredAt: NOW,
+          commandId: CommandId.make("cmd-legacy-mention-twin"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-legacy-mention-twin"),
+          metadata: {},
+          type: "channel.post-created",
+          payload: {
+            channelId: COLLIDING_CHANNEL_ID,
+            postId: ChannelPostId.make("post-legacy-mention-twin"),
+            authorRef: COLLIDING_HUMAN_ISSUER,
+            authorHandle: COLLIDING_HUMAN_HANDLE,
+            body: "twin, look at this",
+            mentions: [COLLIDING_THREAD_HANDLE],
+            // No `mentionRefs`, exactly as above.
+            parentPostId: null,
+            createdAt: NOW,
+          },
+        }),
+      );
+      await system.dispose();
+
+      system = await makeSystem(databasePath);
+      await system.startReactor();
+      await system.run(
+        system.engine.latestSequence.pipe(Effect.flatMap(system.reactor.drainThrough)),
+      );
+
+      expect(await wakeMessages(system, COLLIDING_THREAD_ID)).toHaveLength(1);
     } finally {
       await system.dispose();
       await removeDirectory(directory);
