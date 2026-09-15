@@ -704,6 +704,53 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
       }),
     );
 
+    it.effect("leaves a linked worktree's stale shared index alone", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const fileSystem = yield* FileSystem.FileSystem;
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const checkpointRef = captureRef("checkpoint-capture-split-worktree");
+        // A linked worktree keeps its index, and its shared index, under
+        // <git-common-dir>/worktrees/<name>, while the temp index capture
+        // writes sits in the common dir. Resolving the shared index against
+        // the common dir instead of the worktree's git dir breaks this test:
+        // it would list a directory that never holds the file under measure.
+        const worktree = NodePath.join(tmp, "wt");
+        yield* git(tmp, ["worktree", "add", "-q", worktree]);
+        yield* git(worktree, ["config", "core.splitIndex", "true"]);
+        yield* git(worktree, ["update-index", "--split-index"]);
+        const reportedGitDir = yield* git(worktree, ["rev-parse", "--git-dir"]);
+        const gitDir = NodePath.resolve(worktree, reportedGitDir);
+        const sharedIndexFiles = fileSystem
+          .readDirectory(gitDir)
+          .pipe(
+            Effect.map((names) => names.filter((name) => name.startsWith("sharedindex.")).sort()),
+          );
+        const before = yield* sharedIndexFiles;
+        expect(before.length).toBe(1);
+        const sharedIndexPath = NodePath.join(gitDir, before[0]!);
+        const writtenMillis = Option.getOrThrow(
+          (yield* fileSystem.stat(sharedIndexPath)).mtime,
+        ).getTime();
+        const stamp = Math.floor(writtenMillis / 1000) - 21 * 86_400;
+        yield* fileSystem.utimes(sharedIndexPath, stamp, stamp);
+        const staleMillis = Option.getOrThrow(
+          (yield* fileSystem.stat(sharedIndexPath)).mtime,
+        ).getTime();
+        expect(writtenMillis - staleMillis).toBeGreaterThan(14 * 86_400 * 1000);
+        yield* writeTextFile(NodePath.join(worktree, "untracked.txt"), "new\n");
+
+        yield* checkpointStore.captureCheckpoint({ cwd: worktree, checkpointRef });
+
+        expect(yield* checkpointStore.hasCheckpointRef({ cwd: worktree, checkpointRef })).toBe(
+          true,
+        );
+        expect(yield* sharedIndexFiles).toEqual(before);
+        expect(yield* git(worktree, ["status", "--porcelain"])).toBe("?? untracked.txt");
+      }),
+    );
+
     // DISCLOSED: four of these five reach no guard the contract tests do not
     // already reach, because a temp index seeded by `read-tree HEAD` carries
     // no index flags and no stat cache, and nothing here lists it. The half
