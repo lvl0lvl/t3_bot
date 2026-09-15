@@ -431,4 +431,77 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
       }),
     );
   });
+
+  describe("captureCheckpoint", () => {
+    it.effect(
+      "keeps a skip-worktree entry the checkout does not hold and records an untracked file",
+      () =>
+        Effect.gen(function* () {
+          const tmp = yield* makeTmpDir();
+          yield* initRepoWithCommit(tmp);
+          const fileSystem = yield* FileSystem.FileSystem;
+          const checkpointStore = yield* CheckpointStore.CheckpointStore;
+          const checkpointRef = checkpointRefForThreadTurn(
+            ThreadId.make("checkpoint-capture-index"),
+            0,
+          );
+          // A sparse checkout: the index holds README.md, the working tree does not.
+          // A snapshot seeded from HEAD alone records it as deleted.
+          yield* git(tmp, ["update-index", "--skip-worktree", "README.md"]);
+          yield* fileSystem.remove(NodePath.join(tmp, "README.md"));
+          yield* writeTextFile(NodePath.join(tmp, "untracked.txt"), "new\n");
+
+          yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+
+          const tree = yield* git(tmp, ["ls-tree", "--name-only", checkpointRef]);
+          expect(tree.split("\n").sort()).toEqual(["README.md", "untracked.txt"]);
+          // The user index is untouched: README.md still skip-worktree, untracked.txt unstaged.
+          expect(yield* git(tmp, ["ls-files", "-t"])).toBe("S README.md");
+        }),
+    );
+
+    it.effect("records the working tree of a skip-worktree file the checkout does hold", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const checkpointRef = checkpointRefForThreadTurn(
+          ThreadId.make("checkpoint-capture-skip-worktree-present"),
+          0,
+        );
+        // A local override: the user told git to stop looking at README.md, and a
+        // turn then edits it. Trusting the flag drops the edit from the turn's card.
+        yield* git(tmp, ["update-index", "--skip-worktree", "README.md"]);
+        yield* writeTextFile(NodePath.join(tmp, "README.md"), "# edited by the turn\n");
+
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+
+        expect(yield* git(tmp, ["show", `${checkpointRef}:README.md`])).toBe(
+          "# edited by the turn",
+        );
+        expect(yield* git(tmp, ["ls-files", "-t"])).toBe("S README.md");
+      }),
+    );
+
+    it.effect("records the working tree of an assume-unchanged file", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const checkpointRef = checkpointRefForThreadTurn(
+          ThreadId.make("checkpoint-capture-assume-unchanged"),
+          0,
+        );
+        yield* git(tmp, ["update-index", "--assume-unchanged", "README.md"]);
+        yield* writeTextFile(NodePath.join(tmp, "README.md"), "# edited by the turn\n");
+
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+
+        expect(yield* git(tmp, ["show", `${checkpointRef}:README.md`])).toBe(
+          "# edited by the turn",
+        );
+        expect(yield* git(tmp, ["ls-files", "-v"])).toBe("h README.md");
+      }),
+    );
+  });
 });
