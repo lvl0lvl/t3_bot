@@ -8,6 +8,7 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
 import { describe, expect } from "vite-plus/test";
@@ -433,31 +434,69 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
   });
 
   describe("captureCheckpoint", () => {
-    it.effect(
-      "keeps a skip-worktree entry the checkout does not hold and records an untracked file",
-      () =>
-        Effect.gen(function* () {
-          const tmp = yield* makeTmpDir();
-          yield* initRepoWithCommit(tmp);
-          const fileSystem = yield* FileSystem.FileSystem;
-          const checkpointStore = yield* CheckpointStore.CheckpointStore;
-          const checkpointRef = checkpointRefForThreadTurn(
-            ThreadId.make("checkpoint-capture-index"),
-            0,
-          );
-          // A sparse checkout: the index holds README.md, the working tree does not.
-          // A snapshot seeded from HEAD alone records it as deleted.
-          yield* git(tmp, ["update-index", "--skip-worktree", "README.md"]);
-          yield* fileSystem.remove(NodePath.join(tmp, "README.md"));
-          yield* writeTextFile(NodePath.join(tmp, "untracked.txt"), "new\n");
+    const captureRef = (name: string) => checkpointRefForThreadTurn(ThreadId.make(name), 0);
 
-          yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+    it.effect("records an untracked file and leaves the user index untouched", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const checkpointRef = captureRef("checkpoint-capture-untracked");
+        yield* writeTextFile(NodePath.join(tmp, "untracked.txt"), "new\n");
 
-          const tree = yield* git(tmp, ["ls-tree", "--name-only", checkpointRef]);
-          expect(tree.split("\n").sort()).toEqual(["README.md", "untracked.txt"]);
-          // The user index is untouched: README.md still skip-worktree, untracked.txt unstaged.
-          expect(yield* git(tmp, ["ls-files", "-t"])).toBe("S README.md");
-        }),
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+
+        const tree = yield* git(tmp, ["ls-tree", "--name-only", checkpointRef]);
+        expect(tree.split("\n").sort()).toEqual(["README.md", "untracked.txt"]);
+        expect(yield* git(tmp, ["ls-files", "-t"])).toBe("H README.md");
+      }),
+    );
+
+    it.effect("records a same-size edit made in the second the index was written", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const fileSystem = yield* FileSystem.FileSystem;
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const checkpointRef = captureRef("checkpoint-capture-racy");
+        // README.md is committed, edited to the same size, and the file and the
+        // index carry the same second: the stat cache cannot tell the contents
+        // apart and only the racy-clean rule (entry mtime not older than the
+        // index file's) makes git hash the file. A temp index stamped with the
+        // copy time is younger than the entry and trusts "# test".
+        // 2026-01-01T00:00:00Z, as the seconds `utimes` takes.
+        const stamp = 1_767_225_600;
+        yield* initRepoWithCommit(tmp);
+        yield* fileSystem.utimes(NodePath.join(tmp, "README.md"), stamp, stamp);
+        yield* git(tmp, ["add", "README.md"]);
+        yield* fileSystem.utimes(NodePath.join(tmp, ".git", "index"), stamp, stamp);
+        yield* writeTextFile(NodePath.join(tmp, "README.md"), "# tes2\n");
+        yield* fileSystem.utimes(NodePath.join(tmp, "README.md"), stamp, stamp);
+
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+
+        expect(yield* git(tmp, ["show", `${checkpointRef}:README.md`])).toBe("# tes2");
+      }),
+    );
+
+    it.effect("records the working tree of an assume-unchanged file", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const checkpointRef = captureRef("checkpoint-capture-assume-unchanged");
+        // The flag tells `add -A` not to read the file. The seeded index carries
+        // it, so the capture must fall back to seeding from HEAD, which carries
+        // no flags; trusting the flag records "# test".
+        yield* git(tmp, ["update-index", "--assume-unchanged", "README.md"]);
+        yield* writeTextFile(NodePath.join(tmp, "README.md"), "# edited by the turn\n");
+
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+
+        expect(yield* git(tmp, ["show", `${checkpointRef}:README.md`])).toBe(
+          "# edited by the turn",
+        );
+        expect(yield* git(tmp, ["ls-files", "-v"])).toBe("h README.md");
+      }),
     );
 
     it.effect("records the working tree of a skip-worktree file the checkout does hold", () =>
@@ -465,12 +504,7 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         const tmp = yield* makeTmpDir();
         yield* initRepoWithCommit(tmp);
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
-        const checkpointRef = checkpointRefForThreadTurn(
-          ThreadId.make("checkpoint-capture-skip-worktree-present"),
-          0,
-        );
-        // A local override: the user told git to stop looking at README.md, and a
-        // turn then edits it. Trusting the flag drops the edit from the turn's card.
+        const checkpointRef = captureRef("checkpoint-capture-skip-worktree-present");
         yield* git(tmp, ["update-index", "--skip-worktree", "README.md"]);
         yield* writeTextFile(NodePath.join(tmp, "README.md"), "# edited by the turn\n");
 
@@ -483,50 +517,211 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
       }),
     );
 
-    it.effect("records the working tree of an assume-unchanged file", () =>
+    it.effect(
+      "records an absent entry carrying both index flags as deleted, as seeding from HEAD does",
+      () =>
+        Effect.gen(function* () {
+          const tmp = yield* makeTmpDir();
+          yield* initRepoWithCommit(tmp);
+          const fileSystem = yield* FileSystem.FileSystem;
+          const checkpointStore = yield* CheckpointStore.CheckpointStore;
+          const checkpointRef = captureRef("checkpoint-capture-both-flags-absent");
+          // `git ls-files -v` prints an entry with both bits as `s`, not `S`: a
+          // check keyed on the letter routes it wrong. Any tag but `H` falls back.
+          // A real sparse checkout is unaffected either way; this is the manual
+          // `update-index --skip-worktree` override, and it keeps main's answer.
+          yield* git(tmp, ["update-index", "--skip-worktree", "README.md"]);
+          yield* git(tmp, ["update-index", "--assume-unchanged", "README.md"]);
+          yield* fileSystem.remove(NodePath.join(tmp, "README.md"));
+          yield* writeTextFile(NodePath.join(tmp, "kept.txt"), "kept\n");
+          expect(yield* git(tmp, ["ls-files", "-v"])).toBe("s README.md");
+
+          yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+
+          expect(yield* git(tmp, ["ls-tree", "--name-only", checkpointRef])).toBe("kept.txt");
+          expect(yield* git(tmp, ["ls-files", "-v"])).toBe("s README.md");
+        }),
+    );
+
+    it.effect("does not record a force-staged ignored file", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
         yield* initRepoWithCommit(tmp);
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
-        const checkpointRef = checkpointRefForThreadTurn(
-          ThreadId.make("checkpoint-capture-assume-unchanged"),
-          0,
-        );
-        yield* git(tmp, ["update-index", "--assume-unchanged", "README.md"]);
-        yield* writeTextFile(NodePath.join(tmp, "README.md"), "# edited by the turn\n");
+        const checkpointRef = captureRef("checkpoint-capture-force-staged");
+        // `git add -f .env` puts the file in the live index and nowhere else: a
+        // temp index that keeps the live index's membership commits the secret
+        // and the turn's diff ships it. Seeding from HEAD never held it.
+        yield* writeTextFile(NodePath.join(tmp, ".gitignore"), ".env\n");
+        yield* git(tmp, ["add", ".gitignore"]);
+        yield* git(tmp, ["commit", "-m", "ignore .env"]);
+        yield* writeTextFile(NodePath.join(tmp, ".env"), "AWS_SECRET_ACCESS_KEY=secret\n");
+        yield* git(tmp, ["add", "-f", ".env"]);
 
         yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
 
-        expect(yield* git(tmp, ["show", `${checkpointRef}:README.md`])).toBe(
-          "# edited by the turn",
-        );
-        expect(yield* git(tmp, ["ls-files", "-v"])).toBe("h README.md");
+        const tree = yield* git(tmp, ["ls-tree", "--name-only", checkpointRef]);
+        expect(tree.split("\n").sort()).toEqual([".gitignore", "README.md"]);
+        expect(yield* git(tmp, ["ls-files", ".env"])).toBe(".env");
       }),
     );
 
-    it.effect("records an absent assume-unchanged file as deleted", () =>
+    it.effect("records a tracked file removed from the index but kept on disk", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const checkpointRef = captureRef("checkpoint-capture-stop-tracking");
+        // The stop-tracking idiom: `git rm --cached`, then ignore the path and
+        // keep editing it. HEAD still holds it, so seeding from HEAD records the
+        // edit; a temp index with the live index's membership records a deletion.
+        yield* git(tmp, ["rm", "--cached", "README.md"]);
+        yield* writeTextFile(NodePath.join(tmp, ".gitignore"), "README.md\n");
+        yield* writeTextFile(NodePath.join(tmp, "README.md"), "# local only\n");
+
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+
+        expect(yield* git(tmp, ["show", `${checkpointRef}:README.md`])).toBe("# local only");
+      }),
+    );
+
+    it.effect("captures from a subdirectory while a merge conflict sits outside it", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const fileSystem = yield* FileSystem.FileSystem;
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const checkpointRef = captureRef("checkpoint-capture-conflict-outside");
+        // A project rooted at a subdirectory of a repository. `add -A -- .` only
+        // resolves the unmerged entries under it; the ones a copied index carries
+        // for paths outside it make `write-tree` refuse the whole capture.
+        yield* initRepoWithCommit(tmp);
+        yield* fileSystem.makeDirectory(NodePath.join(tmp, "proj"));
+        yield* writeTextFile(NodePath.join(tmp, "proj", "p.txt"), "p\n");
+        yield* writeTextFile(NodePath.join(tmp, "other.txt"), "base\n");
+        yield* git(tmp, ["add", "."]);
+        yield* git(tmp, ["commit", "-m", "layout"]);
+        yield* git(tmp, ["checkout", "-q", "-b", "side"]);
+        yield* writeTextFile(NodePath.join(tmp, "other.txt"), "side\n");
+        yield* git(tmp, ["commit", "-am", "side"]);
+        yield* git(tmp, ["checkout", "-q", "-"]);
+        yield* writeTextFile(NodePath.join(tmp, "other.txt"), "main\n");
+        yield* git(tmp, ["commit", "-am", "main"]);
+        const merge = yield* git(tmp, ["merge", "side"]).pipe(Effect.option);
+        expect(Option.isNone(merge)).toBe(true);
+        expect(yield* git(tmp, ["ls-files", "-u", "--", "other.txt"])).not.toBe("");
+        yield* writeTextFile(NodePath.join(tmp, "proj", "p.txt"), "edited\n");
+
+        yield* checkpointStore.captureCheckpoint({
+          cwd: NodePath.join(tmp, "proj"),
+          checkpointRef,
+        });
+
+        expect(yield* git(tmp, ["show", `${checkpointRef}:proj/p.txt`])).toBe("edited");
+      }),
+    );
+
+    it.effect("records HEAD's content for a staged edit outside the capture directory", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const fileSystem = yield* FileSystem.FileSystem;
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const checkpointRef = captureRef("checkpoint-capture-staged-outside");
+        // Paths outside `add -A -- .` are whatever the seed holds: HEAD's content,
+        // as seeding from HEAD gave, not the live index's staged content.
+        yield* initRepoWithCommit(tmp);
+        yield* fileSystem.makeDirectory(NodePath.join(tmp, "proj"));
+        yield* writeTextFile(NodePath.join(tmp, "proj", "p.txt"), "p\n");
+        yield* git(tmp, ["add", "."]);
+        yield* git(tmp, ["commit", "-m", "layout"]);
+        yield* writeTextFile(NodePath.join(tmp, "README.md"), "# staged\n");
+        yield* git(tmp, ["add", "README.md"]);
+        yield* writeTextFile(NodePath.join(tmp, "README.md"), "# worktree\n");
+
+        yield* checkpointStore.captureCheckpoint({
+          cwd: NodePath.join(tmp, "proj"),
+          checkpointRef,
+        });
+
+        expect(yield* git(tmp, ["show", `${checkpointRef}:README.md`])).toBe("# test");
+      }),
+    );
+
+    it.effect("leaves the user's split index and its shared files alone", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
         yield* initRepoWithCommit(tmp);
         const fileSystem = yield* FileSystem.FileSystem;
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
-        const checkpointRef = checkpointRefForThreadTurn(
-          ThreadId.make("checkpoint-capture-assume-unchanged-absent"),
-          0,
-        );
-        // assume-unchanged says the index is stale, not that the file is absent on
-        // purpose: a turn that then deletes it must be able to show the deletion,
-        // and the tree the next turn finds really has no README.md. Kept like a
-        // sparse entry, the snapshot would hold the file and the deletion would
-        // land on the next turn's card instead of this one's.
-        yield* git(tmp, ["update-index", "--assume-unchanged", "README.md"]);
-        yield* fileSystem.remove(NodePath.join(tmp, "README.md"));
-        yield* writeTextFile(NodePath.join(tmp, "kept.txt"), "kept\n");
+        // A copied split index written by `add -A` creates a new sharedindex.*
+        // in the user's git dir per capture, and with a short expiry deletes
+        // the one the live index still references.
+        yield* git(tmp, ["config", "core.splitIndex", "true"]);
+        yield* git(tmp, ["config", "splitIndex.sharedIndexExpire", "now"]);
+        yield* git(tmp, ["update-index", "--split-index"]);
+        yield* writeTextFile(NodePath.join(tmp, "untracked.txt"), "new\n");
+        const sharedIndexFiles = fileSystem
+          .readDirectory(NodePath.join(tmp, ".git"))
+          .pipe(
+            Effect.map((names) => names.filter((name) => name.startsWith("sharedindex.")).sort()),
+          );
+        const before = yield* sharedIndexFiles;
+        expect(before.length).toBe(1);
+
+        for (const turn of [0, 1, 2]) {
+          yield* checkpointStore.captureCheckpoint({
+            cwd: tmp,
+            checkpointRef: checkpointRefForThreadTurn(
+              ThreadId.make("checkpoint-capture-split"),
+              turn,
+            ),
+          });
+        }
+
+        expect(yield* sharedIndexFiles).toEqual(before);
+        expect(yield* git(tmp, ["status", "--porcelain"])).toBe("?? untracked.txt");
+      }),
+    );
+
+    it.effect("seeds from HEAD when the repository has no index file", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const fileSystem = yield* FileSystem.FileSystem;
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const checkpointRef = captureRef("checkpoint-capture-no-index");
+        // `git clone --no-checkout` and `git worktree add --no-checkout` leave a
+        // HEAD and no index file; HEAD's tracked entries must still be captured,
+        // including a tracked file the ignore rules would keep `add -A` from adding.
+        yield* writeTextFile(NodePath.join(tmp, ".gitignore"), "README.md\n");
+        yield* git(tmp, ["add", "-f", ".gitignore"]);
+        yield* git(tmp, ["commit", "-m", "ignore the readme"]);
+        yield* fileSystem.remove(NodePath.join(tmp, ".git", "index"));
 
         yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
 
-        expect(yield* git(tmp, ["ls-tree", "--name-only", checkpointRef])).toBe("kept.txt");
-        expect(yield* git(tmp, ["ls-files", "-v"])).toBe("h README.md");
+        const tree = yield* git(tmp, ["ls-tree", "--name-only", checkpointRef]);
+        expect(tree.split("\n").sort()).toEqual([".gitignore", "README.md"]);
+      }),
+    );
+
+    it.effect("records a tracked file that .gitignore also matches", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const checkpointRef = captureRef("checkpoint-capture-tracked-ignored");
+        // Ignore rules never apply to a tracked path; an entry dropped from the
+        // temp index would become untracked, and `add -A` would then skip it.
+        yield* writeTextFile(NodePath.join(tmp, "build.log"), "old\n");
+        yield* git(tmp, ["add", "build.log"]);
+        yield* writeTextFile(NodePath.join(tmp, ".gitignore"), "build.log\n");
+        yield* git(tmp, ["add", ".gitignore"]);
+        yield* git(tmp, ["commit", "-m", "track then ignore"]);
+        yield* writeTextFile(NodePath.join(tmp, "build.log"), "edited\n");
+
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+
+        expect(yield* git(tmp, ["show", `${checkpointRef}:build.log`])).toBe("edited");
       }),
     );
   });
