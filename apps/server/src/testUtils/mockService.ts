@@ -1,4 +1,4 @@
-import type { Channel, Context, Effect, Stream } from "effect";
+import type { Context } from "effect";
 import { Layer } from "effect";
 
 // A stub that names every member of the shape. A member the test does not
@@ -28,18 +28,17 @@ export interface Unstubbed {
 // form, 0 at this one).
 export const unstubbed: Unstubbed = { [UnstubbedId]: true };
 
-// Mirrors the members Layer.mock treats as optional (effect Layer.d.ts,
-// `AnyEffectOrStream`, not exported).
-type EffectfulMember =
-  | Effect.Effect<any, any, any>
-  | Stream.Stream<any, any, any>
-  | Channel.Channel<any, any, any, any, any, any, any>
-  | ((...args: any) => Effect.Effect<any, any, any>)
-  | ((...args: any) => Stream.Stream<any, any, any>)
-  | ((...args: any) => Channel.Channel<any, any, any, any, any, any, any>);
-
-export type TotalStub<Shape> = {
-  readonly [K in keyof Shape]-?: Shape[K] extends EffectfulMember ? Shape[K] | Unstubbed : Shape[K];
+// Which members may be `unstubbed` is asked of Layer.mock's own type
+// rather than restated: PartialEffectful makes exactly the members
+// Layer.mock treats as optional optional, so a key it leaves omittable is
+// the key this stub may leave unstubbed. `-?` then makes every member,
+// optional in the shape or not, one the stub has to name.
+export type TotalStub<Shape extends object> = {
+  readonly [K in keyof Shape]-?: K extends keyof Layer.PartialEffectful<Shape>
+    ? {} extends Pick<Layer.PartialEffectful<Shape>, K>
+      ? Shape[K] | Unstubbed
+      : Shape[K]
+    : Shape[K];
 };
 
 // By the brand, not by identity: a second instance of this module (a
