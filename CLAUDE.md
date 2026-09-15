@@ -115,6 +115,12 @@ message types: `comms/README.md` there.
 Each names the failure that produced it. Two have fired more than once and are marked; the rest are
 single observations.
 
+Each rule states its failure mode where one has been OBSERVED — what breaking it looked like — because
+every failure below arrived wearing success, and nobody consults a rule while succeeding. A green
+suite, a clean typecheck, a silent lane, an exit 0, a passing test: from inside those there is nothing
+to look up. A rule with no observed failure mode leaves the line blank rather than guessing, and the
+blank is informative — it marks a rule that has only ever been obeyed.
+
 - **When one thing has produced repeated defects of the same class, ask what would have to be true for
   it not to exist.** The SECOND correction of one class in one place is the signal to delete, not the
   third. Twice this night a requirement to prove a delicate thing correct was discharged by deleting
