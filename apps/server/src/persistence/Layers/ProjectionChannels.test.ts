@@ -532,9 +532,13 @@ layer("ProjectionChannelRepository", (it) => {
   it.effect("without the roster, a non-member still gets nothing rather than everything", () =>
     Effect.gen(function* () {
       // THE REFUSE SIDE OF THE ROSTER-LESS METHOD, and the reason it is written
-      // as its own test rather than trusted from the sibling's: `t3_bot-a4i`'s
-      // sweep found that dropping the membership JOIN returns every channel on
-      // the server to every client, and it survived 198 tests. The predicate is
+      // as its own test rather than trusted from the sibling's: this filter came
+      // to have five surviving mutants, one of which returned every channel to
+      // every client and reddened nothing — recorded at
+      // `orchestration/channelPosts.test.ts:18-26` (c38963c12f), with the tests
+      // that closed it in 75234a6619. No pass count, deliberately: that comment
+      // gives the reason, and 42ec7b0dbc removed the counts it argued against.
+      // The predicate is
       // the query's, so a method that stops running the query — or runs one
       // without the WHERE — reads as working against any fixture whose member
       // IS a member. Only a non-member separates "filtered" from "not filtered
@@ -567,12 +571,14 @@ layer("ProjectionChannelRepository", (it) => {
   it.effect("without the roster, a matching id with the wrong KIND still gets nothing", () =>
     Effect.gen(function* () {
       // THE SECOND HALF OF THE PREDICATE, through the method production calls.
-      // The WHERE is two fields (`m.member_kind = ? AND m.member_id = ?`) and
-      // only a fixture whose members differ in ONE of them can separate the
-      // halves. Every other fixture for this method — including the refuse test
-      // above, whose stranger id exists nowhere — differs in BOTH, so dropping
-      // `m.member_kind` leaves them all green. Measured: that mutation reds
-      // exactly one test in this file, and before this test it was the sibling's.
+      // The WHERE is two fields (`m.member_kind = ? AND m.member_id = ?`), and
+      // the ONLY input that separates them is a MATCHING id with a DIFFERING
+      // kind. No other fixture for this method presents one: the refuse test
+      // above asks as a stranger whose id is seated nowhere (both refs are
+      // `human`, so it differs by id alone and returns nothing whatever the kind
+      // clause does), and the parity and statement-count fixtures ask as the one
+      // member they seat. Measured: dropping `m.member_kind` reds exactly one
+      // test in this file, and before this test it was the sibling's.
       //
       // The two methods share one statement today, so the sibling's test would
       // catch it — but that sharing is an implementation detail, and
