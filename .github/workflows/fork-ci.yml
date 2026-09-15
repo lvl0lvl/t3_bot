@@ -25,8 +25,18 @@ on:
     branches: [main]
 
 concurrency:
+  # CANCEL PR RUNS, NEVER MAIN. `group` keys on `github.ref`, which is
+  # `refs/heads/main` for EVERY merge, so a bare `cancel-in-progress: true`
+  # makes each merge cancel the one before it. That was survivable while the
+  # longest job here was 20 minutes; the sweep below runs to 24 (measured in
+  # CI), so merging a second PR inside that window would leave main with a
+  # sweep that never finishes — an exit code with no reader, which is the
+  # failure the sweep job exists to remove.
+  # Upstream's `ci.yml:12-14` is guarded twice: its group carries
+  # `github.sha` on a push, so merges never share a group, AND its
+  # cancel-in-progress is this same expression. One of the two is enough.
   group: fork-ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
@@ -60,15 +70,125 @@ jobs:
       # THE SCRIPTS PACKAGE, because the test-count gate's own proofs live in it
       # and ran in NO job on this fork: `test_server` filters to `t3`, and the
       # upstream job that would cover `@t3tools/scripts` sits queued forever on
-      # runners we do not have. Six tests that never run are six tests that rot,
+      # runners we do not have. Tests that never run are tests that rot,
       # and the gate cannot measure its own file.
       #
       # This is the narrow widening the header asks for — something in scope
-      # HAS broken (nothing was verifying it) — and it is cheap: 21 files, 296
-      # tests, 2.4s, no Electron and no libsecret, which is why the broader
-      # `test` job is still excluded.
+      # HAS broken (nothing was verifying it) — and it is cheap: 26 files, 392
+      # tests, 4.8s (measured 2026-09-15; it was 21/296 when this job was
+      # written, and this PR adds one of the files), no Electron and no
+      # libsecret, which is why the broader `test` job is still excluded.
       - name: Test scripts
         run: vp run --filter @t3tools/scripts test
+
+  sweep:
+    # THE MUTATION SWEEP, one config per runner.
+    #
+    # WHY IT IS HERE: on #68 a PR changed the expression its own sweep config
+    # anchors on. The tool caught it — refusal 1, whole-config refusal, exit 1 —
+    # and the config then sat inert for a day, because an exit code with no
+    # reader is not a gate. Nothing was silent and nothing about the tool was
+    # broken; it simply ran nowhere. This job is the reader (`t3_bot-2ij`).
+    #
+    # ONE CONFIG PER JOB rather than six in sequence: the slowest single config
+    # fits this file's timeout budget where the 61-minute serial total does not,
+    # and a red job NAMES the config that broke in the run summary without anyone
+    # opening a log. It is not free — six jobs pay six checkouts and six installs
+    # where one would pay one — but the sweeps themselves dominate and the wall
+    # clock is what the gate waits on.
+    #
+    # NO PATH FILTER, deliberately. Filtering this job alone would need either a
+    # second workflow file or a job-level paths action, and this repo has no
+    # idiom for the latter and `fork-ci.yml` trusts only `actions/checkout` and
+    # `setup-vp`. A filtered-out job leaves NO row in check-runs, and the merge
+    # gate is a human reading check-runs — an absence read as green is the exact
+    # failure this job exists to prevent. Docs-only PRs pay runner minutes that
+    # are free; a misread absence is not.
+    name: Fork Sweep ${{ matrix.config }}
+    runs-on: ubuntu-latest
+    # MEASURED IN CI at 92b97fe2dc, not scaled from a local run: the slowest
+    # config is `channel-invariants` at 1443s (24m), and the local ranking did
+    # NOT predict it — locally `colliding-roster` was slowest, and the six
+    # local:CI ratios spread 1.4x to 3.0x, so no single factor reproduces this
+    # table. The house 20m would have timed out `channel-invariants` on every
+    # run. 40 leaves real headroom over an observed 24m; tighten it only against
+    # another CI measurement.
+    #
+    # `channel-invariants` is slow because its testCommand is the whole
+    # `apps/server/src/orchestration` directory — 51 test files today — re-run
+    # per mutant: 18 rows x (one mutant run + one confirming run) = 36 suite runs,
+    # plus the baseline. Narrowing it is `t3_bot-2ij`'s own follow-up, not a
+    # timeout problem.
+    timeout-minutes: 40
+    strategy:
+      # One broken guard must not cancel the other five verdicts: a sweep run
+      # that stops early reports fewer rows than it measured.
+      fail-fast: false
+      matrix:
+        config:
+          - channel-cursor
+          - channel-invariants
+          - channel-post-wake
+          - colliding-roster
+          - invariant-reason
+          - workflow-script
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      # THE SWEEP SPAWNS `pnpm` ITSELF: every config's `setupCommand` is
+      # `pnpm install --frozen-lockfile`, run inside the scratch worktree the
+      # tool creates. `setup-vp` puts `vp` on PATH but not `pnpm`, so without
+      # this the sweep dies at setup with
+      # `NotFound: ChildProcess.spawn (pnpm install --frozen-lockfile)` — which
+      # is what the first run of this job did, in every config, in under 90s.
+      # Copied from `mobile-showcase-screenshots.yml`, WITH ONE DIFFERENCE THAT MATTERS:
+      # that workflow is `workflow_dispatch`-only, so its `package.json` is always a
+      # maintainer's. This one runs on `pull_request`, so `packageManager` is whatever
+      # the PR says. It buys an attacker nothing here — `setup-vp` has already run the
+      # PR's own `prepare` script by this line, and the closing `--version` fails on a
+      # malformed path — but the sameness is not total and the next reader should not
+      # infer it is. Same step, including its closing
+      # `pnpm --version`: a PATH edit that silently did not take would otherwise
+      # surface as six confusing setup failures rather than one clear one.
+      - name: Expose pnpm
+        run: |
+          pnpm_version="$(node --print "require('./package.json').packageManager.split('@').pop()")"
+          vp_pnpm_bin="$HOME/.vite-plus/package_manager/pnpm/$pnpm_version/pnpm/bin"
+          echo "$vp_pnpm_bin" >> "$GITHUB_PATH"
+          "$vp_pnpm_bin/pnpm" --version
+
+      # NOT PIPED, AND THAT IS THE POINT. GitHub runs `run:` under `bash -e {0}`
+      # with no `pipefail`, so `guard-sweep … | tee sweep.log` reports TEE's
+      # status and a sweep that exited 1 goes GREEN. Proof, both shells:
+      #   bash -e            -c 'false | tee /dev/null; echo $?'  -> 0
+      #   bash -e -o pipefail -c 'false | tee /dev/null; echo $?'  -> step fails
+      # That default is the PREMISE, not a detail: an explicit `shell: bash` sets
+      # `-eo pipefail`, and this file declares no `shell:` or `defaults:` anywhere.
+      #
+      # A RED HERE IS THREE DIFFERENT PROBLEMS AND DOES NOT SAY WHICH, because a
+      # step fails on any non-zero: 2 = a guard came unpinned (act on the guard),
+      # 3 = a row was not measured at all, 1 = the tool or this config failed —
+      # which is what #68 actually was, a whole-config refusal on a drifted
+      # anchor. The codes are in `exitCodeFor`; the report naming the rows is the
+      # last thing in this step's log.
+      # stdout is already captured in the run log, so a pipe buys nothing here
+      # and costs the verdict. `scripts/guard-sweep.ci-step.test.ts` reds if this
+      # line ever grows one.
+      - name: Sweep
+        run: node scripts/guard-sweep.ts --config scripts/guard-sweep.${{ matrix.config }}.json
 
   test_server:
     # apps/server sets `fileParallelism: false`, so its test files run strictly
