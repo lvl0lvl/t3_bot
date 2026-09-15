@@ -60,18 +60,22 @@ Persisted events must remain decodable on replay. Changing a schema affects old 
 startup as well as live RPC traffic. Compatibility work must account for stored history, not just
 what the newest client sends.
 
-Event-store replay decodes fail-fast: one row this binary cannot decode fails the whole projection
-bootstrap, not just that read. So adding an aggregate kind or event type is a one-way door for the
-environment that writes the first one — `channel` is the current example. Once channel events exist
-in a database, a binary predating them cannot start against it.
+Event-store replay skips what it cannot name and fails on what it cannot trust. A row whose event
+type or aggregate kind is outside this binary's unions was written by a newer build: the read skips
+it and logs one warning per row per reader. Adding an aggregate kind or event type is therefore no
+longer a one-way door for the environment that writes the first one — `channel` is the example that
+made it one. A row whose kind and type this binary does know, carrying a payload its schema refuses,
+still fails the whole read: that is corruption, and reading past it would hide data loss.
+
+Skipping is not deferral. The projector watermark advances to the next applied event, so a skipped
+row sits behind it permanently: the build that later knows the type resumes from the same watermark
+and never replays it, and only a full projection rebuild repairs the hole. Detecting the hole and
+asking for that rebuild is bead `t3_bot-n33f`; nothing in this build asks for one.
 
 The environment descriptor's capabilities do not help here, and reaching for them is the tempting
 wrong move: they are what a server tells _clients_ it supports, and nothing in the replay path reads
 them. A server advertising no channel support still has to decode whatever is already in its own
-database. The only real remedies are making the decode tolerant of unknown rows, or accepting the
-one-way door. We accepted it, because one binary runs one database here; revisit the moment
-environments upgrade independently — upstream, a relay or tunnel host, or a desktop build a user can
-roll back.
+database.
 
 ## Turn completion and checkpoints
 

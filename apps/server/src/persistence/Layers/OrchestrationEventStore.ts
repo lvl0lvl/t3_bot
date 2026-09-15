@@ -60,6 +60,80 @@ const OrchestrationEventPersistedRowSchema = Schema.Struct({
   metadata: EventMetadataFromJsonString,
 });
 
+// The persisted row's columns, with three widened. A new column added to the
+// row above reaches the read without a second edit here.
+const OrchestrationEventReadRowSchema = Schema.Struct({
+  ...OrchestrationEventPersistedRowSchema.fields,
+  // Plain strings, not the closed unions: a row written by a newer build
+  // carries a type, an aggregate kind and an id shape this build does not
+  // know, and the read decides per row whether to skip it (unknown type or
+  // kind) or fail (known type and kind, refused payload). 8660c7933c is the
+  // input: a new aggregate kind and its event types arrive in one change, so a
+  // closed kind union here refuses the whole page before any row is judged.
+  type: Schema.String,
+  aggregateKind: Schema.String,
+  aggregateId: Schema.String,
+});
+
+const isKnownEventType = Schema.is(OrchestrationEventType);
+const isKnownAggregateKind = Schema.is(OrchestrationAggregateKind);
+
+// A row whose type or aggregate kind is outside this build's unions was
+// written by a newer build. The read skips it and logs one warning per row per
+// read, and keeps failing on a KNOWN kind and type whose payload its schema
+// refuses: that is corruption, and reading past it would hide data loss.
+// ProviderSessionRuntimeRepository.list (31ca9e5531, upstream #3951) skips any
+// row that fails to decode; this reader narrows that on purpose: an unknown
+// type or kind skips, a refused payload of a known type still fails.
+// DISCLOSED: a skipped row is crossed by the projector watermark permanently
+// on this build; upgrading to the build that knows the type does NOT replay
+// it; the repair is a full projection rebuild, and nothing in this build asks
+// for one. The input: a newer build's event at sequence N skipped here, then
+// any known event at N+1 applied.
+// DISCLOSED: the warning is per row per READER, and uncapped. Each projector's
+// bootstrap, the cleanup scan and the mention-wake catch-up each read the log
+// at start, and trailing unknown rows re-warn on every start until a known
+// event lands beyond them.
+const decodeRowsSkippingUnknownTypes = (
+  rows: ReadonlyArray<typeof OrchestrationEventReadRowSchema.Type>,
+  operation: string,
+) =>
+  Effect.forEach(rows, (row) => {
+    const unknown = !isKnownAggregateKind(row.aggregateKind)
+      ? { what: "aggregate kind", value: row.aggregateKind }
+      : !isKnownEventType(row.type)
+        ? { what: "type", value: row.type }
+        : undefined;
+    if (unknown !== undefined) {
+      // The value is a column a newer build wrote, so the warning bounds and
+      // escapes it: a 200,000-character event type fills the log line, and a
+      // type carrying ESC or a newline forges log lines around it. The
+      // annotation keeps the raw value for whoever reads the structured log.
+      return Effect.logWarning(
+        `orchestration event skipped: unknown ${unknown.what} ${JSON.stringify(unknown.value.slice(0, 120))} at sequence ${row.sequence}`,
+      ).pipe(
+        Effect.annotateLogs({
+          sequence: row.sequence,
+          type: row.type,
+          aggregateKind: row.aggregateKind,
+          aggregateId: row.aggregateId,
+          occurredAt: row.occurredAt,
+        }),
+        Effect.as(Option.none<OrchestrationEvent>()),
+      );
+    }
+    // The guarded row goes to the union decode whole. decodeEvent takes
+    // unknown, and the union brands the kind and the id itself.
+    return decodeEvent(row).pipe(
+      Effect.mapError(toPersistenceDecodeError(operation)),
+      Effect.map(Option.some),
+    );
+  }).pipe(
+    Effect.map((decoded) =>
+      decoded.flatMap((event) => (Option.isSome(event) ? [event.value] : [])),
+    ),
+  );
+
 const HasEventAfterRequestSchema = Schema.Struct({
   aggregateKind: Schema.String,
   aggregateId: Schema.String,
@@ -178,7 +252,7 @@ const makeEventStore = Effect.gen(function* () {
 
   const readEventRowsFromSequence = SqlSchema.findAll({
     Request: ReadFromSequenceRequestSchema,
-    Result: OrchestrationEventPersistedRowSchema,
+    Result: OrchestrationEventReadRowSchema,
     execute: (request) =>
       sql`
         SELECT
@@ -202,7 +276,7 @@ const makeEventStore = Effect.gen(function* () {
 
   const readAggregateEventRows = SqlSchema.findAll({
     Request: AggregateReplayRequestSchema,
-    Result: OrchestrationEventPersistedRowSchema,
+    Result: OrchestrationEventReadRowSchema,
     execute: (request) =>
       sql`
         SELECT
@@ -300,24 +374,25 @@ const makeEventStore = Effect.gen(function* () {
             ),
           ),
           Effect.flatMap((rows) =>
-            Effect.forEach(rows, (row) =>
-              decodeEvent(row).pipe(
-                Effect.mapError(
-                  toPersistenceDecodeError("OrchestrationEventStore.readFromSequence:rowToEvent"),
-                ),
-              ),
+            decodeRowsSkippingUnknownTypes(
+              rows,
+              "OrchestrationEventStore.readFromSequence:rowToEvent",
+            ).pipe(
+              Effect.map((events) => {
+                // The cursor comes from the last row read, not the last event
+                // decoded: a skipped row at the end of a page would otherwise
+                // be re-read forever or end the read short.
+                const lastRow = rows.at(-1);
+                const nextRemaining = remaining - events.length;
+                return [
+                  events,
+                  lastRow === undefined || nextRemaining <= 0
+                    ? Option.none()
+                    : Option.some({ cursor: lastRow.sequence, remaining: nextRemaining }),
+                ] as const;
+              }),
             ),
           ),
-          Effect.map((events) => {
-            const last = events.at(-1);
-            const nextRemaining = remaining - events.length;
-            return [
-              events,
-              last === undefined || nextRemaining <= 0
-                ? Option.none()
-                : Option.some({ cursor: last.sequence, remaining: nextRemaining }),
-            ] as const;
-          }),
         ),
     );
   };
@@ -356,11 +431,16 @@ const makeEventStore = Effect.gen(function* () {
     }
     return Stream.paginate(
       { cursor: input.fromSequenceExclusive, remaining: limit },
-      ({ cursor, remaining }) =>
-        readAggregateEventRows({
+      ({ cursor, remaining }) => {
+        // One binding for the SQL limit and the stop test below, which compare
+        // against each other: a short page means the aggregate has no more
+        // rows in range, and a stop test reading READ_PAGE_SIZE while the
+        // query asked for `remaining` ends a full last page one read early.
+        const pageLimit = Math.min(remaining, READ_PAGE_SIZE);
+        return readAggregateEventRows({
           ...input,
           fromSequenceExclusive: cursor,
-          limit: Math.min(remaining, READ_PAGE_SIZE),
+          limit: pageLimit,
         }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
@@ -369,28 +449,31 @@ const makeEventStore = Effect.gen(function* () {
             ),
           ),
           Effect.flatMap((rows) =>
-            Effect.forEach(rows, (row) =>
-              decodeEvent(row).pipe(
-                Effect.mapError(
-                  toPersistenceDecodeError("OrchestrationEventStore.readAggregateRange:rowToEvent"),
-                ),
-              ),
+            decodeRowsSkippingUnknownTypes(
+              rows,
+              "OrchestrationEventStore.readAggregateRange:rowToEvent",
+            ).pipe(
+              Effect.map((events) => {
+                // The stop test counts ROWS READ, not events decoded. A page
+                // whose rows were all skipped yields no events and must still
+                // advance: the input is a page filled by unknown rows with a
+                // known row after them.
+                const lastRow = rows.at(-1);
+                const nextRemaining = remaining - events.length;
+                return [
+                  events,
+                  lastRow === undefined ||
+                  rows.length < pageLimit ||
+                  nextRemaining <= 0 ||
+                  lastRow.sequence >= input.toSequenceInclusive
+                    ? Option.none()
+                    : Option.some({ cursor: lastRow.sequence, remaining: nextRemaining }),
+                ] as const;
+              }),
             ),
           ),
-          Effect.map((events) => {
-            const last = events.at(-1);
-            const nextRemaining = remaining - events.length;
-            return [
-              events,
-              last === undefined ||
-              events.length < READ_PAGE_SIZE ||
-              nextRemaining === 0 ||
-              last.sequence >= input.toSequenceInclusive
-                ? Option.none()
-                : Option.some({ cursor: last.sequence, remaining: nextRemaining }),
-            ] as const;
-          }),
-        ),
+        );
+      },
     );
   };
 

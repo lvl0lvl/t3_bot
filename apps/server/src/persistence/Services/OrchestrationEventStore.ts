@@ -4,6 +4,10 @@
  * Owns durable append/replay access to the orchestration event stream. It does
  * not reduce events into read models or apply command validation rules.
  *
+ * Every read skips and logs a row whose event type or aggregate kind is
+ * outside this build's contracts; a row whose payload its schema refuses fails
+ * the read with PersistenceDecodeError.
+ *
  * Uses Effect `Context.Service` for dependency injection and exposes typed
  * persistence/decode errors for event append and replay operations.
  *
@@ -76,7 +80,7 @@ export interface OrchestrationEventStoreShape {
   /**
    * Read all events from the beginning of the stream.
    *
-   * @returns Stream containing all stored events.
+   * @returns Stream containing all stored events this build can decode.
    */
   readonly readAll: () => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
 
