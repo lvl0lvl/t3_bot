@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import type { Channel, Stream } from "effect";
 import { Cause, Context, Effect, Exit, Layer } from "effect";
 
 import { mockService, unstubbed } from "./mockService.ts";
@@ -9,6 +10,8 @@ class Probe extends Context.Service<
     readonly label: string;
     readonly ping: Effect.Effect<string>;
     readonly pong: (n: number) => Effect.Effect<number>;
+    readonly flow: Stream.Stream<string>;
+    readonly duct: Channel.Channel<string>;
   }
 >()("t3/testUtils/mockService.test/Probe") {}
 
@@ -37,6 +40,8 @@ describe("mockService", () => {
         label: "probe",
         ping: Effect.succeed("pinged"),
         pong: unstubbed,
+        flow: unstubbed,
+        duct: unstubbed,
       });
       const pinged = yield* Effect.gen(function* () {
         const probe = yield* Probe;
@@ -80,6 +85,8 @@ describe("mockService", () => {
         label: "probe",
         ping: Effect.succeed("pinged"),
         pong: impostor,
+        flow: unstubbed,
+        duct: unstubbed,
       });
       const exit = yield* Effect.gen(function* () {
         const probe = yield* Probe;
@@ -123,6 +130,8 @@ describe("mockService", () => {
       label: unstubbed,
       ping: Effect.succeed(""),
       pong: unstubbed,
+      flow: unstubbed,
+      duct: unstubbed,
     });
     // An OPTIONAL member of the shape: without `-?` on TotalStub it stays
     // omittable and this directive is unused (TS2578), which is the whole
