@@ -65,9 +65,18 @@
  *    whitespace anywhere in the name, because `-z` prints it as written where
  *    the line form quoted it.
  *
- * 7. It refuses a `file` whose write would land where the restore does not
- *    reach: a symlink in the index, or a regular file whose inode has another
- *    name. Through a link the write lands in the target and `git checkout --
+ * 7. It refuses two shapes whose write would land where the restore does not
+ *    reach: a symlink THE INDEX NAMES (mode `120000`), and a regular file whose
+ *    inode has another name. Read that as the two shapes, not as the general
+ *    property — the general property is NOT what this delivers. The symlink limb
+ *    asks the INDEX and the hard-link limb asks the FILESYSTEM, so a symlink the
+ *    index does not know about passes: `--in-place` after `git update-index
+ *    --assume-unchanged`, or a suite that relinks its own sources mid-run, both
+ *    measured, both landing the write outside the tree at exit 0 (`t3_bot-4w2`,
+ *    pre-existing — the hard-link limb re-asks the filesystem per row and catches
+ *    the same swap). A `setupCommand` that symlinks is NOT such a route: git
+ *    reports the typechange as ` T` and `moved` catches it. Through a link the
+ *    write lands in the target and `git checkout --
  *    <link>` restores the link, so the target stays mutated: inside the tree,
  *    every later row is measured on a mutated file — measured, a kill credited
  *    to the link row and the next row NOT RUN on an anchor the leftover mutation
@@ -824,17 +833,23 @@ const linkRefusal = Effect.fn("guardSweep.linkRefusal")(function* (root: string,
   if (info._tag === "Failure") {
     return undefined;
   }
-  // A directory's link count is above 1 with no inode shared — `.` and every
-  // subdirectory's `..` are names for it, and what else counts varies by filesystem
-  // — so it says nothing about where a write lands and is not judged; a directory
-  // row falls through to the read gate, which names it.
+  // A directory shares no inode with another name, whatever its link count is, so
+  // that count says nothing about where a write lands and is not judged; a directory
+  // row falls through to the read gate, which names it. Do not reach for a number
+  // here. Measured on darwin: 2 for an empty directory, 3 with one subdirectory —
+  // but that is one filesystem, and the previous two versions of this comment each
+  // stated one filesystem's rule as the rule (first "its entry count", wrong on APFS
+  // and ext4; then "above 1", which a filesystem reporting 1 for every directory
+  // would falsify). The conclusion holds at any count, so it does not need one.
   if (info.success.type !== "File") {
     return undefined;
   }
   // A layer that cannot count links cannot say where a write lands, so it is
-  // refused, not passed: NOT RUN is louder than a false kill. Node's layer fills
-  // `nlink` on every platform it supports, so no input reaches this; the posture
-  // is the pin.
+  // refused, not passed: NOT RUN is louder than a false kill. Measured on darwin,
+  // against the real Node layer: `nlink` comes back `Some` for a File, a Directory
+  // and a CharacterDevice, so no input found there reaches this. That is one
+  // platform, not a guarantee about every platform Node supports — which is why
+  // this refuses rather than assumes. The posture is the pin; no mutant reds it.
   if (Option.isNone(info.success.nlink)) {
     return (
       `${file} has no link count from the filesystem — the other names of its inode ` +

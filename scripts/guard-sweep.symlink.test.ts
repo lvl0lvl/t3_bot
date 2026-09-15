@@ -1,7 +1,12 @@
 /**
- * ONE CLAIM: a mutation file whose write would land somewhere `git checkout -- <file>` does not
- * restore — a tracked symlink, or a regular file that shares its inode with another name — is
- * NOT RUN before anything is written through it.
+ * ONE CLAIM: a mutation file of either shape whose write would land somewhere
+ * `git checkout -- <file>` does not restore — a symlink THE INDEX NAMES, or a regular file that
+ * shares its inode with another name — is NOT RUN before anything is written through it.
+ *
+ * The two shapes, not the general property: the symlink limb asks the index and the hard-link
+ * limb asks the filesystem, so a symlink the index does not know about is not refused and this
+ * suite does not claim it is (`t3_bot-4w2`, pre-existing). The describe title below is the
+ * suite's topic and is deliberately shorter than this; the claim is the one stated here.
  *
  * The defect this pins (`t3_bot-k1v`, found by #42's review) is a FALSE KILL beside an unmeasured
  * row. `readFileString`/`writeFileString` follow a link, so a row on `src/link.ts -> thing.ts`
@@ -169,6 +174,34 @@ describe("a mutation file whose write lands where the restore does not reach is 
       expect(done.stdout).not.toContain("could not be applied");
       expect(done.stdout).toContain("through-the-plainlink: NOT RUN");
       expect(done.stdout).toContain("is a symlink in the index");
+      expect(done.status).toBe(3);
+    } finally {
+      remove(root, elsewhere);
+    }
+  });
+
+  it("names the link count, not the anchor, when a hard-linked file lacks the anchor", () => {
+    const { root, elsewhere, config } = scaffold([rowOn("on-hardlinked-plain", "src/plain.ts")]);
+    try {
+      // THE SAME PRE-FLIGHT SITE AS THE TEST ABOVE, for the other class. The gate is called from
+      // TWO places — the pre-flight skip and the row loop — and every other hard-link test here
+      // reaches only the row loop, because their files HOLD the anchor and so the pre-flight has
+      // nothing to object to. Only a hard-linked file whose anchor is ABSENT separates them:
+      // `src/plain.ts` has no `if (guard) {`, so with the pre-flight skip removed the pre-flight
+      // reads it, finds no anchor, and refuses the WHOLE config at exit 1 blaming a stale anchor
+      // — turning "one row could not be measured" into "the tool or config failed", which is a
+      // different verdict about a different thing. Measured both ways: exit 3 naming the link
+      // count here, exit 1 naming the anchor with the skip removed.
+      const twin = NodePath.join(elsewhere, "plaintwin.ts");
+      NodeFS.linkSync(NodePath.join(root, "src/plain.ts"), twin);
+      expect(NodeFS.statSync(twin).nlink).toBe(2);
+      expect(git(root, "status", "--porcelain")).toBe("");
+
+      const done = runSweep(root, config, "--in-place");
+
+      expect(done.stdout).not.toContain("could not be applied");
+      expect(done.stdout).toContain("on-hardlinked-plain: NOT RUN");
+      expect(done.stdout).toContain("src/plain.ts has 2 links");
       expect(done.status).toBe(3);
     } finally {
       remove(root, elsewhere);
