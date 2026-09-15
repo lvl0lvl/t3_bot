@@ -36,11 +36,11 @@ concurrency:
   #
   #   `group` decides whether two runs COMPETE AT ALL. Keying it on
   #   `github.ref` put every merge in one group (`refs/heads/main`), so the
-  #   second merge waited for the first: measured 2026-09-15, the ten jobs of
-  #   `c17091b404` all started 16:37:31-33Z, three seconds after the last job
-  #   of `bfe25e0574` completed at 16:37:28Z. With the sweep at ~25 minutes
-  #   that puts a merge's verdict up to ~50 minutes behind the merge when two
-  #   land together.
+  #   second merge did not die — it WAITED, for as long as the first run's
+  #   sweep took, and its verdict arrived that much later. Measured
+  #   2026-09-15; the timestamps and the wall clock they were read from are
+  #   in `t3_bot-28hj`, because a figure for the sweep's duration has moved
+  #   on every run of it and this sentence should not.
   #
   # Upstream's expression fixes the second: `pull_request` resolves it to the
   # PR number, so pushes to one PR still supersede each other exactly as the
