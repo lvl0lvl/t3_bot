@@ -70,6 +70,72 @@ jobs:
       - name: Test scripts
         run: vp run --filter @t3tools/scripts test
 
+  sweep:
+    # THE MUTATION SWEEP, one config per runner.
+    #
+    # WHY IT IS HERE: on #68 a PR changed the expression its own sweep config
+    # anchors on. The tool caught it — refusal 1, whole-config refusal, exit 1 —
+    # and the config then sat inert for a day, because an exit code with no
+    # reader is not a gate. Nothing was silent and nothing about the tool was
+    # broken; it simply ran nowhere. This job is the reader (`t3_bot-2ij`).
+    #
+    # ONE CONFIG PER JOB rather than six in sequence: the runner-minutes are the
+    # same either way, the slowest single config fits this file's timeout budget
+    # where the serial total does not, and a red job NAMES the config that broke
+    # in the run summary without anyone opening a log.
+    #
+    # NO PATH FILTER, deliberately. Filtering this job alone would need either a
+    # second workflow file or a job-level paths action, and this repo has no
+    # idiom for the latter and `fork-ci.yml` trusts only `actions/checkout` and
+    # `setup-vp`. A filtered-out job leaves NO row in check-runs, and the merge
+    # gate is a human reading check-runs — an absence read as green is the exact
+    # failure this job exists to prevent. Docs-only PRs pay runner minutes that
+    # are free; a misread absence is not.
+    name: Fork Sweep ${{ matrix.config }}
+    runs-on: ubuntu-latest
+    # Slowest config measured locally at 699s. A local figure does not license a
+    # CI timeout, so this is deliberately loose until the first real run prints
+    # per-config CI numbers; tighten it against those, not against the local ones.
+    timeout-minutes: 30
+    strategy:
+      # One broken guard must not cancel the other five verdicts: a sweep run
+      # that stops early reports fewer rows than it measured.
+      fail-fast: false
+      matrix:
+        config:
+          - channel-cursor
+          - channel-invariants
+          - channel-post-wake
+          - colliding-roster
+          - invariant-reason
+          - workflow-script
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      # NOT PIPED, AND THAT IS THE POINT. GitHub runs `run:` under `bash -e {0}`
+      # with no `pipefail`, so `guard-sweep … | tee sweep.log` reports TEE's
+      # status and a sweep that exited 1 goes GREEN. Proof, both shells:
+      #   bash -e            -c 'false | tee /dev/null; echo $?'  -> 0
+      #   bash -e -o pipefail -c 'false | tee /dev/null; echo $?'  -> step fails
+      # stdout is already captured in the run log, so a pipe buys nothing here
+      # and costs the verdict. `scripts/guard-sweep.ci-step.test.ts` reds if this
+      # line ever grows one.
+      - name: Sweep
+        run: node scripts/guard-sweep.ts --config scripts/guard-sweep.${{ matrix.config }}.json
+
   test_server:
     # apps/server sets `fileParallelism: false`, so its test files run strictly
     # one at a time. Sharding spreads them over separate runners rather than
