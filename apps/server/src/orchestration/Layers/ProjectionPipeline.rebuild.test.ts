@@ -690,3 +690,44 @@ layer("OrchestrationProjectionPipeline live tail", (it) => {
     }),
   );
 });
+
+layer("OrchestrationProjectionPipeline empty epoch range", (it) => {
+  it.effect("covers an epoch that applied nothing without querying for a hole", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const decoder = yield* ProjectionDecoderRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const projectId = ProjectId.make("project-empty");
+      const threadId = ThreadId.make("thread-empty");
+
+      // A downgrade that opened an epoch and applied nothing before this build
+      // returned: (1, 1] holds no row, so the answer is known without a query.
+      const applied = yield* eventStore.append(projectCreated(projectId, "evt-empty-project"));
+      const later = yield* eventStore.append(
+        threadCreated(projectId, threadId, "evt-empty-thread"),
+      );
+      yield* writeOlderEpoch(sql, {
+        missingType: "thread.created",
+        startedAt: applied.sequence,
+        endedAt: applied.sequence,
+      });
+      yield* plantWatermarks(applied.sequence);
+      yield* plantMarkerProject;
+
+      const scans = makeScanCounter();
+      yield* pipeline.bootstrap.pipe(Effect.withTracer(scans.tracer));
+
+      // The same counter reads 1 on a range that must be scanned; here it
+      // reads 0 because an empty range needs no query, and the epoch is
+      // covered all the same, so it never comes back on a later boot.
+      assert.equal(scans.count(), 0);
+      assert.isTrue(yield* markerProjectStands(sql));
+      assert.deepEqual(yield* projectedThreadIds(sql), [threadId]);
+      const covered = yield* decoder.listEpochs();
+      assert.equal(covered.length, 1);
+      assert.isTrue(covered[0]!.eventTypes.includes("thread.created"));
+      assert.equal(covered[0]!.endedAtSequence, later.sequence);
+    }),
+  );
+});
