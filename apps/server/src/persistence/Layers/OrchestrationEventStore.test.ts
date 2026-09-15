@@ -107,12 +107,26 @@ const layer = it.layer(
   OrchestrationEventStoreLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
 );
 
+// Three tests that read the whole log, or poison it with an invalid-JSON row,
+// get a block each; the comment above the `unknown event type` block states
+// why a block is the unit of isolation, and bead t3_bot-cvg5 carries the
+// shuffle seeds. They keep the bare suite name instead of taking a descriptor
+// because a `layer(...)` name is the prefix of its tests' `fullName` and the
+// count gate compares that name, while the database is built per `layer(...)`
+// call, not per name, so same-named blocks still get a database each.
 layer("OrchestrationEventStore", (it) => {
   it.effect("stores json columns as strings and replays CLI-origin events", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;
       const sql = yield* SqlClient.SqlClient;
       const now = "2026-01-01T00:00:00.000Z";
+
+      // This block holds this test alone: a sibling that appends FIRST fails
+      // here, by name, rather than further down at a count.
+      assert.deepEqual(
+        Array.from(yield* Stream.runCollect(eventStore.readFromSequence(0, 100))),
+        [],
+      );
 
       const appended = yield* eventStore.append({
         type: "project.created",
@@ -163,7 +177,9 @@ layer("OrchestrationEventStore", (it) => {
       assert.deepEqual(replayed[0]?.metadata.origin, { surface: "cli" });
     }),
   );
+});
 
+layer("OrchestrationEventStore", (it) => {
   it.effect("decodes a persisted id through its brand on read", () =>
     Effect.gen(function* () {
       // The boundary every adapter's item-id door rests on: the store decodes
@@ -173,13 +189,22 @@ layer("OrchestrationEventStore", (it) => {
       // would make the doors' reason false; this pins the decode boundary, not
       // a visible split.
       const eventStore = yield* OrchestrationEventStore;
+
+      // This block holds this test alone: a sibling that appends FIRST fails
+      // here, by name, rather than further down at a count.
+      assert.deepEqual(
+        Array.from(yield* Stream.runCollect(eventStore.readFromSequence(0, 100))),
+        [],
+      );
+
       const threadId = ThreadId.make("thread-padded-id");
       const event = messageEvent(threadId, "evt-padded-id");
       yield* eventStore.append({
         ...event,
         payload: { ...event.payload, messageId: MessageId.make("assistant: msg_1 ") },
       });
-      // The store is shared across this file's tests: pick the event by id.
+      // This block has its own database, so a read from 0 sees this event
+      // alone; it is still picked by id so the assertion names its subject.
       const replayed = yield* Stream.runCollect(eventStore.readFromSequence(0, 100)).pipe(
         Effect.map((chunk) => Array.from(chunk).find((item) => item.eventId === "evt-padded-id")),
       );
@@ -190,12 +215,21 @@ layer("OrchestrationEventStore", (it) => {
       );
     }),
   );
+});
 
+layer("OrchestrationEventStore", (it) => {
   it.effect("fails with PersistenceDecodeError when stored json is invalid", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;
       const sql = yield* SqlClient.SqlClient;
       const now = "2026-01-01T00:00:00.000Z";
+
+      // This block holds this test alone: a sibling that appends FIRST fails
+      // here, by name, rather than further down at a count.
+      assert.deepEqual(
+        Array.from(yield* Stream.runCollect(eventStore.readFromSequence(0, 100))),
+        [],
+      );
 
       const invalidRows = yield* sql<{ readonly sequence: number }>`
         INSERT INTO orchestration_events (
@@ -260,7 +294,9 @@ layer("OrchestrationEventStore", (it) => {
       }
     }),
   );
+});
 
+layer("OrchestrationEventStore", (it) => {
   it.effect("reads one aggregate through the captured head across pruned global gaps", () =>
     Effect.gen(function* () {
       const store = yield* OrchestrationEventStore;
