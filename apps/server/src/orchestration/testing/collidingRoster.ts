@@ -246,16 +246,18 @@ export const collidingReadModel = (input: {
  * caller's because a thread needs a project and the test already has one.
  *
  * AND THE FAILURE MODE, because the line above states the rule and not what
- * breaking it looks like: `engine.latestSequence` reads that in-memory read
- * model, so it does NOT count an appended event. Draining a reactor through
- * `latestSequence` after appending drains to a point BEFORE the append, the
- * reactor never sees the event, and a test asserting that nothing happened GETS
- * that — from nothing having run. It passes, and it passes just as happily with
- * the guard it was written for deleted. Two shapes work: land the event while
- * the reactor is DOWN and restart so it resumes from its cursor, or hand
- * `latestSequence` the appended event's own sequence. If a fixture here asserts
- * an ABSENCE, give it a companion that asserts the presence it would otherwise
- * be indistinguishable from.
+ * breaking it looks like: `engine.latestSequence` does not count an event
+ * appended beside a RUNNING engine — a restarted engine loads it, a live one
+ * never sees it. Draining a live reactor through `latestSequence` after
+ * appending drains to a point BEFORE the append, the reactor never sees the
+ * event, and a test asserting that nothing happened GETS that — from nothing
+ * having run. It passes, and it passes just as happily with the guard it was
+ * written for deleted. What works: land the event while the reactor is DOWN and
+ * restart so it resumes from its cursor. The reactor must have run once before
+ * the append, or `resumeFrom` seeds the cursorless restart at a head that
+ * already covers the event and skips it. If a fixture here asserts an ABSENCE,
+ * give it a companion that asserts the presence it would otherwise be
+ * indistinguishable from.
  *
  * Returns nothing: what a test does with the roster is the test's business.
  * Asserting anything here would pin the fixture to one consumer's question.
