@@ -728,6 +728,29 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         GIT_COMMITTER_EMAIL: "t3code@users.noreply.github.com",
       };
 
+      // With core.splitIndex on in the user's config, every command that
+      // writes the temp index would write it split: a new sharedindex.* per
+      // capture in the user's git dir, and the expiry then deletes the one
+      // the live index references, so the user's next git command cannot
+      // open it. The same guard readUnifiedWorkingTreeReviewDiff carries.
+      //
+      // DISCLOSED: `splitIndex.sharedIndexExpire=never` is inert here: no
+      // input reaches it, because with `core.splitIndex=false` no shared
+      // index is written and git only expires shared indexes when it creates
+      // one. The exercised half is `core.splitIndex=false`. It stays to match
+      // the sibling verbatim.
+      //
+      // `add` and `write-tree` are the commands that write the temp index;
+      // each is pinned by a per-site mutant. `read-tree` (seeds a fresh index
+      // that carries no split link) and `commit-tree` (does not write the
+      // index) carry the guard for uniformity and are DISCLOSED as unreached.
+      const tempIndexConfig = [
+        "-c",
+        "core.splitIndex=false",
+        "-c",
+        "splitIndex.sharedIndexExpire=never",
+      ];
+
       const cleanupTempIndex = fileSystem
         .remove(tempIndexPath, { force: true })
         .pipe(Effect.ignore);
@@ -738,7 +761,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           yield* execute({
             operation,
             cwd: input.cwd,
-            args: ["read-tree", "HEAD"],
+            args: [...tempIndexConfig, "read-tree", "HEAD"],
             env: commitEnv,
           });
         }
@@ -746,14 +769,14 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         yield* execute({
           operation,
           cwd: input.cwd,
-          args: ["add", "-A", "--", "."],
+          args: [...tempIndexConfig, "add", "-A", "--", "."],
           env: commitEnv,
         });
 
         const writeTreeResult = yield* execute({
           operation,
           cwd: input.cwd,
-          args: ["write-tree"],
+          args: [...tempIndexConfig, "write-tree"],
           env: commitEnv,
         });
         const treeOid = writeTreeResult.stdout.trim();
@@ -771,7 +794,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         const commitTreeResult = yield* execute({
           operation,
           cwd: input.cwd,
-          args: ["commit-tree", treeOid, "-m", message],
+          args: [...tempIndexConfig, "commit-tree", treeOid, "-m", message],
           env: commitEnv,
         });
         const commitOid = commitTreeResult.stdout.trim();
