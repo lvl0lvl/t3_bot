@@ -711,6 +711,18 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       return path.isAbsolute(gitCommonDir) ? gitCommonDir : path.resolve(cwd, gitCommonDir);
     });
 
+  const resolveGitIndexPath = (cwd: string) =>
+    execute({
+      operation: "GitVcsDriver.checkpoints.resolveGitIndexPath",
+      cwd,
+      args: ["rev-parse", "--git-path", "index"],
+    }).pipe(
+      Effect.map((result) => {
+        const indexPath = result.stdout.trim();
+        return path.isAbsolute(indexPath) ? indexPath : path.resolve(cwd, indexPath);
+      }),
+    );
+
   const checkpoints: VcsDriver.VcsCheckpointOps = {
     captureCheckpoint: Effect.fn("GitVcsDriver.checkpoints.captureCheckpoint")(function* (input) {
       const operation = "GitVcsDriver.checkpoints.captureCheckpoint";
@@ -733,8 +745,66 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         .pipe(Effect.ignore);
 
       yield* Effect.gen(function* () {
-        const headExists = yield* hasHeadCommit(input.cwd);
-        if (headExists) {
+        // Seed the temp index from the live one so `add -A` can trust its stat
+        // cache: an index built by `read-tree` has none, and git rehashes every
+        // file (1.5 s against 90 ms on a 21k-file checkout). A repository with
+        // no index yet starts from HEAD, and with no HEAD from nothing.
+        const liveIndexPath = yield* resolveGitIndexPath(input.cwd);
+        const liveIndexExists = yield* fileSystem
+          .exists(liveIndexPath)
+          .pipe(Effect.orElseSucceed(() => false));
+        if (liveIndexExists) {
+          yield* fileSystem.copyFile(liveIndexPath, tempIndexPath).pipe(
+            Effect.mapError(
+              (error) =>
+                new VcsProcessExitError({
+                  operation,
+                  command: "copy index",
+                  cwd: input.cwd,
+                  exitCode: 1,
+                  detail: error.message,
+                }),
+            ),
+          );
+          // The copied index carries the user's assume-unchanged and skip-worktree
+          // bits, and `add -A` trusts them: a turn's edit to a flagged file would
+          // drop out of its card. Drop those entries from the temp index so `add -A`
+          // reads the files afresh (clearing the bit instead refreshes the entry's
+          // stat cache from the edited file and the old blob survives). A
+          // skip-worktree path that is absent is a sparse checkout's and keeps its
+          // entry instead of reading as deleted.
+          const listed = yield* execute({
+            operation,
+            cwd: input.cwd,
+            args: ["ls-files", "-v", "-z"],
+            env: commitEnv,
+            maxOutputBytes: 256 * 1024 * 1024,
+          });
+          const flagged = listed.stdout.split("\0").flatMap((line) => {
+            const tag = line.charAt(0);
+            return tag === "S" || /^[a-z]$/.test(tag) ? [{ tag, filePath: line.slice(2) }] : [];
+          });
+          const flaggedPaths = (yield* Effect.forEach(
+            flagged,
+            (entry) =>
+              entry.tag === "S"
+                ? fileSystem.exists(path.join(input.cwd, entry.filePath)).pipe(
+                    Effect.map((exists) => (exists ? [entry.filePath] : [])),
+                    Effect.orElseSucceed(() => []),
+                  )
+                : Effect.succeed([entry.filePath]),
+            { concurrency: 16 },
+          )).flat();
+          if (flaggedPaths.length > 0) {
+            yield* execute({
+              operation,
+              cwd: input.cwd,
+              args: ["update-index", "--force-remove", "-z", "--stdin"],
+              stdin: `${flaggedPaths.join("\0")}\0`,
+              env: commitEnv,
+            });
+          }
+        } else if (yield* hasHeadCommit(input.cwd)) {
           yield* execute({
             operation,
             cwd: input.cwd,
