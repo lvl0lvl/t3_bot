@@ -25,8 +25,18 @@ on:
     branches: [main]
 
 concurrency:
+  # CANCEL PR RUNS, NEVER MAIN. `group` keys on `github.ref`, which is
+  # `refs/heads/main` for EVERY merge, so a bare `cancel-in-progress: true`
+  # makes each merge cancel the one before it. That was survivable while the
+  # longest job here was 20 minutes; the sweep below runs to 24 (measured in
+  # CI), so merging a second PR inside that window would leave main with a
+  # sweep that never finishes — an exit code with no reader, which is the
+  # failure the sweep job exists to remove.
+  # Upstream's `ci.yml:12-14` is guarded twice: its group carries
+  # `github.sha` on a push, so merges never share a group, AND its
+  # cancel-in-progress is this same expression. One of the two is enough.
   group: fork-ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
