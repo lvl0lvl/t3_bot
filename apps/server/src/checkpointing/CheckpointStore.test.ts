@@ -441,6 +441,7 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
     it.effect("records an untracked file and leaves the user index untouched", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
+        const fileSystem = yield* FileSystem.FileSystem;
         yield* initRepoWithCommit(tmp);
         const checkpointStore = yield* CheckpointStore.CheckpointStore;
         const checkpointRef = captureRef("checkpoint-capture-untracked");
@@ -451,6 +452,11 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         const tree = yield* git(tmp, ["ls-tree", "--name-only", checkpointRef]);
         expect(tree.split("\n").sort()).toEqual(["README.md", "untracked.txt"]);
         expect(yield* git(tmp, ["ls-files", "-t"])).toBe("H README.md");
+        // A capture that returns without removing its temp index leaves the
+        // file beside the user's own index, under the git dir the next
+        // capture reads.
+        const gitDirEntries = yield* fileSystem.readDirectory(NodePath.join(tmp, ".git"));
+        expect(gitDirEntries.filter((name) => name.startsWith("t3-checkpoint-index-"))).toEqual([]);
       }),
     );
 
