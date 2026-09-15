@@ -6,11 +6,13 @@ import {
   OrchestrationEventType,
   ProjectId,
   ProviderInstanceId,
+  ThreadCreatedPayload,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -66,6 +68,20 @@ const projectCreated = (projectId: ProjectId, id: string) =>
     },
   }) as const;
 
+const threadCreatedPayload = (projectId: ProjectId, threadId: ThreadId) =>
+  ({
+    threadId,
+    projectId,
+    title: `Thread ${threadId}`,
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    createdAt: now,
+    updatedAt: now,
+  }) as const;
+
 const threadCreated = (projectId: ProjectId, threadId: ThreadId, id: string) =>
   ({
     type: "thread.created",
@@ -77,25 +93,16 @@ const threadCreated = (projectId: ProjectId, threadId: ThreadId, id: string) =>
     causationEventId: null,
     correlationId: null,
     metadata: {},
-    payload: {
-      threadId,
-      projectId,
-      title: `Thread ${threadId}`,
-      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: null,
-      worktreePath: null,
-      createdAt: now,
-      updatedAt: now,
-    },
+    payload: threadCreatedPayload(projectId, threadId),
   }) as const;
 
-// A payload the thread projector accepts, written as the JSON the older build
-// would have stored for a type it could not name. It is a string literal, not
-// a serialiser call, so the repo's schema-over-JSON rule is kept.
-const threadCreatedPayloadJson = (projectId: string, threadId: string) =>
-  `{"threadId":"${threadId}","projectId":"${projectId}","title":"Thread ${threadId}","modelSelection":{"instanceId":"codex","model":"gpt-5"},"runtimeMode":"full-access","interactionMode":"default","branch":null,"worktreePath":null,"createdAt":"${now}","updatedAt":"${now}"}`;
+const encodeThreadCreatedPayload = Schema.encodeSync(Schema.fromJsonString(ThreadCreatedPayload));
+
+// The payload column of a row the older build stored under a type it could not
+// name, from the same fixture the appended events use, so the raw row and the
+// appended one cannot drift.
+const threadCreatedPayloadJson = (projectId: ProjectId, threadId: ThreadId) =>
+  encodeThreadCreatedPayload(threadCreatedPayload(projectId, threadId));
 
 function insertRawEventRow(
   sql: SqlClient.SqlClient,
@@ -266,8 +273,9 @@ layer("OrchestrationProjectionPipeline decoder hole", (it) => {
         endedAt: later.sequence,
       });
       yield* plantMarkerProject;
-      // A capture row a projector writes with a plain INSERT: a rebuild that
-      // kept it would collide with the replay's own insert, so it must go too.
+      // A capture row whose writer is an upsert, so the replay can never remove
+      // one the log no longer implies: a rebuild that kept it would leave it
+      // standing forever. Emptying the table is what retires it.
       yield* (yield* ChannelPostWakeRepository).link({
         channelId: "channel-marker",
         postId: "post-marker",
@@ -391,7 +399,7 @@ layer("OrchestrationProjectionPipeline downgrade then upgrade", (it) => {
 
       // Epoch 2, an older build that lacks thread.created: it skipped 3 and
       // applied a known 4, moving every watermark to 4. Written by hand.
-      const skipped = yield* insertRawEventRow(sql, {
+      yield* insertRawEventRow(sql, {
         eventId: "evt-down-hole",
         aggregateKind: "thread",
         aggregateId: holeThread,
@@ -427,7 +435,9 @@ layer("OrchestrationProjectionPipeline downgrade then upgrade", (it) => {
       const epochs = yield* decoder.listEpochs();
       assert.equal(epochs.length, 1);
       assert.equal(epochs[0]!.startedAtSequence, 0);
-      assert.isTrue(skipped > earlyEvent.sequence && skipped <= lateEvent.sequence);
+      // Read back from the pipeline, not from the fixture: the rebuilt epoch
+      // covers everything the replay applied, so its end is the last sequence.
+      assert.equal(epochs[0]!.endedAtSequence, lateEvent.sequence);
     }),
   );
 });
