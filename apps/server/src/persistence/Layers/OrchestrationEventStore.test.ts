@@ -355,8 +355,13 @@ layer("OrchestrationEventStore", (it) => {
 layer("OrchestrationEventStore unknown event type", (it) => {
   it.effect("skips a row whose type this build does not know and reads the rows after it", () => {
     const messages: string[] = [];
-    const logger = Logger.make<unknown, void>(({ message }) => {
-      messages.push(String(message));
+    const annotationsSeen: Array<Record<string, unknown>> = [];
+    // Through formatStructured, which is the only logger in this build that
+    // hands the annotations to its output. `Logger.Options` carries the message
+    // and nothing that was annotated onto the fiber.
+    const logger = Logger.map(Logger.formatStructured, (output) => {
+      messages.push(String(output.message));
+      annotationsSeen.push(output.annotations);
     });
 
     return Effect.gen(function* () {
@@ -464,10 +469,22 @@ layer("OrchestrationEventStore unknown event type", (it) => {
 
       // One warning per skipped row per read: four reads crossed the row. A
       // skip that logs nothing is a silent loss of history.
-      const skipWarnings = messages.filter((message) => message.includes("project.future-event"));
-      assert.equal(skipWarnings.length, 4);
-      for (const warning of skipWarnings) {
-        assert.ok(warning.includes(String(unknownSequence)));
+      const skipped = messages
+        .map((message, index) => ({ message, annotations: annotationsSeen[index]! }))
+        .filter(({ message }) => message.includes("project.future-event"));
+      assert.equal(skipped.length, 4);
+      for (const { message, annotations } of skipped) {
+        assert.ok(message.includes(String(unknownSequence)));
+        // The message is bounded and escaped, so the row a warning names is
+        // only recoverable from the annotations. A skip whose warning carries
+        // no sequence cannot be turned back into the row that was dropped.
+        assert.deepEqual(annotations, {
+          sequence: unknownSequence,
+          type: "project.future-event",
+          aggregateKind: "project",
+          aggregateId: projectId,
+          occurredAt: now,
+        });
       }
     }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
   });
