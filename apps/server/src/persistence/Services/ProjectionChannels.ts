@@ -191,9 +191,8 @@ export interface ProjectionChannelRepositoryShape {
    * returned — `toChannelShell` has no `members` field to put them in, and the
    * post path asks only whether a `channelId` is present.
    *
-   * The roster-carrying sibling stays for callers that read one; the live
-   * stream's `rowHasMember` is why `getChannelWithActivityById` keeps its
-   * members.
+   * The live stream's `rowHasMember` is why `getChannelWithActivityById` keeps
+   * its members.
    */
   readonly listChannelActivityForMember: (
     member: ChannelMemberRef,

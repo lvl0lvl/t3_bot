@@ -1011,7 +1011,14 @@ const buildAppUnderTest = (options?: {
             replaceMembers: () => Effect.die("unused"),
             insertPost: () => Effect.die("unused"),
             getPost: () => Effect.succeedNone,
-            listChannelsForMember: () => Effect.succeed([]),
+            // THE ROSTER-CARRYING SIBLING DIES RATHER THAN ANSWERING EMPTY.
+            // Nothing in production calls it, so a test that reaches it has
+            // either drifted back to it or stubbed the wrong one of the pair —
+            // and an empty list would let both pass while asserting nothing
+            // about membership. Verified free: with this dying, 221/221 here
+            // still pass, so no test depends on it answering.
+            listChannelsForMember: () =>
+              Effect.die("stub listChannelActivityForMember — the method the paths call"),
             listChannelActivityForMember: () => Effect.succeed([]),
             listPosts: () => Effect.succeed([]),
             ...options?.layers?.projectionChannels,

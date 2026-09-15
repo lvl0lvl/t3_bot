@@ -564,6 +564,37 @@ layer("ProjectionChannelRepository", (it) => {
     }),
   );
 
+  it.effect("without the roster, a matching id with the wrong KIND still gets nothing", () =>
+    Effect.gen(function* () {
+      // THE SECOND HALF OF THE PREDICATE, through the method production calls.
+      // The WHERE is two fields (`m.member_kind = ? AND m.member_id = ?`) and
+      // only a fixture whose members differ in ONE of them can separate the
+      // halves. Every other fixture for this method — including the refuse test
+      // above, whose stranger id exists nowhere — differs in BOTH, so dropping
+      // `m.member_kind` leaves them all green. Measured: that mutation reds
+      // exactly one test in this file, and before this test it was the sibling's.
+      //
+      // The two methods share one statement today, so the sibling's test would
+      // catch it — but that sharing is an implementation detail, and
+      // `t3_bot-ajy` may delete the sibling and its test together. This repo has
+      // been bitten by the differ-in-both fixture shape four times.
+      const repo = yield* ProjectionChannelRepository;
+      yield* repo.upsertChannel(
+        channelWithMembers(ChannelId.make("kind-only-rosterless"), "kind-only-rosterless", [
+          COLLIDING_HUMAN_MEMBER,
+        ]),
+      );
+
+      const asThread = yield* repo.listChannelActivityForMember(COLLIDING_THREAD_REF);
+      const asHuman = yield* repo.listChannelActivityForMember(COLLIDING_HUMAN_REF);
+
+      // Both directions: the refusal alone passes for a filter matching nobody.
+      // Named rather than counted — this file shares one database.
+      assert.ok(!asThread.some((row) => row.channelId === "kind-only-rosterless"));
+      assert.ok(asHuman.some((row) => row.channelId === "kind-only-rosterless"));
+    }),
+  );
+
   it.effect("returns the same channels in the same order as the roster-carrying sibling", () =>
     Effect.gen(function* () {
       // WHAT MAKES THE SWAP SAFE, stated as a measurement rather than as the
@@ -659,23 +690,27 @@ layer("ProjectionChannelRepository", (it) => {
           return seen.length;
         });
 
-      const twoChannels = yield* countStatements(repo.listChannelActivityForMember(few));
-      const fiveChannels = yield* countStatements(repo.listChannelActivityForMember(many));
+      const statementsForTwoChannels = yield* countStatements(
+        repo.listChannelActivityForMember(few),
+      );
+      const statementsForFiveChannels = yield* countStatements(
+        repo.listChannelActivityForMember(many),
+      );
 
       // FLAT IN N is the claim. Two channels and five cost the same.
-      assert.strictEqual(twoChannels, fiveChannels);
-      assert.strictEqual(twoChannels, 1);
+      assert.strictEqual(statementsForTwoChannels, statementsForFiveChannels);
+      assert.strictEqual(statementsForTwoChannels, 1);
 
       // THE CONTROL, and it is what stops this test being vacuous: a counter
       // that always reported 1 — a transformer that never fired, an effect that
       // never ran — would pass the two assertions above no matter what the
       // method did. The roster-carrying sibling over the SAME fixtures must
       // grow with N, and does: one statement plus one per channel.
-      const rosterTwo = yield* countStatements(repo.listChannelsForMember(few));
-      const rosterFive = yield* countStatements(repo.listChannelsForMember(many));
-      assert.strictEqual(rosterTwo, 3);
-      assert.strictEqual(rosterFive, 6);
-      assert.ok(rosterFive > rosterTwo);
+      const rosterStatementsForTwo = yield* countStatements(repo.listChannelsForMember(few));
+      const rosterStatementsForFive = yield* countStatements(repo.listChannelsForMember(many));
+      assert.strictEqual(rosterStatementsForTwo, 3);
+      assert.strictEqual(rosterStatementsForFive, 6);
+      assert.ok(rosterStatementsForFive > rosterStatementsForTwo);
     }),
   );
 
