@@ -25,14 +25,17 @@ on:
     branches: [main]
 
 concurrency:
-  # CANCEL PR RUNS, NEVER MAIN — and DO NOT MAKE MAIN QUEUE BEHIND ITSELF.
-  # Two separate mechanisms, because they were conflated here once and the
-  # difference is about half an hour of verdict latency:
+  # TWO MECHANISMS, AND ONLY ONE OF THEM IS DOING ANYTHING ON A PUSH. They
+  # were conflated here once, which is why this says which is which:
   #
-  #   `cancel-in-progress` decides whether a newer run KILLS an older one. The
-  #   expression below is false on a push, so a merge can no longer cancel
-  #   main's sweep — a sweep that never finishes is an exit code with no
-  #   reader, which is the failure the sweep job exists to remove.
+  #   `cancel-in-progress` decides whether a newer run KILLS an older one.
+  #   GitHub only ever cancels WITHIN a group, and the group below is one per
+  #   push — so on the push arm this expression is UNREACHED: no two merges
+  #   share a group, and nothing can cancel across them whatever it says. It
+  #   is kept verbatim from upstream, and it is load-bearing on the
+  #   `pull_request` arm, where it is what makes a newer push supersede an
+  #   older one. It becomes load-bearing on push again the moment the group
+  #   reverts, which is why both are asserted together.
   #
   #   `group` decides whether two runs COMPETE AT ALL. Keying it on
   #   `github.ref` put every merge in one group (`refs/heads/main`), so the
