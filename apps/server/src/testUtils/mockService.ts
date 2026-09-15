@@ -39,7 +39,7 @@ type EffectfulMember =
   | ((...args: any) => Channel.Channel<any, any, any, any, any, any, any>);
 
 export type TotalStub<Shape> = {
-  readonly [K in keyof Shape]: Shape[K] extends EffectfulMember ? Shape[K] | Unstubbed : Shape[K];
+  readonly [K in keyof Shape]-?: Shape[K] extends EffectfulMember ? Shape[K] | Unstubbed : Shape[K];
 };
 
 // By the brand, not by identity: a second instance of this module (a

@@ -22,6 +22,14 @@ class SymProbe extends Context.Service<
   }
 >()("t3/testUtils/mockService.test/SymProbe") {}
 
+class OptProbe extends Context.Service<
+  OptProbe,
+  {
+    readonly label: string;
+    readonly maybe?: Effect.Effect<string>;
+  }
+>()("t3/testUtils/mockService.test/OptProbe") {}
+
 describe("mockService", () => {
   it.effect("a stubbed member answers and an unstubbed one dies with Layer.mock's message", () =>
     Effect.gen(function* () {
@@ -116,8 +124,17 @@ describe("mockService", () => {
       ping: Effect.succeed(""),
       pong: unstubbed,
     });
+    // An OPTIONAL member of the shape: without `-?` on TotalStub it stays
+    // omittable and this directive is unused (TS2578), which is the whole
+    // property — "adding a method to a shape reds every stub" is false for
+    // an optional method at every stub that leaves it out.
+    // @ts-expect-error `maybe` is optional in the shape and still must be named.
+    const optionalOmitted = mockService(OptProbe)({ label: "probe" });
     assert.isTrue(
-      Layer.isLayer(omitted) && Layer.isLayer(partial) && Layer.isLayer(plainValueUnstubbed),
+      Layer.isLayer(omitted) &&
+        Layer.isLayer(partial) &&
+        Layer.isLayer(plainValueUnstubbed) &&
+        Layer.isLayer(optionalOmitted),
     );
   });
 });
