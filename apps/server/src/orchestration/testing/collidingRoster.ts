@@ -84,7 +84,9 @@ export const COLLIDING_CHANNEL_NAME = "collide";
 /** The thread that shares the operator's id. */
 export const COLLIDING_THREAD_ID = ThreadId.make(COLLIDING_MEMBER_ID);
 
-const COLLIDING_HUMAN_HANDLE = ChannelMemberHandle.make("walt");
+/** The human half's handle. Exported so a fixture can mention it by name
+ * rather than by a literal that would not move if the roster did. */
+export const COLLIDING_HUMAN_HANDLE = ChannelMemberHandle.make("walt");
 export const COLLIDING_THREAD_HANDLE = ChannelMemberHandle.make("twin");
 
 /**
@@ -242,6 +244,20 @@ export const collidingReadModel = (input: {
  * a caller appends these BEFORE starting the engine that will see them (or
  * disposes and starts a new one over the same database). `projectId` is the
  * caller's because a thread needs a project and the test already has one.
+ *
+ * AND THE FAILURE MODE, because the line above states the rule and not what
+ * breaking it looks like: `engine.latestSequence` does not count an event
+ * appended beside a RUNNING engine — a restarted engine loads it, a live one
+ * never sees it. Draining a live reactor through `latestSequence` after
+ * appending drains to a point BEFORE the append, the reactor never sees the
+ * event, and a test asserting that nothing happened GETS that — from nothing
+ * having run. It passes, and it passes just as happily with the guard it was
+ * written for deleted. What works: land the event while the reactor is DOWN and
+ * restart so it resumes from its cursor. The reactor must have run once before
+ * the append, or `resumeFrom` seeds the cursorless restart at a head that
+ * already covers the event and skips it. If a fixture here asserts an ABSENCE,
+ * give it a companion that asserts the presence it would otherwise be
+ * indistinguishable from.
  *
  * Returns nothing: what a test does with the roster is the test's business.
  * Asserting anything here would pin the fixture to one consumer's question.

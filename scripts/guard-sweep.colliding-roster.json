@@ -18,16 +18,16 @@
       "guard": "MentionWakeReactor/wake-filter",
       "axis": "inert",
       "file": "apps/server/src/orchestration/Layers/MentionWakeReactor.ts",
-      "find": "              member.memberKind === \"thread\" &&\n              mentioned.has(member.handle) &&",
-      "replace": "              mentioned.has(member.handle) &&"
+      "find": "              member.memberKind === \"thread\" &&",
+      "replace": "              true &&"
     },
     {
       "id": "wake-filter-wakes-nobody",
       "guard": "MentionWakeReactor/wake-filter",
       "axis": "wider",
       "file": "apps/server/src/orchestration/Layers/MentionWakeReactor.ts",
-      "find": "              member.memberKind === \"thread\" &&\n              mentioned.has(member.handle) &&",
-      "replace": "              member.memberKind === \"system\" &&\n              mentioned.has(member.handle) &&"
+      "find": "              member.memberKind === \"thread\" &&",
+      "replace": "              member.memberKind === \"system\" &&"
     },
     {
       "id": "author-exclusion-never-excludes",
