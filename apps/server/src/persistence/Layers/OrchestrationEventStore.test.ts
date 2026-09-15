@@ -121,6 +121,13 @@ layer("OrchestrationEventStore", (it) => {
       const sql = yield* SqlClient.SqlClient;
       const now = "2026-01-01T00:00:00.000Z";
 
+      // This block holds this test alone: a sibling that appends FIRST fails
+      // here, by name, rather than further down at a count.
+      assert.deepEqual(
+        Array.from(yield* Stream.runCollect(eventStore.readFromSequence(0, 100))),
+        [],
+      );
+
       const appended = yield* eventStore.append({
         type: "project.created",
         eventId: EventId.make("evt-store-roundtrip"),
@@ -182,6 +189,14 @@ layer("OrchestrationEventStore", (it) => {
       // would make the doors' reason false; this pins the decode boundary, not
       // a visible split.
       const eventStore = yield* OrchestrationEventStore;
+
+      // This block holds this test alone: a sibling that appends FIRST fails
+      // here, by name, rather than further down at a count.
+      assert.deepEqual(
+        Array.from(yield* Stream.runCollect(eventStore.readFromSequence(0, 100))),
+        [],
+      );
+
       const threadId = ThreadId.make("thread-padded-id");
       const event = messageEvent(threadId, "evt-padded-id");
       yield* eventStore.append({
@@ -208,6 +223,13 @@ layer("OrchestrationEventStore", (it) => {
       const eventStore = yield* OrchestrationEventStore;
       const sql = yield* SqlClient.SqlClient;
       const now = "2026-01-01T00:00:00.000Z";
+
+      // This block holds this test alone: a sibling that appends FIRST fails
+      // here, by name, rather than further down at a count.
+      assert.deepEqual(
+        Array.from(yield* Stream.runCollect(eventStore.readFromSequence(0, 100))),
+        [],
+      );
 
       const invalidRows = yield* sql<{ readonly sequence: number }>`
         INSERT INTO orchestration_events (
