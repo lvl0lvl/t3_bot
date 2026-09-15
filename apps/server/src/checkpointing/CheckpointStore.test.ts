@@ -616,6 +616,77 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
       }),
     );
 
+    it.effect("leaves the user's split index and its shared files alone", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const fileSystem = yield* FileSystem.FileSystem;
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        // With core.splitIndex on, a temp index written without the guard is
+        // written split: a new sharedindex.* lands in the user's git dir per
+        // capture, and the expiry then deletes the one the live index still
+        // references, so the user's next git command fails to open it.
+        yield* git(tmp, ["config", "core.splitIndex", "true"]);
+        yield* git(tmp, ["config", "splitIndex.sharedIndexExpire", "now"]);
+        yield* git(tmp, ["update-index", "--split-index"]);
+        yield* writeTextFile(NodePath.join(tmp, "untracked.txt"), "new\n");
+        const sharedIndexFiles = fileSystem
+          .readDirectory(NodePath.join(tmp, ".git"))
+          .pipe(
+            Effect.map((names) => names.filter((name) => name.startsWith("sharedindex.")).sort()),
+          );
+        const before = yield* sharedIndexFiles;
+        expect(before.length).toBe(1);
+
+        for (const turn of [0, 1, 2]) {
+          yield* checkpointStore.captureCheckpoint({
+            cwd: tmp,
+            checkpointRef: checkpointRefForThreadTurn(
+              ThreadId.make("checkpoint-capture-split"),
+              turn,
+            ),
+          });
+        }
+
+        expect(yield* sharedIndexFiles).toEqual(before);
+        expect(yield* git(tmp, ["status", "--porcelain"])).toBe("?? untracked.txt");
+      }),
+    );
+
+    it.effect("leaves a stale shared index alone under git's default expiry", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const fileSystem = yield* FileSystem.FileSystem;
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const checkpointRef = captureRef("checkpoint-capture-split-stale");
+        // No expiry is configured, so git's default of two weeks applies. A
+        // shared index older than that is exactly what a quiet repository
+        // holds: git rewrites one only when the split grows past
+        // splitIndex.maxPercentChange. Writing a new shared index from the
+        // temp index deletes this one, and the live index cannot open.
+        // 2026-01-01T00:00:00Z, in the seconds `utimes` takes.
+        const stamp = 1_767_225_600;
+        yield* git(tmp, ["config", "core.splitIndex", "true"]);
+        yield* git(tmp, ["update-index", "--split-index"]);
+        const gitDir = NodePath.join(tmp, ".git");
+        const sharedIndexFiles = fileSystem
+          .readDirectory(gitDir)
+          .pipe(
+            Effect.map((names) => names.filter((name) => name.startsWith("sharedindex.")).sort()),
+          );
+        const before = yield* sharedIndexFiles;
+        expect(before.length).toBe(1);
+        yield* fileSystem.utimes(NodePath.join(gitDir, before[0]!), stamp, stamp);
+        yield* writeTextFile(NodePath.join(tmp, "untracked.txt"), "new\n");
+
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+
+        expect(yield* sharedIndexFiles).toEqual(before);
+        expect(yield* git(tmp, ["status", "--porcelain"])).toBe("?? untracked.txt");
+      }),
+    );
+
     // DISCLOSED: four of these five reach no guard the contract tests do not
     // already reach, because a temp index seeded by `read-tree HEAD` carries
     // no index flags and no stat cache, and nothing here lists it. The half
