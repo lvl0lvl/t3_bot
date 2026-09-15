@@ -424,6 +424,54 @@ layer("OrchestrationEventStore", (it) => {
     }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
   });
 
+  it.effect("bounds and escapes the value a skip warning names", () => {
+    const messages: string[] = [];
+    const logger = Logger.make<unknown, void>(({ message }) => {
+      messages.push(String(message));
+    });
+
+    return Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      // Both rows carry a column a newer build wrote. The oversized type is
+      // what fills a log line with one row; the type carrying ESC and a
+      // newline is what forges log lines around itself.
+      const rows = yield* sql<{ readonly sequence: number }>`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          actor_kind, payload_json, metadata_json
+        ) VALUES (
+          ${EventId.make("evt-warning-bound")}, ${"project"}, ${"project-warning-value"}, ${0},
+          printf('%.*c', 200000, 'x'), ${now}, ${"server"}, ${"{}"}, ${"{}"}
+        ), (
+          ${EventId.make("evt-warning-escape")}, ${"project"}, ${"project-warning-value"}, ${1},
+          ${"project.\u001b[31mred\nline"}, ${now}, ${"server"}, ${"{}"}, ${"{}"}
+        )
+        RETURNING sequence
+      `;
+      const boundedSequence = rows[0]!.sequence;
+      const escapedSequence = rows[1]!.sequence;
+
+      yield* Stream.runCollect(eventStore.readFromSequence(boundedSequence - 1, 10));
+
+      const bounded = messages.find((message) =>
+        message.includes(`at sequence ${boundedSequence}`),
+      );
+      assert.ok(bounded !== undefined);
+      assert.ok(bounded.includes("xxx"));
+      assert.ok(bounded.length < 300);
+
+      const escaped = messages.find((message) =>
+        message.includes(`at sequence ${escapedSequence}`),
+      );
+      assert.ok(escaped !== undefined);
+      assert.ok(escaped.includes("project."));
+      assert.ok(!escaped.includes("\n"));
+      assert.ok(!escaped.includes("\u001b"));
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  });
+
   it.effect("keeps failing when a known type carries a payload its schema refuses", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;

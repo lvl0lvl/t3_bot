@@ -104,8 +104,12 @@ const decodeRowsSkippingUnknownTypes = (
         ? { what: "type", value: type }
         : undefined;
     if (unknown !== undefined) {
+      // The value is a column a newer build wrote, so the warning bounds and
+      // escapes it: a 200,000-character event type fills the log line, and a
+      // type carrying ESC or a newline forges log lines around it. The
+      // annotation keeps the raw value for whoever reads the structured log.
       return Effect.logWarning(
-        `orchestration event skipped: unknown ${unknown.what} ${unknown.value} at sequence ${row.sequence}`,
+        `orchestration event skipped: unknown ${unknown.what} ${JSON.stringify(unknown.value.slice(0, 120))} at sequence ${row.sequence}`,
       ).pipe(
         Effect.annotateLogs({
           sequence: row.sequence,
