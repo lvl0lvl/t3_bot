@@ -114,7 +114,7 @@ const layer = it.layer(
 // global read, so the block's outcome depended on the shuffle order (bead
 // t3_bot-cvg5 carries the seeds). Reading from 0 in a block of one is the
 // assertion that the database holds only the test's own rows.
-layer("OrchestrationEventStore json columns", (it) => {
+layer("OrchestrationEventStore", (it) => {
   it.effect("stores json columns as strings and replays CLI-origin events", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;
@@ -172,7 +172,7 @@ layer("OrchestrationEventStore json columns", (it) => {
   );
 });
 
-layer("OrchestrationEventStore branded id", (it) => {
+layer("OrchestrationEventStore", (it) => {
   it.effect("decodes a persisted id through its brand on read", () =>
     Effect.gen(function* () {
       // The boundary every adapter's item-id door rests on: the store decodes
@@ -202,7 +202,7 @@ layer("OrchestrationEventStore branded id", (it) => {
   );
 });
 
-layer("OrchestrationEventStore invalid json", (it) => {
+layer("OrchestrationEventStore", (it) => {
   it.effect("fails with PersistenceDecodeError when stored json is invalid", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;
