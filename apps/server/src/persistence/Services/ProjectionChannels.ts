@@ -20,6 +20,7 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
@@ -50,6 +51,19 @@ export const ProjectionChannelWithActivity = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 export type ProjectionChannelWithActivity = typeof ProjectionChannelWithActivity.Type;
+
+/**
+ * The same row without the roster, for callers that never read one.
+ *
+ * Derived by omitting `members` rather than written out, so a column added to
+ * the projection reaches both shapes or neither. The rows themselves are the
+ * SAME rows: membership is the query's own predicate, so dropping the roster
+ * drops data, never scope — see `listChannelActivityForMember`.
+ */
+export const ProjectionChannelActivity = Schema.Struct(
+  Struct.omit(ProjectionChannelWithActivity.fields, ["members"]),
+);
+export type ProjectionChannelActivity = typeof ProjectionChannelActivity.Type;
 
 /**
  * Who is asking, re-exported from `@t3tools/contracts`.
@@ -161,6 +175,29 @@ export interface ProjectionChannelRepositoryShape {
   readonly listChannelsForMember: (
     member: ChannelMemberRef,
   ) => Effect.Effect<ReadonlyArray<ProjectionChannelWithActivity>, ProjectionRepositoryError>;
+
+  /**
+   * The same channels, same filter, same order — without each channel's roster.
+   *
+   * SAME ROW SET, NOT A NARROWER ONE. Membership is the query's predicate (the
+   * JOIN in `listChannelsForMember`'s own statement), and the roster is fetched
+   * afterwards, once per row, by a query that takes only a `channelId` and so
+   * cannot filter by member at all. Dropping it therefore drops DATA and never
+   * SCOPE: the rows and their order are already decided when it runs.
+   *
+   * Prefer this wherever a roster is not read. `listChannelsForMember` ran one
+   * extra statement per channel on the shell-bootstrap path and on the
+   * post-page membership check, and both discarded every member row it
+   * returned — `toChannelShell` has no `members` field to put them in, and the
+   * post path asks only whether a `channelId` is present.
+   *
+   * The roster-carrying sibling stays for callers that read one; the live
+   * stream's `rowHasMember` is why `getChannelWithActivityById` keeps its
+   * members.
+   */
+  readonly listChannelActivityForMember: (
+    member: ChannelMemberRef,
+  ) => Effect.Effect<ReadonlyArray<ProjectionChannelActivity>, ProjectionRepositoryError>;
 
   /** Oldest first, ascending by sequence. */
   readonly listPosts: (

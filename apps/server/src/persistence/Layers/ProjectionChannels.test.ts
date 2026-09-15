@@ -528,6 +528,94 @@ layer("ProjectionChannelRepository", (it) => {
     }),
   );
 
+  it.effect("without the roster, a non-member still gets nothing rather than everything", () =>
+    Effect.gen(function* () {
+      // THE REFUSE SIDE OF THE ROSTER-LESS METHOD, and the reason it is written
+      // as its own test rather than trusted from the sibling's: `t3_bot-a4i`'s
+      // sweep found that dropping the membership JOIN returns every channel on
+      // the server to every client, and it survived 198 tests. The predicate is
+      // the query's, so a method that stops running the query — or runs one
+      // without the WHERE — reads as working against any fixture whose member
+      // IS a member. Only a non-member separates "filtered" from "not filtered
+      // at all".
+      //
+      // BOTH DIRECTIONS in one test, because the refusal alone passes for a
+      // method that returns nothing to anybody: the stranger sees none, and the
+      // seated member sees this channel. Named rather than counted — this file
+      // shares one database and the member is seated elsewhere in it.
+      const repo = yield* ProjectionChannelRepository;
+      const seated = ChannelId.make("rosterless-seated");
+      yield* repo.upsertChannel(
+        channelWithMembers(seated, "rosterless-seated", [
+          { handle: "walt", memberKind: "human", memberId: "rosterless-member" },
+        ]),
+      );
+
+      const stranger = yield* repo.listChannelActivityForMember(
+        unsafeRefForTest("human", "rosterless-nobody"),
+      );
+      const member = yield* repo.listChannelActivityForMember(
+        unsafeRefForTest("human", "rosterless-member"),
+      );
+
+      assert.deepStrictEqual(stranger, []);
+      assert.ok(member.some((row) => row.channelId === seated));
+    }),
+  );
+
+  it.effect("returns the same channels in the same order as the roster-carrying sibling", () =>
+    Effect.gen(function* () {
+      // WHAT MAKES THE SWAP SAFE, stated as a measurement rather than as the
+      // argument that the two share a statement. The callers that moved onto
+      // the roster-less method read `channelId` and the shell fields; if its row
+      // set or order ever diverged from the sibling's, the sidebar would reorder
+      // and the post path's membership check would answer about a different set.
+      //
+      // TWO channels, because one cannot show an ordering difference, and their
+      // activity is opposite to their creation order so the ORDER BY is doing
+      // something a stable accident could not reproduce.
+      const repo = yield* ProjectionChannelRepository;
+      const older = ChannelId.make("parity-older");
+      const newer = ChannelId.make("parity-newer");
+      const member = unsafeRefForTest("human", "parity-member");
+      yield* repo.upsertChannel(
+        channelWithMembers(older, "parity-older", [{ handle: "walt", ...member }], {
+          createdAt: "2026-02-01T00:00:00.000Z",
+        }),
+      );
+      yield* repo.upsertChannel(
+        channelWithMembers(newer, "parity-newer", [{ handle: "walt", ...member }], {
+          createdAt: "2026-02-05T00:00:00.000Z",
+        }),
+      );
+      yield* repo.insertPost({
+        ...post("parity-post-older", older, 41),
+        createdAt: "2026-02-09T00:00:00.000Z",
+      });
+
+      const withRoster = yield* repo.listChannelsForMember(member);
+      const withoutRoster = yield* repo.listChannelActivityForMember(member);
+
+      // The ids AND their order, not a set comparison: ordering is the half a
+      // sorted or set-based assertion cannot see.
+      assert.deepStrictEqual(
+        withoutRoster.map((row) => row.channelId),
+        withRoster.map((row) => row.channelId),
+      );
+      assert.deepStrictEqual(
+        withoutRoster.map((row) => row.channelId),
+        [older, newer],
+      );
+      // And the roster is the ONLY difference: every other field agrees row for
+      // row. Without this the parity claim would hold for a method that
+      // returned the right ids with the wrong activity.
+      assert.deepStrictEqual(
+        withoutRoster,
+        withRoster.map(({ members: _members, ...rest }) => rest),
+      );
+    }),
+  );
+
   it.effect("sorts a channel with NO posts by when it was created, not last", () =>
     Effect.gen(function* () {
       // THE COALESCE FALLBACK, and the only fixture shape that can see it. The

@@ -1012,6 +1012,7 @@ const buildAppUnderTest = (options?: {
             insertPost: () => Effect.die("unused"),
             getPost: () => Effect.succeedNone,
             listChannelsForMember: () => Effect.succeed([]),
+            listChannelActivityForMember: () => Effect.succeed([]),
             listPosts: () => Effect.succeed([]),
             ...options?.layers?.projectionChannels,
           }),
@@ -10217,8 +10218,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
    */
   const channelsByMember = (input: {
     readonly asked: Array<{ readonly memberKind: string; readonly memberId: string }>;
-  }) => ({
-    listChannelsForMember: (member: { memberKind: string; memberId: string }) => {
+  }) => {
+    // BOTH METHODS, ONE ANSWER. The shell snapshot reads the roster-less
+    // `listChannelActivityForMember` (`t3_bot-rex`) and the sibling still exists
+    // for callers that want rosters, so a stub that answered only one of them
+    // would let the snapshot path fall through to the base mock's empty list
+    // and pass for the wrong reason.
+    const answer = (member: { memberKind: string; memberId: string }) => {
       input.asked.push(member);
       return Effect.succeed(
         member.memberKind === "human" && member.memberId === HUMAN_OPERATOR_MEMBER_ID
@@ -10238,8 +10244,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               },
             ],
       );
-    },
-  });
+    };
+    return { listChannelsForMember: answer, listChannelActivityForMember: answer };
+  };
 
   it.effect("reads the snapshot BEFORE the channels, so one created in the gap still lands", () =>
     Effect.gen(function* () {
@@ -10264,7 +10271,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           projectionChannels: {
-            listChannelsForMember: () =>
+            // The snapshot path reads the roster-less method (`t3_bot-rex`);
+            // this test is about WHEN it is read relative to the snapshot, so
+            // the flag has to be observed by the method the path actually calls.
+            listChannelActivityForMember: () =>
               Effect.succeed(
                 snapshotRead
                   ? [

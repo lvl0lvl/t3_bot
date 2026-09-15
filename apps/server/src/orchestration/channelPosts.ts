@@ -127,7 +127,7 @@ export function readChannelPostPage(input: {
     // MEMBERSHIP FIRST, before the cursor is even examined. A caller holding a
     // foreign cursor for a channel it is not in must not be able to tell the two
     // refusals apart: `ChannelCursorRejected` would confirm the channel exists.
-    const channels = yield* projectionChannels.listChannelsForMember(input.member);
+    const channels = yield* projectionChannels.listChannelActivityForMember(input.member);
     if (!channels.some((row) => row.channelId === channelId)) {
       return yield* new ChannelPostsUnreadable({ channelId });
     }
