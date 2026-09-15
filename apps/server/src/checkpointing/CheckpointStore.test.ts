@@ -638,16 +638,20 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         const before = yield* sharedIndexFiles;
         expect(before.length).toBe(1);
 
+        const threadId = ThreadId.make("checkpoint-capture-split");
         for (const turn of [0, 1, 2]) {
           yield* checkpointStore.captureCheckpoint({
             cwd: tmp,
-            checkpointRef: checkpointRefForThreadTurn(
-              ThreadId.make("checkpoint-capture-split"),
-              turn,
-            ),
+            checkpointRef: checkpointRefForThreadTurn(threadId, turn),
           });
         }
 
+        expect(
+          yield* checkpointStore.hasCheckpointRef({
+            cwd: tmp,
+            checkpointRef: checkpointRefForThreadTurn(threadId, 2),
+          }),
+        ).toBe(true);
         expect(yield* sharedIndexFiles).toEqual(before);
         expect(yield* git(tmp, ["status", "--porcelain"])).toBe("?? untracked.txt");
       }),
@@ -694,6 +698,7 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
 
         yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
 
+        expect(yield* checkpointStore.hasCheckpointRef({ cwd: tmp, checkpointRef })).toBe(true);
         expect(yield* sharedIndexFiles).toEqual(before);
         expect(yield* git(tmp, ["status", "--porcelain"])).toBe("?? untracked.txt");
       }),
