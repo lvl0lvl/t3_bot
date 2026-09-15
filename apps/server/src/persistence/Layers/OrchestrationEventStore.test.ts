@@ -4,9 +4,10 @@ import {
   CommandId,
   EventId,
   MessageId,
+  OrchestrationEvent,
+  OrchestrationEventType,
   ProjectId,
   ThreadId,
-  type OrchestrationEvent,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -765,3 +766,25 @@ for (const reader of ["all", "aggregate"] as const) {
     ),
   );
 }
+
+it("every event type this build guards on has an event this build can decode", () => {
+  // The read admits a row whose type passes Schema.is(OrchestrationEventType)
+  // and hands it to the OrchestrationEvent union. The two lists are written by
+  // hand in one file, 1300 lines apart, and the skip makes a mismatch quiet in
+  // both directions: a literal with no member struct passes the guard and then
+  // fails the whole read on the union, which is the failure the skip exists to
+  // prevent; a member struct with no literal is skipped on every read forever,
+  // logging a warning about an event this build knows perfectly well.
+  const guarded = OrchestrationEventType.literals;
+  const decodable = OrchestrationEvent.members.map((member) => member.fields.type.literal);
+  assert.deepEqual(
+    guarded.filter((type) => !decodable.includes(type)),
+    [],
+    "guarded by OrchestrationEventType with no OrchestrationEvent member: fails the read",
+  );
+  assert.deepEqual(
+    decodable.filter((type) => !guarded.includes(type)),
+    [],
+    "an OrchestrationEvent member with no OrchestrationEventType literal: skipped on every read",
+  );
+});
