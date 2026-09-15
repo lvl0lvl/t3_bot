@@ -733,6 +733,17 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       // capture in the user's git dir, and the expiry then deletes the one
       // the live index references, so the user's next git command cannot
       // open it. The same guard readUnifiedWorkingTreeReviewDiff carries.
+      //
+      // DISCLOSED: `splitIndex.sharedIndexExpire=never` is inert here: no
+      // input reaches it, because with `core.splitIndex=false` no shared
+      // index is written and git only expires shared indexes when it creates
+      // one. The exercised half is `core.splitIndex=false`. It stays to match
+      // the sibling verbatim.
+      //
+      // `add` and `write-tree` are the commands that write the temp index;
+      // each is pinned by a per-site mutant. `read-tree` (seeds a fresh index
+      // that carries no split link) and `commit-tree` (does not write the
+      // index) carry the guard for uniformity and are DISCLOSED as unreached.
       const tempIndexConfig = [
         "-c",
         "core.splitIndex=false",
