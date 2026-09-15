@@ -94,10 +94,19 @@ jobs:
     # are free; a misread absence is not.
     name: Fork Sweep ${{ matrix.config }}
     runs-on: ubuntu-latest
-    # Slowest config measured locally at 699s. A local figure does not license a
-    # CI timeout, so this is deliberately loose until the first real run prints
-    # per-config CI numbers; tighten it against those, not against the local ones.
-    timeout-minutes: 30
+    # MEASURED IN CI at 92b97fe2dc, not scaled from a local run: the slowest
+    # config is `channel-invariants` at 1443s (24m), and the local ranking did
+    # NOT predict it — locally `colliding-roster` was slowest, and the six
+    # local:CI ratios spread 1.4x to 3.0x, so no single factor reproduces this
+    # table. The house 20m would have timed out `channel-invariants` on every
+    # run. 40 leaves real headroom over an observed 24m; tighten it only against
+    # another CI measurement.
+    #
+    # `channel-invariants` is slow because its testCommand is the whole
+    # `apps/server/src/orchestration` directory — 51 test files today — re-run
+    # per mutant, 36 times. Narrowing it is `t3_bot-2ij`'s own follow-up, not a
+    # timeout problem.
+    timeout-minutes: 40
     strategy:
       # One broken guard must not cancel the other five verdicts: a sweep run
       # that stops early reports fewer rows than it measured.
