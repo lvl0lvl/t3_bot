@@ -51,6 +51,14 @@
       "replace": "      member.memberId === input.authorRef.memberId,"
     },
     {
+      "id": "author-membership-matches-kind-only",
+      "guard": "requireChannelAuthorIsMember",
+      "axis": "inert",
+      "file": "apps/server/src/orchestration/commandInvariants.ts",
+      "find": "      member.memberKind === input.authorRef.memberKind &&\n      member.memberId === input.authorRef.memberId,",
+      "replace": "      member.memberKind === input.authorRef.memberKind,"
+    },
+    {
       "id": "author-membership-never-matches",
       "guard": "requireChannelAuthorIsMember",
       "axis": "wider",
