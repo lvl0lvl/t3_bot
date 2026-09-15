@@ -82,6 +82,9 @@ const isKnownAggregateKind = Schema.is(OrchestrationAggregateKind);
 // written by a newer build. The read skips it and logs one warning per row per
 // read, and keeps failing on a KNOWN kind and type whose payload its schema
 // refuses: that is corruption, and reading past it would hide data loss.
+// ProviderSessionRuntimeRepository.list (31ca9e5531, upstream #3951) skips any
+// row that fails to decode; this reader narrows that on purpose: an unknown
+// type or kind skips, a refused payload of a known type still fails.
 // DISCLOSED: a skipped row is crossed by the projector watermark permanently
 // on this build; upgrading to the build that knows the type does NOT replay
 // it; the repair is a full projection rebuild, and nothing in this build asks
