@@ -602,14 +602,17 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
       }),
     );
 
-    // DISCLOSED: these five pass on the current capture without reaching any
-    // guard, because a temp index seeded by `read-tree HEAD` carries no index
-    // flags and no stat cache, and nothing here lists it. The half of the
-    // mechanism they exercise is `add -A` reading every file, the same half
-    // the tests above exercise; the mutant that reds them is the one that
-    // reds those. They are here to red the next capture that seeds its temp
-    // index from the live index (PR #73, record t3_bot-b2m), where each of
-    // these inputs recorded stale content.
+    // DISCLOSED: four of these five reach no guard the contract tests do not
+    // already reach, because a temp index seeded by `read-tree HEAD` carries
+    // no index flags and no stat cache, and nothing here lists it. The half
+    // of the mechanism they exercise is `add -A` reading every file: dropping
+    // `add -A` reds them exactly as it reds the tracked-edit tests above. The
+    // fifth, the both-flags absent entry, also pins that `add -A` records a
+    // removal -- the mutant `add -A -- .` to `add --ignore-removal -- .` reds
+    // it alone (measured 2026-09-15, git 2.52.0). All five red a temp index
+    // seeded by copying the live index (measured, same date), which is the
+    // capture they are here to refuse (PR #73, record t3_bot-b2m), where each
+    // of these inputs recorded stale content.
     describe("inputs a temp index seeded from the live index gets wrong", () => {
       it.effect("records a same-size edit made in the second the index was written", () =>
         Effect.gen(function* () {
