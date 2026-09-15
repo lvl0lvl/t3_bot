@@ -32,6 +32,7 @@ import {
 } from "../pullRequest/PullRequestService.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
   OrchestrationEngineService,
@@ -39,7 +40,6 @@ import {
 } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 import * as ThreadSettlementReactor from "./ThreadSettlementReactor.ts";
-import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const NOW = "2026-08-28T12:00:00.000Z";
 const PROJECT_ID = ProjectId.make("settlement-project");

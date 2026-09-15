@@ -4,8 +4,8 @@ import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
-import { runGitHubStackAction as runStackAction } from "./githubStackActions.ts";
 import { mockService, unstubbed } from "../testUtils/mockService.ts";
+import { runGitHubStackAction as runStackAction } from "./githubStackActions.ts";
 
 const runGitHubStackAction = (
   execute: GitHubCli.GitHubCli["Service"]["execute"],

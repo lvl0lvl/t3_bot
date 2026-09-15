@@ -1,9 +1,9 @@
 import { assert, describe, expect, it, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import * as GitLabPullRequestCli from "./GitLabPullRequestCli.ts";
 import { gitLabViewerPermissions, make } from "./GitLabPullRequestProvider.ts";
-import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 describe("gitLabViewerPermissions", () => {
   it("offers everything to a viewer GitLab says can merge", () => {

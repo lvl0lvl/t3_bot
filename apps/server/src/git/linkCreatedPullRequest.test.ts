@@ -21,8 +21,8 @@ import {
   type OrchestrationEngineShape,
 } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { createdPullRequestKey, linkCreatedPullRequest } from "./linkCreatedPullRequest.ts";
 import { mockService, unstubbed } from "../testUtils/mockService.ts";
+import { createdPullRequestKey, linkCreatedPullRequest } from "./linkCreatedPullRequest.ts";
 
 const PROJECT_ID = ProjectId.make("project-1");
 const THREAD_ID = ThreadId.make("thread-1");

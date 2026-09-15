@@ -5,9 +5,9 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { VcsProcessExitError } from "@t3tools/contracts";
 
+import { mockService } from "../testUtils/mockService.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitLabCli from "./GitLabCli.ts";
-import { mockService } from "../testUtils/mockService.ts";
 
 const mockedRun = vi.fn<VcsProcess.VcsProcess["Service"]["run"]>();
 const layer = it.layer(

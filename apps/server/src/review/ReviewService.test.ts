@@ -6,10 +6,10 @@ import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 
 import { ServerConfig } from "../config.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as ReviewService from "./ReviewService.ts";
-import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 function makeLayer(input: {
   readonly workspaceRoot: string;

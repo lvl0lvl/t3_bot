@@ -16,6 +16,7 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
+import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 import {
   ProviderSessionDirectoryPersistenceError,
   ProviderValidationError,
@@ -30,7 +31,6 @@ import {
   type ProviderRuntimeBindingWithMetadata,
 } from "../Services/ProviderSessionDirectory.ts";
 import { makeProviderAuthService } from "./ProviderAuthService.ts";
-import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 
 const instanceId = ProviderInstanceId.make("antigravity-personal");
 const otherInstanceId = ProviderInstanceId.make("antigravity-work");

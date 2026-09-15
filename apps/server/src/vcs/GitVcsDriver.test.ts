@@ -9,10 +9,10 @@ import { assert, it } from "@effect/vitest";
 
 import { GitCommandError } from "@t3tools/contracts";
 import * as ServerConfig from "../config.ts";
+import { mockService } from "../testUtils/mockService.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 import { runVcsDriverContractSuite } from "./testing/VcsDriverContractHarness.ts";
-import { mockService } from "../testUtils/mockService.ts";
 
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-git-vcs-contract-",

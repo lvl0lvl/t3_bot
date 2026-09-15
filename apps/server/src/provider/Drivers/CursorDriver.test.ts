@@ -14,9 +14,9 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { CursorDriver } from "./CursorDriver.ts";
-import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 
 const testLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-cursor-driver-copy-command-",

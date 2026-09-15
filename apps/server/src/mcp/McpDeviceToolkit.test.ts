@@ -12,9 +12,9 @@ import { McpSchema, McpServer } from "effect/unstable/ai";
 
 import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
-import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const environmentId = EnvironmentId.make("environment-device-test");
 const threadId = ThreadId.make("thread-device-test");

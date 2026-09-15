@@ -19,12 +19,12 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 import type { AcpSessionRuntimeStartResult } from "../acp/AcpSessionRuntime.ts";
 import {
   buildAntigravityModelsFromSession,
   makeAntigravityProvider,
 } from "./AntigravityProvider.ts";
-import { mockService, unstubbed } from "../../testUtils/mockService.ts";
 
 const decodeSettings = Schema.decodeSync(AntigravitySettings);
 const instanceId = ProviderInstanceId.make("antigravity-test");

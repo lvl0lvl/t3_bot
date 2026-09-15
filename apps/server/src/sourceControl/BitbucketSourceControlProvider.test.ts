@@ -2,9 +2,9 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import * as BitbucketApi from "./BitbucketApi.ts";
 import * as BitbucketSourceControlProvider from "./BitbucketSourceControlProvider.ts";
-import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 function makeProvider(bitbucket: Partial<BitbucketApi.BitbucketApi["Service"]>) {
   return BitbucketSourceControlProvider.make.pipe(

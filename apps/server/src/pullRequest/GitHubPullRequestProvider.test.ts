@@ -3,10 +3,10 @@ import * as Effect from "effect/Effect";
 import type { PullRequestReaction } from "@t3tools/contracts";
 
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import * as GitHubPullRequestCli from "./GitHubPullRequestCli.ts";
 import { gitHubViewerPermissions, loginAvatarUrl, make } from "./GitHubPullRequestProvider.ts";
 import type { GitHubReviewThreadComments } from "./gitHubPullRequestJson.ts";
-import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 it.effect("uses one narrow read for a linked pull request summary", () =>
   Effect.gen(function* () {

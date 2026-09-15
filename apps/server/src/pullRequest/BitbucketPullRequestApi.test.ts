@@ -3,8 +3,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as BitbucketApi from "../sourceControl/BitbucketApi.ts";
-import * as BitbucketPullRequestApi from "./BitbucketPullRequestApi.ts";
 import { mockService, unstubbed } from "../testUtils/mockService.ts";
+import * as BitbucketPullRequestApi from "./BitbucketPullRequestApi.ts";
 
 const mockedRequest = vi.fn<BitbucketApi.BitbucketApi["Service"]["request"]>();
 

@@ -4,9 +4,9 @@ import * as Layer from "effect/Layer";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as AzureDevOpsCli from "../sourceControl/AzureDevOpsCli.ts";
+import { mockService, unstubbed } from "../testUtils/mockService.ts";
 import * as AzureDevOpsPullRequestCli from "./AzureDevOpsPullRequestCli.ts";
 import * as AzureDevOpsPullRequestProvider from "./AzureDevOpsPullRequestProvider.ts";
-import { mockService, unstubbed } from "../testUtils/mockService.ts";
 
 const mockedExecute = vi.fn<AzureDevOpsCli.AzureDevOpsCli["Service"]["execute"]>();
 

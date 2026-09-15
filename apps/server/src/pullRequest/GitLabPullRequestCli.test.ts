@@ -4,8 +4,8 @@ import * as Layer from "effect/Layer";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as GitLabCli from "../sourceControl/GitLabCli.ts";
-import * as GitLabPullRequestCli from "./GitLabPullRequestCli.ts";
 import { mockService, unstubbed } from "../testUtils/mockService.ts";
+import * as GitLabPullRequestCli from "./GitLabPullRequestCli.ts";
 
 const mockedExecute = vi.fn<GitLabCli.GitLabCli["Service"]["execute"]>();
 
