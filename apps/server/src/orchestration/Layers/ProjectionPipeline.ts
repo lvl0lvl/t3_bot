@@ -2371,6 +2371,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     // join the transaction: the client reads its connection from the fiber
     // context, and `withTransaction` provides the transaction connection to
     // the effect it wraps (effect/unstable/sql/SqlClient `makeWithTransaction`).
+    // The ONE-transaction part is pinned by "leaves the tables and the ledger
+    // untouched when the new epoch cannot be written" in
+    // ProjectionPipeline.rebuild.test.ts, which refuses the insert with a
+    // trigger: without the rollback that boot leaves emptied tables under no
+    // ledger, which rebuilds on every later boot and can never find a hole.
     const rebuildProjections = Effect.fn("rebuildProjections")(function* () {
       yield* sql.withTransaction(
         Effect.gen(function* () {
