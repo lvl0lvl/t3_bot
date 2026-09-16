@@ -85,11 +85,13 @@ const isKnownAggregateKind = Schema.is(OrchestrationAggregateKind);
 // ProviderSessionRuntimeRepository.list (31ca9e5531, upstream #3951) skips any
 // row that fails to decode; this reader narrows that on purpose: an unknown
 // type or kind skips, a refused payload of a known type still fails.
-// DISCLOSED: a skipped row is crossed by the projector watermark permanently
-// on this build; upgrading to the build that knows the type does NOT replay
-// it; the repair is a full projection rebuild, and nothing in this build asks
-// for one. The input: a newer build's event at sequence N skipped here, then
-// any known event at N+1 applied.
+// A skipped row is crossed by the projector watermark permanently on this
+// build; upgrading to the build that knows the type does NOT replay it from
+// the watermark. The projection pipeline's bootstrap repairs that: it keeps a
+// decoder ledger per build and rebuilds every projection from 0 when a row of
+// a type or kind it newly decodes sits inside an older build's applied range
+// (ProjectionPipeline.ts, findProjectionHole). The input: a newer build's
+// event at sequence N skipped here, then any known event at N+1 applied.
 // DISCLOSED: the warning is per row per READER, and uncapped. Each projector's
 // bootstrap, the cleanup scan and the mention-wake catch-up each read the log
 // at start, and trailing unknown rows re-warn on every start until a known

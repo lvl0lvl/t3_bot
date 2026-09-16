@@ -3,7 +3,9 @@ import {
   isImportedAgentSessionMessageId,
   UserInputAttachmentAnswerPayload,
   type ChatAttachment,
+  OrchestrationAggregateKind,
   type OrchestrationEvent,
+  OrchestrationEventType,
   type OrchestrationSessionStatus,
   ThreadId,
 } from "@t3tools/contracts";
@@ -30,7 +32,14 @@ import { ChannelPostWakeRepositoryLive } from "../../persistence/Layers/ChannelP
 import { ChannelPostWakeRepository } from "../../persistence/Services/ChannelPostWakes.ts";
 import { parseWakeKey } from "./MentionWakeReactor.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
-import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
+import {
+  type ProjectionDecoderEpoch,
+  ProjectionDecoderRepository,
+} from "../../persistence/Services/ProjectionDecoder.ts";
+import {
+  type ProjectionState,
+  ProjectionStateRepository,
+} from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { type ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import {
@@ -50,6 +59,7 @@ import {
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../../persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
+import { ProjectionDecoderRepositoryLive } from "../../persistence/Layers/ProjectionDecoder.ts";
 import { ProjectionStateRepositoryLive } from "../../persistence/Layers/ProjectionState.ts";
 import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
 import { ProjectionThreadMessageRepositoryLive } from "../../persistence/Layers/ProjectionThreadMessages.ts";
@@ -84,6 +94,59 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
 
 type ProjectorName =
   (typeof ORCHESTRATION_PROJECTOR_NAMES)[keyof typeof ORCHESTRATION_PROJECTOR_NAMES];
+
+// Every table a projector writes, plus the cursors. A rebuild empties all of
+// them in one transaction and then runs the same replay a fresh database
+// runs, so the rebuilt state is the fresh-install state by construction. The
+// input that breaks this list: a projector that writes a table not named
+// here, whose stale rows would survive the rebuild. Every writer reachable
+// from here is an upsert, channel_post_wake's included (ChannelPostWakes.ts,
+// ON CONFLICT DO UPDATE, idempotent because the projector replays), so the
+// replay recreates every row the log still implies; what an upsert cannot do
+// is remove a row the log no longer implies, which is why the table is emptied
+// rather than left to the replay. Measure the list with
+// `rg -o "(INSERT( OR (IGNORE|REPLACE))? INTO|UPDATE|DELETE FROM) [a-z_]+"`
+// over the thirteen repository MODULES the Live layer at the bottom of this
+// file provides — not over a `Layers/Projection*.ts` glob, which misses
+// ProjectionThreadPullRequests.ts (it sits outside Layers/) and picks up
+// ProjectionCheckpoints.ts (the pipeline does not provide it). That command
+// returns these fourteen names plus projection_decoder, the ledger, which a
+// rebuild deletes separately.
+const PROJECTION_TABLES = [
+  "projection_projects",
+  "projection_threads",
+  "projection_thread_messages",
+  "projection_thread_proposed_plans",
+  "projection_thread_activities",
+  "projection_thread_sessions",
+  "projection_turns",
+  "projection_pending_approvals",
+  "projection_channels",
+  "projection_channel_members",
+  "projection_channel_posts",
+  "projection_thread_pull_requests",
+  "channel_post_wake",
+  "projection_state",
+] as const;
+
+// What this build can decode, read from the schemas' AST so the ledger and
+// the unions cannot drift (the same accessors the store test pins).
+const decodableEventTypes: ReadonlyArray<string> = OrchestrationEventType.literals;
+const decodableAggregateKinds: ReadonlyArray<string> = OrchestrationAggregateKind.literals;
+
+// A log value bounded and quoted for the message text. The
+// preferSchemaOverJson diagnostic refuses `JSON.stringify` here; this is the
+// encoder it names, and it produces the same bounded, quoted text the store's
+// skip warning does (Layers/OrchestrationEventStore.ts, same two columns). The
+// warning's annotations keep the raw value.
+const quoteForLog = Schema.encodeSync(Schema.fromJsonString(Schema.String));
+
+/** One epoch, with the part of this build's lists that epoch does not carry. */
+type LackingEpoch = {
+  readonly epoch: ProjectionDecoderEpoch;
+  readonly eventTypes: ReadonlyArray<string>;
+  readonly aggregateKinds: ReadonlyArray<string>;
+};
 
 /**
  * Turn state to settle still-running turns with when their session leaves the
@@ -487,6 +550,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const sql = yield* SqlClient.SqlClient;
     const eventStore = yield* OrchestrationEventStore;
     const projectionStateRepository = yield* ProjectionStateRepository;
+    const projectionDecoderRepository = yield* ProjectionDecoderRepository;
     const projectionProjectRepository = yield* ProjectionProjectRepository;
     const projectionChannelRepository = yield* ProjectionChannelRepository;
     const projectionThreadRepository = yield* ProjectionThreadRepository;
@@ -2223,9 +2287,201 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       yield* cleanup;
     });
 
+    // The projectors' own cursors, not the attachment-cleanup cursor that
+    // shares the table: that cursor answers a different question ("the oldest
+    // position anything still needs") and sits behind them here. An absent row
+    // is 0. The MAXIMUM, because an epoch must cover every row ANY projector
+    // crossed under its lists. The input that breaks the minimum: fast
+    // projectors at 10, a slow one at 8, and a row at 9 of a type only a newer
+    // build knows. The fast projectors crossed 9 under the old lists, so it is
+    // a hole; an end of 8 lets the next epoch claim (8, ...] under the new
+    // lists and nothing ever scans 9. With 10, the lacking epoch covers 9, and
+    // the slow projector re-applying 9 and 10 under the new build is harmless.
+    const maxProjectorWatermark = (states: ReadonlyArray<ProjectionState>) =>
+      Math.max(
+        ...projectors.map(
+          (projector) =>
+            states.find((state) => state.projector === projector.name)?.lastAppliedSequence ?? 0,
+        ),
+      );
+
+    const listsEqual = (left: ReadonlyArray<string>, right: ReadonlyArray<string>) =>
+      left.length === right.length && right.every((value) => left.includes(value));
+
+    const carriesThisBuildsLists = (epoch: ProjectionDecoderEpoch) =>
+      listsEqual(epoch.eventTypes, decodableEventTypes) &&
+      listsEqual(epoch.aggregateKinds, decodableAggregateKinds);
+
+    const scanEpochForHole = Effect.fn("scanEpochForHole")(function* (lacking: LackingEpoch) {
+      return yield* projectionDecoderRepository.findHole({
+        eventTypes: lacking.eventTypes,
+        aggregateKinds: lacking.aggregateKinds,
+        afterSequence: lacking.epoch.startedAtSequence,
+        throughSequence: lacking.epoch.endedAtSequence,
+      });
+    });
+
+    // A build that decodes a type an older build skipped must find the hole
+    // and rebuild (t3_bot-n33f). The store skips a row whose type or kind the
+    // running build does not know, and the projector watermark then crosses
+    // that row for good: resuming from the watermark never applies it. The
+    // ledger (migration 054) holds one epoch per decoder: the lists a build
+    // could decode and the (started, ended] watermark range it applied with
+    // them. The input this catches: an older build applied sequence 3 past a
+    // sequence-2 row of a type only this build knows. The downgrade direction
+    // is what makes it work: an older build starting on a newer ledger has an
+    // empty delta, scans nothing, and opens an epoch of its own with its
+    // smaller lists; the next newer build sees the delta and scans that epoch.
+    // DISCLOSED: a database written before the ledger existed has no epoch
+    // for those rows, so holes older than the ledger are not detectable.
+    //
+    // An epoch whose range scans clean is COVERED: this build's delta is added
+    // to its lists. The scan proved no row of those types exists in that
+    // range, so the larger lists are a true statement about it, the next
+    // boot's delta for it is empty, and the unindexed scan does not run again
+    // on every boot for the life of the database.
+    const scanLackingEpochs = Effect.fn("scanLackingEpochs")(function* (
+      epochs: ReadonlyArray<ProjectionDecoderEpoch>,
+    ) {
+      const clean: Array<LackingEpoch> = [];
+      for (const epoch of epochs) {
+        const eventTypes = decodableEventTypes.filter((type) => !epoch.eventTypes.includes(type));
+        const aggregateKinds = decodableAggregateKinds.filter(
+          (kind) => !epoch.aggregateKinds.includes(kind),
+        );
+        if (eventTypes.length === 0 && aggregateKinds.length === 0) continue;
+        const lacking = { epoch, eventTypes, aggregateKinds };
+        // An empty range holds no row at all, so the scan is already answered
+        // and only the query is skipped, not the cover.
+        if (epoch.endedAtSequence <= epoch.startedAtSequence) {
+          clean.push(lacking);
+          continue;
+        }
+        const hole = yield* scanEpochForHole(lacking);
+        if (Option.isSome(hole)) return { _tag: "hole", hole: hole.value, epoch } as const;
+        clean.push(lacking);
+      }
+      return { _tag: "clean", clean } as const;
+    });
+
+    // The fresh-install path: empty every projection table and cursor, drop
+    // every epoch and open this build's at (0, 0], in ONE transaction, so no
+    // crash can leave emptied tables under an older build's ledger. The replay
+    // that follows starts from 0 like a new database. The repository calls
+    // join the transaction: the client reads its connection from the fiber
+    // context, and `withTransaction` provides the transaction connection to
+    // the effect it wraps (effect/unstable/sql/SqlClient `makeWithTransaction`).
+    // The ONE-transaction part is pinned by "leaves the tables and the ledger
+    // untouched when the new epoch cannot be written" in
+    // ProjectionPipeline.rebuild.test.ts, which refuses the insert with a
+    // trigger: without the rollback that boot leaves emptied tables under no
+    // ledger, which rebuilds on every later boot and can never find a hole.
+    const rebuildProjections = Effect.fn("rebuildProjections")(function* () {
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* Effect.forEach(PROJECTION_TABLES, (table) => sql`DELETE FROM ${sql(table)}`, {
+            discard: true,
+          });
+          yield* projectionDecoderRepository.deleteAllEpochs();
+          yield* projectionDecoderRepository.appendEpoch({
+            eventTypes: decodableEventTypes,
+            aggregateKinds: decodableAggregateKinds,
+            startedAtSequence: 0,
+            endedAtSequence: 0,
+          });
+        }),
+      );
+    });
+
     const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.gen(function* () {
       const cleanupProjector = "projection.attachment-cleanup";
-      const states = yield* projectionStateRepository.listAll();
+
+      // (1) Repair the latest epoch's end before anything reads it. Rows
+      // between its recorded end and the projectors' watermark were applied
+      // live, or by a replay that was interrupted before step (5), under that
+      // epoch's lists, so they belong to it. ASSUMPTION: one writer per
+      // database, which is one server per T3 home. Two builds sharing one
+      // userdata directory break it, because each would claim the other's rows
+      // for its own epoch. DISCLOSED, and this is the whole coverage story for
+      // a live tail: rows a build applies after its own boot are attributed to
+      // an epoch only here, by the NEXT boot, under the latest epoch's lists.
+      // That attribution is correct under the assumption and wrong without it,
+      // and a build that applies rows live and is never followed by another
+      // boot leaves them attributed to nothing at all.
+      let states = yield* projectionStateRepository.listAll();
+      const maxWatermark = maxProjectorWatermark(states);
+      let epochs = yield* projectionDecoderRepository.listEpochs();
+      const latest = epochs.at(-1);
+      if (latest !== undefined && latest.endedAtSequence < maxWatermark) {
+        yield* projectionDecoderRepository.extendEpoch({
+          epoch: latest.epoch,
+          endedAtSequence: maxWatermark,
+        });
+        epochs = yield* projectionDecoderRepository.listEpochs();
+      }
+
+      // (2) Scan every epoch that lacks part of this build's lists, over the
+      // range it applied. (3a) A hit is a hole: warn once and rebuild.
+      const scan = yield* scanLackingEpochs(epochs);
+      if (scan._tag === "hole") {
+        // The type and kind are columns a newer build wrote, so the message
+        // bounds and escapes them: a 200,000-character type fills the log
+        // line, and one carrying ESC or a newline forges log lines around it.
+        // The annotations keep the raw values for the structured log.
+        yield* Effect.logWarning(
+          `orchestration projections rebuilt: sequence ${scan.hole.sequence} (${quoteForLog(scan.hole.eventType.slice(0, 120))}, ${quoteForLog(scan.hole.aggregateKind.slice(0, 120))}) was skipped by decoder epoch ${scan.epoch.epoch}`,
+        ).pipe(
+          Effect.annotateLogs({
+            sequence: scan.hole.sequence,
+            eventType: scan.hole.eventType,
+            aggregateKind: scan.hole.aggregateKind,
+            epoch: scan.epoch.epoch,
+          }),
+        );
+        yield* rebuildProjections();
+        // The rebuild emptied the cursors; everything below reads them again.
+        states = yield* projectionStateRepository.listAll();
+      } else {
+        // (3b) No hole: cover every epoch that scanned clean, then open this
+        // build's epoch unless the ledger already ends with its lists. A
+        // covered latest epoch already carries them, so the ordinary upgrade
+        // continues the chain instead of starting a new link.
+        yield* Effect.forEach(
+          scan.clean,
+          (lacking) =>
+            projectionDecoderRepository.coverEpoch({
+              epoch: lacking.epoch.epoch,
+              eventTypes: [...lacking.epoch.eventTypes, ...lacking.eventTypes],
+              aggregateKinds: [...lacking.epoch.aggregateKinds, ...lacking.aggregateKinds],
+            }),
+          { discard: true },
+        );
+        const latestAfterCover =
+          scan.clean.length === 0
+            ? latest
+            : (yield* projectionDecoderRepository.listEpochs()).at(-1);
+        if (latestAfterCover === undefined) {
+          // The first boot after migration 054 on a database that already has
+          // rows. DISCLOSED: those rows get no epoch, so a hole older than the
+          // ledger stays undetectable; this epoch starts where they ended.
+          yield* projectionDecoderRepository.appendEpoch({
+            eventTypes: decodableEventTypes,
+            aggregateKinds: decodableAggregateKinds,
+            startedAtSequence: maxWatermark,
+            endedAtSequence: maxWatermark,
+          });
+        } else if (!carriesThisBuildsLists(latestAfterCover)) {
+          yield* projectionDecoderRepository.appendEpoch({
+            eventTypes: decodableEventTypes,
+            aggregateKinds: decodableAggregateKinds,
+            startedAtSequence: latestAfterCover.endedAtSequence,
+            endedAtSequence: latestAfterCover.endedAtSequence,
+          });
+        }
+      }
+
+      // (4) The cleanup cursor keeps its own minimum: the lowest point any
+      // cursor must replay from is a different question from an epoch's end.
       const byProjector = new Map(states.map((state) => [state.projector, state]));
       const cleanupState = byProjector.get(cleanupProjector);
       const cleanupStart = Math.min(
@@ -2240,6 +2496,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         updatedAt: cleanupState?.updatedAt ?? "1970-01-01T00:00:00.000Z",
       });
       yield* Effect.forEach(projectors, bootstrapProjector, { concurrency: 1, discard: true });
+
+      // (5) Widen the open epoch to whatever the replay reached. Its row was
+      // written BEFORE the replay, so a crash anywhere leaves this end
+      // understated and never overstated, and step (1) repairs it on the next
+      // boot under the lists that were in force while the rows were applied.
+      const replayed = yield* projectionStateRepository.listAll();
+      const open = (yield* projectionDecoderRepository.listEpochs()).at(-1);
+      if (open !== undefined) {
+        yield* projectionDecoderRepository.extendEpoch({
+          epoch: open.epoch,
+          endedAtSequence: Math.max(open.endedAtSequence, maxProjectorWatermark(replayed)),
+        });
+      }
 
       // Cleanup has its own cursor so retries never have to replay committed text.
       // All message and activity references are current before any files are removed.
@@ -2313,4 +2582,5 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   Layer.provideMerge(ProjectionPendingApprovalRepositoryLive),
   Layer.provideMerge(ChannelPostWakeRepositoryLive),
   Layer.provideMerge(ProjectionStateRepositoryLive),
+  Layer.provideMerge(ProjectionDecoderRepositoryLive),
 );
